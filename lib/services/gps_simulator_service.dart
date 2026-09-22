@@ -45,6 +45,7 @@ class GpsSimulatorService {
   double _latitude;
   double _longitude;
   double _speed; // km/h
+  double _altitude; // meters, reported on every simulated fix
   double _heading; // degrees (0 = North, 90 = East)
   SimulatorPattern _pattern;
   int _updateIntervalMs;
@@ -106,12 +107,14 @@ class GpsSimulatorService {
     double? startLatitude,
     double? startLongitude,
     double speed = 50.0, // 50 km/h default
+    double altitude = 100.0, // meters
     double heading = 45.0, // Northeast default
     SimulatorPattern pattern = SimulatorPattern.straight,
     int updateIntervalMs = 500, // 500ms = 2 updates per second
   })  : _latitude = startLatitude ?? defaultLatitude,
         _longitude = startLongitude ?? defaultLongitude,
         _speed = speed,
+        _altitude = altitude,
         _heading = heading,
         _pattern = pattern,
         _updateIntervalMs = updateIntervalMs,
@@ -125,6 +128,7 @@ class GpsSimulatorService {
     double? latitude,
     double? longitude,
     double? speed,
+    double? altitude,
     double? heading,
     SimulatorPattern? pattern,
     int? updateIntervalMs,
@@ -132,6 +136,7 @@ class GpsSimulatorService {
     if (latitude != null) _latitude = latitude;
     if (longitude != null) _longitude = longitude;
     if (speed != null) _speed = speed;
+    if (altitude != null) _altitude = altitude;
     if (heading != null) {
       _heading = heading;
       _targetHeading = heading;
@@ -598,7 +603,7 @@ class GpsSimulatorService {
       longitude: _longitude,
       timestamp: DateTime.now(),
       accuracy: 5.0, // Simulated accuracy: 5 meters
-      altitude: 100.0, // Simulated altitude
+      altitude: _altitude,
       altitudeAccuracy: 1.0,
       heading: _heading,
       headingAccuracy: 1.0,

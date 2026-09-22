@@ -9,7 +9,9 @@ DateTime? _toDateTime(num? ts) {
   if (ts == null) return null;
   var v = ts.toDouble();
   if (v <= 0) return null;
-  if (v < 20000000000) v = v * 1000; // seconds -> ms (web: `if (ts < 20000000000) ts *= 1000`)
+  if (v < 20000000000) {
+    v = v * 1000; // seconds -> ms (web: `if (ts < 20000000000) ts *= 1000`)
+  }
   return DateTime.fromMillisecondsSinceEpoch(v.toInt());
 }
 

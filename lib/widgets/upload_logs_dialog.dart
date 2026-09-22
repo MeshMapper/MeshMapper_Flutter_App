@@ -830,10 +830,69 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
 }
 
 /// Show the upload logs dialog and return the result
+/// Ask the user to confirm that they mean to send debug logs, not mapping data.
+///
+/// Users regularly submit logs with notes like "mapped this area", expecting
+/// this to be how coverage reaches MeshMapper. It is not: pings upload on
+/// their own, and an Offline Mode session uploads from Settings > Data. This
+/// dialog says so before anything is sent, so a wrong turn costs a tap instead
+/// of a support round trip.
+///
+/// Returns true when the user chose to continue.
+Future<bool> _confirmDebugLogUpload(BuildContext context) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Upload debug logs?'),
+      content: const SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'This sends app debug logs to the MeshMapper developers so they '
+              'can track down bugs. It is only for troubleshooting the app.',
+            ),
+            SizedBox(height: 12),
+            Text(
+              'It does not upload the areas you mapped. Your pings upload on '
+              'their own while you wardrive.',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'If you used Offline Mode, your pings are still on your phone. '
+              'Upload them from Settings > Data, under Offline Sessions.',
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Continue'),
+        ),
+      ],
+    ),
+  );
+  return confirmed ?? false;
+}
+
 Future<UploadLogsResult?> showUploadLogsDialog(
   BuildContext context,
   AppStateProvider appState,
 ) async {
+  // Gate every caller, so a future entry point cannot skip the explanation.
+  if (!await _confirmDebugLogUpload(context)) {
+    debugLog('[DEBUG] Log upload cancelled at the purpose confirmation');
+    return null;
+  }
+  if (!context.mounted) return null;
+
   return showModalBottomSheet<UploadLogsResult>(
     context: context,
     isScrollControlled: true,

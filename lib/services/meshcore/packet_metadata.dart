@@ -60,8 +60,8 @@ class PacketMetadata {
   /// }
   /// ```
   factory PacketMetadata.fromLogRxData(Map<String, dynamic> data) {
-    debugLog('[RX PARSE] Starting metadata parsing');
-
+    // No "starting" line: the raw packet dump a few lines down marks the
+    // start of every parse and carries the bytes with it.
     final Uint8List raw = data['raw'] as Uint8List;
     final double snr = (data['lastSnr'] as num).toDouble();
     final int rssi = data['lastRssi'] as int;

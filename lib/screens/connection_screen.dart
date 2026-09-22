@@ -18,6 +18,7 @@ import '../services/transport/tcp_service.dart';
 import '../services/transport/web_serial_factory.dart';
 import '../widgets/offline_mode_toggle.dart';
 import '../widgets/regional_config_card.dart';
+import 'onboarding/onboarding_prompt_gate.dart';
 
 /// BLE device selection and connection screen
 class ConnectionScreen extends StatefulWidget {
@@ -34,11 +35,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   bool _tcpConnecting = false;
   Future<List<Map<String, dynamic>>>? _usbDevicesFuture;
   Future<List<SavedTcpConnection>>? _savedTcpFuture;
+  final _onboardingCoordinator = OnboardingGuideCoordinator.shared;
+  bool _pathHashWarningScheduled = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _onboardingCoordinator.addListener(_onOnboardingChanged);
     _savedTcpFuture = TcpService.getSavedConnections();
   }
 
@@ -47,7 +51,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _tcpHostController.dispose();
     _tcpPortController.dispose();
     WidgetsBinding.instance.removeObserver(this);
+    _onboardingCoordinator.removeListener(_onOnboardingChanged);
     super.dispose();
+  }
+
+  void _onOnboardingChanged() {
+    if (mounted && !_onboardingCoordinator.isReserved) setState(() {});
   }
 
   @override
@@ -154,15 +163,32 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     // Show connected state
     if (appState.isConnected) {
       final pathWarning = appState.pendingPathHashWarning;
-      if (pathWarning != null) {
+      if (pathWarning != null &&
+          !_onboardingCoordinator.isReserved &&
+          !_pathHashWarningScheduled) {
+        _pathHashWarningScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          _pathHashWarningScheduled = false;
           if (!mounted) return;
+          // A guide may have reserved the lane since this frame was built.
+          if (_onboardingCoordinator.isReserved || !appState.isConnected) {
+            return;
+          }
+          final pendingWarning = appState.pendingPathHashWarning;
+          if (pendingWarning == null) return;
           _showPathHashWarning(
-              context, pathWarning.hopBytes, pathWarning.reason);
+              context, pendingWarning.hopBytes, pendingWarning.reason);
           appState.clearPathHashWarning();
         });
       }
       return _buildConnectedInfo(context, appState);
+    }
+
+    // Airborne block outranks a connect error: the device list's Airborne
+    // panel says why Connect is off and when it comes back, where the error
+    // card would title it "Connection Failed".
+    if (appState.isAirborne) {
+      return _buildDeviceList(context, appState);
     }
 
     // Show error
@@ -176,6 +202,33 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   /// Persistent bottom action bar: transport picker + offline toggle + action button
   Widget _buildBottomBar(BuildContext context, AppStateProvider appState) {
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+
+    // Landscape has little vertical room: stacking the transport picker under
+    // the action row pushed the Scan/Connect button off-screen, making it
+    // impossible to reconnect after a drop (#356). In landscape, keep the
+    // picker, offline toggle, and action button on a single row so the action
+    // button is always reachable.
+    if (isLandscape) {
+      final showPicker =
+          !appState.isConnected && _availableTransports().length > 1;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+        child: Row(
+          children: [
+            if (showPicker) ...[
+              Expanded(child: _buildTransportPicker(context, appState)),
+              const SizedBox(width: 8),
+            ],
+            const Expanded(child: OfflineModeToggle()),
+            const SizedBox(width: 8),
+            Expanded(child: _buildActionButton(context, appState)),
+          ],
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       child: Column(
@@ -226,11 +279,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
-    final canConnect =
-        appState.connectionStep == ConnectionStep.disconnected &&
-            !appState.isAutoReconnecting &&
-            (!appState.maintenanceMode || appState.offlineMode) &&
-            (appState.offlineMode || appState.inZone == true);
+    final canConnect = appState.connectionStep == ConnectionStep.disconnected &&
+        !appState.isAutoReconnecting &&
+        !appState.isAirborne &&
+        (!appState.maintenanceMode || appState.offlineMode) &&
+        (appState.offlineMode || appState.inZone == true);
 
     switch (appState.selectedTransport) {
       case TransportType.ble:
@@ -258,9 +311,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             icon: Icons.usb,
             label: 'Connect',
             color: Theme.of(context).colorScheme.primary,
-            onPressed: canConnect
-                ? () => _connectWebSerial(appState)
-                : null,
+            onPressed: canConnect ? () => _connectWebSerial(appState) : null,
           );
         }
         return _buildBottomButton(
@@ -269,7 +320,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           color: Theme.of(context).colorScheme.primary,
           onPressed: canConnect
               ? () => setState(() {
-                    _usbDevicesFuture = AndroidSerialService.getAvailablePorts();
+                    _usbDevicesFuture =
+                        AndroidSerialService.getAvailablePorts();
                   })
               : null,
         );
@@ -1421,8 +1473,13 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     String? iataCode;
     Color locationColor;
 
-    // Offline mode: show greyed out with "-"
-    if (appState.offlineMode) {
+    // Airborne block applies in every mode, so it comes first
+    if (appState.isAirborne) {
+      locationIcon = Icons.airplanemode_active;
+      locationText = 'Airborne';
+      locationColor = Colors.red;
+      // Offline mode: show greyed out with "-"
+    } else if (appState.offlineMode) {
       locationIcon = Icons.gps_off;
       locationText = '-';
       locationColor = Colors.grey;
@@ -1436,9 +1493,13 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       locationIcon = Icons.wifi_off;
       locationText = 'No Internet';
       locationColor = Colors.red;
+      // Clock error: a stale position is a wrong phone clock, not bad GPS
+    } else if (appState.zoneCheckErrorReason == 'gps_stale') {
+      locationIcon = Icons.schedule;
+      locationText = 'Clock Out of Sync';
+      locationColor = Colors.orange;
       // GPS error: show GPS issue indicator
-    } else if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
-        appState.zoneCheckErrorReason == 'gps_stale') {
+    } else if (appState.zoneCheckErrorReason == 'gps_inaccurate') {
       locationIcon = Icons.gps_off;
       locationText = 'GPS Unavailable';
       locationColor = Colors.orange;
@@ -1468,9 +1529,17 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     final slotsMax = appState.zoneSlotsMax;
     final hasSlots = slotsAvailable != null && slotsMax != null;
 
+    // A flood-disabled region hands out no TX slots at all. Before connecting
+    // the auth flag isn't known yet, so fall back to the shape of the zone: a
+    // 0-max zone isn't FULL, it simply offers no TX slots. Either way it's a
+    // regional setting, so show info blue and drop the misleading 0/0 count.
+    final passiveOnly = appState.floodDisabled || slotsMax == 0;
+
     // Slots color based on availability
     Color slotsColor;
-    if (!hasSlots) {
+    if (passiveOnly) {
+      slotsColor = Colors.blue;
+    } else if (!hasSlots) {
       slotsColor = Colors.grey;
     } else if (slotsAvailable == 0) {
       slotsColor = Colors.red;
@@ -1496,30 +1565,47 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: Row(
           children: [
-            // Location chip (city name)
-            _buildChip(
-              icon: locationIcon,
-              text: locationText,
-              color: locationColor,
+            // The leading group absorbs the leftover width (replacing a
+            // Spacer) so the slots chip stays pinned right while a long city
+            // name ellipsizes instead of overflowing on a narrow phone.
+            Expanded(
+              child: Row(
+                children: [
+                  // Location chip (city name). This is the only variable-width
+                  // chip, so it is the one that gives way when space runs out.
+                  Flexible(
+                    child: _buildChip(
+                      icon: locationIcon,
+                      text: locationText,
+                      color: locationColor,
+                    ),
+                  ),
+
+                  // IATA code chip (only when in zone)
+                  if (iataCode != null) ...[
+                    const SizedBox(width: 8),
+                    _buildChip(
+                      icon: Icons.flight,
+                      text: iataCode,
+                      color: Colors.blue,
+                    ),
+                  ],
+                ],
+              ),
             ),
 
-            // IATA code chip (only when in zone)
-            if (iataCode != null) ...[
-              const SizedBox(width: 8),
-              _buildChip(
-                icon: Icons.flight,
-                text: iataCode,
-                color: Colors.blue,
-              ),
-            ],
-
-            const Spacer(),
+            const SizedBox(width: 8),
 
             // Slots chip
             _buildChip(
-              icon: Icons.people_outline,
-              text: hasSlots ? '$slotsAvailable/$slotsMax Open' : '--',
+              icon: passiveOnly ? Icons.waves : Icons.people_outline,
+              text: passiveOnly
+                  ? 'Flood Off'
+                  : hasSlots
+                      ? '$slotsAvailable/$slotsMax Open'
+                      : '--',
               color: slotsColor,
+              onTap: passiveOnly ? () => _showFloodDisabledInfo(context) : null,
             ),
           ],
         ),
@@ -1532,28 +1618,132 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     required IconData icon,
     required String text,
     required Color color,
+    VoidCallback? onTap,
   }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 4),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: color,
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                text,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Explains a flood-disabled region.
+  ///
+  /// The chip has room for eight characters, which cannot say that Trace Mode
+  /// still works, so the detail lives here. Layout mirrors
+  /// [_showAuthMethodInfo]; wording matches the region-veto dialog in
+  /// MainScaffold so users see one consistent explanation.
+  void _showFloodDisabledInfo(BuildContext context) {
+    final bodyStyle = TextStyle(
+      fontSize: 14,
+      height: 1.4,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header with close button
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 8, 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                      border:
+                          Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    ),
+                    child:
+                        const Icon(Icons.waves, color: Colors.blue, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Flood Traffic Disabled',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // Content
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'This region has grown large enough that flood traffic '
+                      'started hurting the mesh, so the regional mesh chose '
+                      'to turn it off. Active and Hybrid modes are '
+                      'unavailable across the whole MeshMapper region you '
+                      'are in. It is not a capacity limit.',
+                      style: bodyStyle,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Passive Mode (discovery requests and RX listening) and '
+                      'Trace Mode still work, and they map a mesh this size '
+                      'well. The app keeps logging everything your radio '
+                      'hears.',
+                      style: bodyStyle,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'For more information, talk to your regional admin.',
+                      style: bodyStyle,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1611,9 +1801,25 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   }
 
   Widget _buildDeviceList(BuildContext context, AppStateProvider appState) {
-    // Offline mode bypasses both zone and maintenance checks
-    final canConnect = appState.offlineMode ||
-        (appState.inZone == true && !appState.maintenanceMode);
+    // Offline mode bypasses both zone and maintenance checks, never the
+    // airborne block
+    final canConnect = !appState.isAirborne &&
+        (appState.offlineMode ||
+            (appState.inZone == true && !appState.maintenanceMode));
+
+    // Airborne block applies in every mode, so it comes before maintenance
+    if (appState.isAirborne) {
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.airplanemode_active,
+        iconColor: Colors.red.withValues(alpha: 0.7),
+        title: 'Airborne',
+        message: '${appState.airborneCause ?? ''}\n\n'
+                'Wardriving from an aircraft is not allowed.\n\n'
+                'MeshMapper will let you connect again once you are back on the ground.'
+            .trimLeft(),
+      );
+    }
 
     // Show maintenance message (takes priority over zone checks)
     if (appState.maintenanceMode && !appState.offlineMode) {
@@ -1826,18 +2032,24 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           );
         }
 
-        // GPS errors — no auto-retry, show manual retry button
+        // GPS errors — no auto-retry, show manual retry button.
+        // 'gps_stale' means the position timestamp doesn't line up with server
+        // time, which is almost always a wrong phone clock rather than a weak
+        // fix. Say so plainly, or people chase a GPS problem that isn't there.
         if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
             appState.zoneCheckErrorReason == 'gps_stale') {
+          final isStale = appState.zoneCheckErrorReason == 'gps_stale';
           return _buildMessageContent(
             context: context,
-            icon: Icons.gps_off,
+            icon: isStale ? Icons.schedule : Icons.gps_off,
             iconColor: Colors.orange.withValues(alpha: 0.7),
-            title: appState.zoneCheckErrorReason == 'gps_inaccurate'
-                ? 'GPS Accuracy Error'
-                : 'GPS Stale Error',
-            message:
-                '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
+            title: isStale ? 'Phone Clock Out of Sync' : 'Weak GPS Signal',
+            message: isStale
+                ? "Your phone's clock is off, so your location looks out of date. "
+                    'This is a time problem, not a GPS problem.\n\n'
+                    "Open your phone's Date & Time settings, turn on automatic "
+                    'date and time (and automatic time zone), then tap retry.'
+                : '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
             action: FilledButton.icon(
               onPressed: () => appState.checkZoneStatus(),
               icon: const Icon(Icons.refresh),
@@ -1894,7 +2106,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           for (final transport in available)
             Expanded(
               child: _buildTransportSegment(
-                context, appState, transport,
+                context,
+                appState,
+                transport,
                 isSelected: appState.selectedTransport == transport,
               ),
             ),
@@ -2082,7 +2296,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             future: _savedTcpFuture ??= TcpService.getSavedConnections(),
             builder: (context, snapshot) {
               final saved = snapshot.data;
-              if (saved == null || saved.isEmpty) return const SizedBox.shrink();
+              if (saved == null || saved.isEmpty) {
+                return const SizedBox.shrink();
+              }
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2093,8 +2309,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                         ),
                   ),
                   const SizedBox(height: 8),
-                  ...saved.map((conn) => _buildSavedTcpTile(
-                      context, appState, conn, canConnect)),
+                  ...saved.map((conn) =>
+                      _buildSavedTcpTile(context, appState, conn, canConnect)),
                 ],
               );
             },
@@ -2162,7 +2378,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                 await TcpService.deleteConnection(conn.id);
                 if (mounted) {
                   final future = TcpService.getSavedConnections();
-                  setState(() { _savedTcpFuture = future; });
+                  setState(() {
+                    _savedTcpFuture = future;
+                  });
                 }
               },
             ),
@@ -2208,8 +2426,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             icon: Icons.usb_off,
             iconColor: Colors.grey.withValues(alpha: 0.5),
             title: 'No USB Devices',
-            message:
-                'Connect a MeshCore device via USB OTG and tap Refresh.',
+            message: 'Connect a MeshCore device via USB OTG and tap Refresh.',
             action: FilledButton.icon(
               onPressed: () => setState(() {
                 _usbDevicesFuture = AndroidSerialService.getAvailablePorts();
@@ -2228,14 +2445,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             final pid = device['pid'] as int? ?? 0;
             return ListTile(
               leading: const Icon(Icons.usb),
-              title: Text(
-                  device['productName'] as String? ?? 'USB Device'),
+              title: Text(device['productName'] as String? ?? 'USB Device'),
               subtitle: Text(
                   'VID: ${vid.toRadixString(16)} PID: ${pid.toRadixString(16)}'),
               enabled: canConnect,
-              onTap: canConnect
-                  ? () => appState.connectViaUsb(device)
-                  : null,
+              onTap: canConnect ? () => appState.connectViaUsb(device) : null,
             );
           },
         );
@@ -2254,7 +2468,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             Icon(
               Icons.usb,
               size: 64,
-              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+              color:
+                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
             ),
             const SizedBox(height: 16),
             Text(

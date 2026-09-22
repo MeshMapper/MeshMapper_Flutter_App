@@ -3,13 +3,86 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
 import 'package:http/http.dart' as http;
 
+import '../models/device_catalog.dart';
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
+import 'meshcore/regional_carpeater_filter.dart';
+import 'network_state_service.dart';
 
 /// Result of a batch upload attempt
-enum UploadResult { success, retryable, sessionError, nonRetryable }
+///
+/// [unreachable] is deliberately separate from [retryable]: the data is fine,
+/// we simply never got an answer. The queue must not spend a retry on it, or a
+/// drive through a dead zone burns the whole ladder and strands the pings
+/// (#437).
+///
+/// [held] means the batch never left: the server's storm brake is running for
+/// this session (a 429 `rate_limited` with `Retry-After`, see
+/// [ApiService.wardriveBackoff]). Like [unreachable] it says nothing about the
+/// data and must not spend a retry.
+enum UploadResult {
+  success,
+  retryable,
+  unreachable,
+  held,
+  sessionError,
+  nonRetryable
+}
+
+/// Result of attempting to replace a server-expired session.
+///
+/// A superseded request belongs to an older connection lifecycle. It is not a
+/// server or configuration failure, so callers must leave the current owner
+/// untouched while they quietly stop, hold their upload, or await the next
+/// heartbeat schedule.
+enum SessionRecoveryResult { recovered, superseded, failed }
+
+/// A report response that is safe to remove from the local outbox.
+enum DeviceReportAcknowledgement { known, pending, dismissed }
+
+/// The request never reached the server: no coverage, DNS failure, connection
+/// reset, TLS handshake, or a timeout waiting for the first byte.
+///
+/// Distinct from the server answering with a rejection, which is a verdict on
+/// the data itself.
+class _RequestNeverReachedServer implements Exception {
+  final Object cause;
+  const _RequestNeverReachedServer(this.cause);
+
+  @override
+  String toString() => 'Request never reached the server: $cause';
+}
+
+/// Classify a thrown request error as "never got an answer" or not.
+///
+/// A FormatException is excluded on purpose: the server did answer, just with
+/// something unparseable, which is a verdict-shaped failure and keeps its place
+/// on the retry ladder. SocketException and HandshakeException live in dart:io,
+/// which this file must not import because it is shared with the web build, so
+/// they are matched by type name.
+bool _requestNeverReachedServer(Object error) {
+  if (error is FormatException) return false;
+  if (error is TimeoutException) return true;
+  if (error is http.ClientException) return true;
+  final name = error.runtimeType.toString();
+  return name.contains('SocketException') ||
+      name.contains('HandshakeException');
+}
+
+/// True when the request died on a connection the server had already closed,
+/// before a single byte of the response arrived.
+///
+/// The server closes an idle keep-alive connection after 5 seconds; Dart's
+/// HttpClient holds one in its pool for 15 and only drops it when it notices
+/// the close, which a backgrounded app cannot do while its event loop is
+/// frozen. A request written into that gap goes out on a dead socket and never
+/// reaches the server at all.
+bool _connectionWasAlreadyClosed(Object error) =>
+    error is http.ClientException &&
+    error.message.contains('Connection closed before full header was received');
 
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
@@ -27,6 +100,7 @@ class ApiService {
   static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
   static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
   static const String borderUrl = '$baseUrl/wardrive-api.php/border';
+  static const String deviceCatalogUrl = '$baseUrl/wardrive-api.php/devices';
 
   /// API key — injected at build time via --dart-define=API_KEY=...
   static const String apiKey = String.fromEnvironment('API_KEY');
@@ -34,19 +108,50 @@ class ApiService {
   /// Heartbeat buffer - schedule heartbeat 1 minute before session expiry
   static const Duration heartbeatBuffer = Duration(minutes: 1);
 
+  /// Minimum spacing between heartbeat sends. expires_at is server-clock while
+  /// the delay math runs on the device clock, so a device running further
+  /// ahead of the server than TTL minus [heartbeatBuffer] sees every freshly
+  /// extended expiry as already due. Without this floor the "expired, send
+  /// immediately" path re-fired the next heartbeat straight from the success
+  /// response, one POST per network round trip (361k requests in 64 minutes
+  /// from a single device on 2026-08-29).
+  static const Duration minHeartbeatSpacing = Duration(seconds: 30);
+
+  /// Circuit breaker: hard cap on scheduled heartbeat sends per minute,
+  /// independent of the spacing floor. Tripping it pauses the heartbeat lane
+  /// for a minute instead of letting any future bug storm the server.
+  static const int maxHeartbeatsPerMinute = 6;
+
+  /// Fallback when a 429 from the wardrive door carries no usable
+  /// `Retry-After`: the server's default penalty (60s) plus its 15s margin.
+  static const Duration defaultWardriveRetryAfter = Duration(seconds: 75);
+
+  /// Longest hold a `Retry-After` header can impose on the wardrive door.
+  static const Duration maxWardriveRetryAfter = Duration(hours: 1);
+
   final http.Client _client;
+  final NetworkStateSource _networkState;
+  final Duration _deviceCatalogTimeout;
+  final DateTime Function() _now;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
   bool _rxAllowed = false;
   int? _sessionExpiresAt;
   String? _wireKey; // TX wire-tag secret from /auth (null = un-keyed fallback)
-  int _pingCounter = 0; // per-session TX counter; resets on fresh /auth, not on heartbeat
+  int _pingCounter =
+      0; // per-session TX counter; resets on fresh /auth, not on heartbeat
   Timer? _heartbeatTimer;
   Timer? _heartbeatRetryTimer;
 
   int _heartbeatRetryCount = 0;
   static const int _maxHeartbeatRetries = 5;
+  bool _heartbeatInFlight = false;
+  DateTime? _lastHeartbeatSentAt;
+  DateTime? _heartbeatWindowStart;
+  int _heartbeatWindowCount = 0;
+  DateTime? _wardriveBlockedUntil;
+  Future<SessionRecoveryResult>? _sessionRecoveryInFlight;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -55,6 +160,16 @@ class ApiService {
   bool _floodDisabled = false;
   int _minModeInterval = 15;
   int _apiHopBytes = 1;
+  bool _enforceSmartPing = false;
+  int _apiSmartPingDays = 14;
+
+  /// The user's own CARpeater key, sent as `carpeater` on connect and
+  /// register auths, never on an offline-mode auth. Null while the CARpeater
+  /// switch is off or no full key is set. Owned by AppStateProvider.
+  String? carpeaterKey;
+
+  List<String> _regionalCarpeaters = const [];
+  String? _lastCarpeaterError;
 
   /// Callback to get current GPS coordinates for heartbeat
   /// Returns (lat, lon) or null if GPS is not available
@@ -84,7 +199,178 @@ class ApiService {
   /// Whether hop bytes are enforced by regional admin (only 2 or 3 enforces)
   bool get enforceHopBytes => _apiHopBytes > 1;
 
-  ApiService({http.Client? client}) : _client = client ?? http.Client();
+  /// Whether Smart Pinging is forced on by the regional admin.
+  bool get enforceSmartPing => _enforceSmartPing;
+
+  /// The Smart Pinging window (days) the server sent; only binding when
+  /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
+  int get apiSmartPingDays => _apiSmartPingDays;
+
+  /// Every CARpeater key the region shares, replaced in full on every auth.
+  /// Upper-case 64 hex, sorted. Empty when the server sent none or predates
+  /// the feature.
+  List<String> get regionalCarpeaters => List.unmodifiable(_regionalCarpeaters);
+
+  /// `carpeater_error` from the last connect/register answer (`max_reached`
+  /// or `invalid`), or null when the key was accepted or none was sent.
+  String? get lastCarpeaterError => _lastCarpeaterError;
+
+  /// Fired after every connect/register success with the region's list and
+  /// the refusal code, if any. The provider replaces its cache from this.
+  void Function(List<String> keys, String? error)? onRegionalCarpeaters;
+
+  ApiService({
+    http.Client? client,
+    NetworkStateSource? networkState,
+    Duration deviceCatalogTimeout = const Duration(seconds: 10),
+    DateTime Function()? now,
+  })  : _client = client ?? http.Client(),
+        _networkState = networkState ?? NetworkStateService.instance,
+        _deviceCatalogTimeout = deviceCatalogTimeout,
+        _now = now ?? DateTime.now;
+
+  /// Fetches the public model catalog without affecting session callbacks.
+  Future<DeviceCatalog?> fetchDeviceCatalog() async {
+    final stopwatch = Stopwatch()..start();
+    final payload = <String, dynamic>{'key': apiKey, 'action': 'list'};
+    final deadline = _now().add(_deviceCatalogTimeout);
+    try {
+      final response = await _send(
+        'POST /wardrive-api.php/devices list',
+        () => _client.post(
+          Uri.parse(deviceCatalogUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ),
+        deadline: deadline,
+      );
+      stopwatch.stop();
+      if (response.statusCode != 200 ||
+          response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
+        debugWarn('[API] Device catalog request was rejected');
+        return null;
+      }
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is! Map<String, dynamic>) {
+        debugWarn('[API] Device catalog response was not an object');
+        return null;
+      }
+      final catalog = DeviceCatalog.fromJson(
+        decoded,
+        encodedLength: response.bodyBytes.length,
+      );
+      _logApiCall(
+        endpoint: '/wardrive-api.php/devices',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: {
+          'revision': catalog.revision,
+          'device_count': catalog.devices.length
+        },
+      );
+      return catalog;
+    } catch (error) {
+      stopwatch.stop();
+      debugWarn('[API] Device catalog refresh failed: $error');
+      return null;
+    }
+  }
+
+  /// Reports an unmatched firmware identity without using a session.
+  Future<DeviceReportAcknowledgement?> reportUnknownDevice({
+    required String manufacturer,
+    required String appVersion,
+    String? firmwareVersion,
+  }) async {
+    final payload = <String, dynamic>{
+      'key': apiKey,
+      'action': 'report_unknown',
+      'manufacturer': manufacturer,
+      'app_version': appVersion,
+      'firmware_version': firmwareVersion ?? '',
+    };
+    final deadline = _now().add(_deviceCatalogTimeout);
+    try {
+      final response = await _send(
+        'POST /wardrive-api.php/devices report_unknown',
+        () => _client.post(
+          Uri.parse(deviceCatalogUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ),
+        deadline: deadline,
+      );
+      if (response.statusCode != 200 ||
+          response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
+        return null;
+      }
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is! Map<String, dynamic> ||
+          decoded.length != 2 ||
+          decoded['success'] != true) {
+        return null;
+      }
+      return switch (decoded['status']) {
+        'known' => DeviceReportAcknowledgement.known,
+        'pending' => DeviceReportAcknowledgement.pending,
+        'dismissed' => DeviceReportAcknowledgement.dismissed,
+        _ => null,
+      };
+    } catch (error) {
+      debugWarn('[API] Unknown device report failed: $error');
+      return null;
+    }
+  }
+
+  /// Send [request], replaying it once when the first attempt was written onto
+  /// a keep-alive socket the server had already closed.
+  ///
+  /// The server closes an idle connection after 5 seconds while Dart's
+  /// HttpClient keeps one in its pool for 15, so a request made in that gap
+  /// goes out on a socket that is already gone and comes back as
+  /// [_connectionWasAlreadyClosed]. Such a request never reaches the server
+  /// (it leaves no access-log entry there), so replaying it is safe and
+  /// changes nothing about what the server did. One replay only: a second
+  /// failure is a real network problem and belongs to the caller.
+  ///
+  /// The per-attempt timeout lives at the call site, so the replay gets its
+  /// own full allowance rather than the remains of the first one's.
+  Future<http.Response> _send(
+    String label,
+    Future<http.Response> Function() request, {
+    DateTime? deadline,
+  }) async {
+    Future<http.Response> sendAttempt() {
+      if (deadline == null) return request();
+      final remaining = deadline.difference(_now());
+      if (remaining <= Duration.zero) {
+        throw TimeoutException('$label deadline expired');
+      }
+      return request().timeout(remaining);
+    }
+
+    Future<http.Response> completeWithinDeadline() async {
+      final response = await sendAttempt();
+      if (deadline != null && !_now().isBefore(deadline)) {
+        throw TimeoutException('$label deadline expired');
+      }
+      return response;
+    }
+
+    try {
+      return await completeWithinDeadline();
+    } catch (e) {
+      if (!_connectionWasAlreadyClosed(e)) rethrow;
+      if (deadline != null && !_now().isBefore(deadline)) {
+        throw TimeoutException('$label deadline expired');
+      }
+      debugWarn('[API] $label found the connection already closed by the '
+          'server, sending it again');
+      return completeWithinDeadline();
+    }
+  }
 
   /// Sanitize payload by removing sensitive fields for logging
   Map<String, dynamic> _sanitizePayload(Map<String, dynamic> payload) {
@@ -93,7 +379,68 @@ class ApiService {
     sanitized.remove('session_id');
     sanitized.remove('public_key');
     sanitized.remove('contact_uri');
+    // The user's own CARpeater key (request) and the region's whole list
+    // (response) are public keys, and a log file ships with bug reports. The
+    // auth lane logs its own count instead.
+    sanitized.remove('carpeater');
+    sanitized.remove('carpeaters');
     return sanitized;
+  }
+
+  /// Longest raw (non-JSON) response body any log line may carry.
+  static const int _maxLoggedBodyChars = 200;
+
+  /// Longest a single nested value may encode to before a log summary
+  /// replaces it with a count.
+  static const int _maxLoggedValueChars = 200;
+
+  /// Collapse bulk collections inside a payload so a log line stays readable.
+  ///
+  /// Every scalar field survives untouched, because those are the ones worth
+  /// reading. Only a nested list or map that encodes to more than
+  /// [_maxLoggedValueChars] is replaced by a count, which is what keeps a
+  /// zone border answer (thousands of polygon coordinates) from landing as a
+  /// single 15 KB log line. The coordinates themselves are never read back
+  /// out of a log, so the count carries the whole diagnostic value: that the
+  /// field was present, and how big it was.
+  dynamic _summarizeForLog(dynamic value) {
+    if (value is Map) {
+      return value.map((k, v) => MapEntry(k, _summarizeForLog(v)));
+    }
+    if (value is List) {
+      // Summarize the elements first, so a list of small records keeps the
+      // records (a border answer still shows each polygon's zone code) and
+      // only the bulk inside them collapses.
+      final summarized = value.map(_summarizeForLog).toList();
+      final encoded = json.encode(summarized);
+      if (encoded.length <= _maxLoggedValueChars) return summarized;
+      return '[${value.length} items, ${encoded.length} chars]';
+    }
+    return value;
+  }
+
+  /// Redact a raw `/auth` body before it reaches a log line.
+  ///
+  /// An auth answer carries the region's whole `carpeaters` key list, and a
+  /// debug log file ships with bug reports, so the body may never be logged
+  /// verbatim. A body that parses as a JSON object goes through
+  /// [_sanitizePayload], the same redaction the request/response summaries
+  /// get; anything else (an HTML error page, a truncated stream) is cut to
+  /// [_maxLoggedBodyChars] so a stray key list cannot ride out in full.
+  String _redactBodyForLog(String body) {
+    if (body.isEmpty) return '(empty)';
+    try {
+      final decoded = json.decode(body);
+      if (decoded is Map<String, dynamic>) {
+        return json.encode(_sanitizePayload(decoded));
+      }
+    } catch (_) {
+      // Not JSON at all: fall through to the truncation below.
+    }
+    return body.length > _maxLoggedBodyChars
+        ? '${body.substring(0, _maxLoggedBodyChars)}... '
+            '(${body.length} chars, truncated)'
+        : body;
   }
 
   /// Check if response indicates maintenance mode, trigger callback if so
@@ -130,7 +477,7 @@ class ApiService {
 
     String resSummary;
     if (response is Map<String, dynamic>) {
-      resSummary = json.encode(_sanitizePayload(response));
+      resSummary = json.encode(_summarizeForLog(_sanitizePayload(response)));
     } else if (response is List) {
       resSummary = '[${response.length} items]';
     } else if (response != null) {
@@ -196,13 +543,16 @@ class ApiService {
         'key': apiKey,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(geoAuthStatusUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
+      final response = await _send(
+        'POST /wardrive-api.php/status',
+        () => _client
+            .post(
+              Uri.parse(geoAuthStatusUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 10)),
+      );
 
       stopwatch.stop();
 
@@ -262,13 +612,16 @@ class ApiService {
         'key': apiKey,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(borderUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
+      final response = await _send(
+        'POST /wardrive-api.php/border',
+        () => _client
+            .post(
+              Uri.parse(borderUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 10)),
+      );
 
       stopwatch.stop();
 
@@ -339,7 +692,9 @@ class ApiService {
     double? accuracyMeters,
     bool offlineMode = false,
     bool skipSessionStore = false,
+    bool Function()? shouldStoreSession,
     String? sessionId,
+    Map<String, dynamic>? extras,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -362,6 +717,12 @@ class ApiService {
         payload['offline_mode'] = true;
       }
 
+      // Caller-supplied telemetry (the airborne block's release call). The
+      // server keys off `reason` alone and ignores keys it does not know.
+      if (extras != null) {
+        payload.addAll(extras);
+      }
+
       // For connect/register: add device metadata and GPS coords
       if (reason == 'connect' || reason == 'register') {
         if (lat == null || lon == null) {
@@ -376,6 +737,12 @@ class ApiService {
         if (iataCode != null) payload['iata'] = iataCode;
         if (model != null) payload['model'] = model;
         if (radioFreq != null) payload['radio_freq'] = radioFreq;
+        // The user's own CARpeater, shared with the region. Never on an
+        // offline-mode auth: that one bypasses the zone gate and would file
+        // the key under the upload zone, not the zone the car drives in.
+        if (carpeaterKey != null && !offlineMode) {
+          payload['carpeater'] = carpeaterKey;
+        }
         payload['coords'] = {
           'lat': lat,
           'lng': lon, // Convert lon → lng for API
@@ -385,23 +752,39 @@ class ApiService {
       } else {
         // For disconnect: use explicit sessionId if provided, otherwise shared _sessionId
         payload['session_id'] = sessionId ?? _sessionId;
+
+        // The mode running at release. Connect and register have no session
+        // yet, an offline-mode auth is not a live session, and a release that
+        // names an explicit session id is the offline upload closing its own
+        // isolated session, which has no mode of its own.
+        if (reason == 'disconnect' && sessionId == null) {
+          final releaseMode = currentAutoMode?.call();
+          if (releaseMode != null) payload['auto_mode'] = releaseMode;
+        }
       }
 
-      final response = await _client
-          .post(
-            Uri.parse(geoAuthUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
+      // Give auth attempts more room on a constrained link so a
+      // high-latency response can arrive before the request times out.
+      final authTimeout = _networkState.current.isConstrained
+          ? const Duration(seconds: 30)
+          : const Duration(seconds: 10);
+      final response = await _send(
+        'POST /wardrive-api.php/auth',
+        () => _client
+            .post(
+              Uri.parse(geoAuthUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(authTimeout),
+      );
 
       stopwatch.stop();
 
       if (response.statusCode != 200) {
         debugError(
             '[API] /wardrive-api.php/auth returned HTTP ${response.statusCode}');
-        debugError(
-            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError('[API]   Response body: ${_redactBodyForLog(response.body)}');
       }
 
       Map<String, dynamic> data;
@@ -410,7 +793,7 @@ class ApiService {
       } on FormatException {
         debugError(
             '[API] Non-JSON response from /auth (HTTP ${response.statusCode}): '
-            '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+            '${_redactBodyForLog(response.body)}');
         rethrow;
       }
 
@@ -428,7 +811,34 @@ class ApiService {
       if ((reason == 'connect' || reason == 'register') &&
           data['success'] == true) {
         if (!skipSessionStore) {
-          _sessionId = data['session_id'] as String?;
+          if (shouldStoreSession?.call() == false) {
+            debugWarn('[SESSION] Auth succeeded after its owner became stale');
+            return data;
+          }
+          // A wire tag only re-derives under the session that minted it. When
+          // the server hands back a DIFFERENT session id (it reuses one only
+          // while status=1 and unexpired), anything still sitting in the queue
+          // was tagged under the old session and would be silently dropped on
+          // upload, so tell the listener to drop those pings.
+          final previousSessionId = _sessionId;
+          final newSessionId = data['session_id'] as String?;
+          if (previousSessionId != null &&
+              newSessionId != null &&
+              previousSessionId != newSessionId) {
+            debugLog(
+                '[SESSION] New session id issued (was $previousSessionId, now $newSessionId). '
+                'Queued wire tags are stale');
+            await onSessionIdChanged?.call(previousSessionId, newSessionId);
+            if (shouldStoreSession?.call() == false) {
+              debugWarn(
+                  '[SESSION] Auth owner became stale during queue cleanup');
+              return data;
+            }
+          }
+          _sessionId = newSessionId;
+          // The storm brake is keyed on the session id, so a hold belongs to
+          // the session that earned it.
+          if (previousSessionId != _sessionId) _wardriveBlockedUntil = null;
           _txAllowed = data['tx_allowed'] == true;
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
@@ -442,7 +852,8 @@ class ApiService {
           final resumeCounter = (data['resume_counter'] as num?)?.toInt() ?? 0;
           _pingCounter = resumeCounter;
           if (resumeCounter > 0) {
-            debugLog('[AUTH] resumed ping counter at $resumeCounter (reused session)');
+            debugLog(
+                '[AUTH] resumed ping counter at $resumeCounter (reused session)');
           }
           if (_wireKey != null) {
             debugLog('[AUTH] wire-tag key received (len=${_wireKey!.length})');
@@ -507,8 +918,53 @@ class ApiService {
             _apiHopBytes = 1;
           }
 
+          // Parse smart_ping / smart_ping_days from auth response. Absent on a
+          // server that predates the feature: not enforced, 14 days.
+          _enforceSmartPing = data['smart_ping'] == true;
+          final smartDays = data['smart_ping_days'];
+          _apiSmartPingDays =
+              (smartDays is int && smartDays >= 1 && smartDays <= 365)
+                  ? smartDays
+                  : 14;
+          if (_enforceSmartPing) {
+            debugLog(
+                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window');
+          }
+
           // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
           // (not on initial auth, since heartbeat is only for auto mode)
+        }
+
+        // Regional CARpeater list: a full replace on every LIVE connect or
+        // register auth, so an entry an admin deleted (or retention aged out)
+        // leaves this phone at the next auth. A missing field on a live
+        // answer means an empty list (the server contract).
+        //
+        // An offline-mode or skipSessionStore auth is not a live auth: the
+        // offline upload authenticates only to close out its own isolated
+        // session, it never sends the user's own `carpeater`, and a server
+        // that answers it without the field would wipe the very cache
+        // Offline Mode exists to keep.
+        if (!offlineMode && !skipSessionStore) {
+          _regionalCarpeaters =
+              RegionalCarpeaterFilter.sanitize(data['carpeaters']);
+          final carpeaterError = data['carpeater_error'];
+          _lastCarpeaterError =
+              carpeaterError is String && carpeaterError.isNotEmpty
+                  ? carpeaterError
+                  : null;
+          debugLog(
+              '[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
+              '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
+          // Nothing on this lane may fail a connection: a throw from the
+          // listener would otherwise land in the outer catch and read as a
+          // network failure.
+          try {
+            onRegionalCarpeaters?.call(
+                _regionalCarpeaters, _lastCarpeaterError);
+          } catch (e) {
+            debugError('[AUTH] regional carpeaters listener threw: $e');
+          }
         }
       } else if (reason == 'disconnect') {
         // Only clear shared session when no explicit sessionId was provided
@@ -521,16 +977,72 @@ class ApiService {
       return data;
     } catch (e) {
       stopwatch.stop();
-      debugError('[API] POST /wardrive-api.php/auth failed: $e');
+      // Never interpolate a FormatException here. Its toString quotes a
+      // window of the source around the parse offset, which is the tail of
+      // the very body this lane redacts above, and that tail can hold a full
+      // public key. The type and the offset say what went wrong without
+      // carrying any of the body.
+      final detail = e is FormatException
+          ? '${e.runtimeType}${e.offset != null ? ' at offset ${e.offset}' : ''}'
+          : '${e.runtimeType}: $e';
+      debugError('[API] POST /wardrive-api.php/auth failed: $detail');
       return null;
     }
+  }
+
+  /// Time left on the server's storm brake for this session's wardrive door,
+  /// or null when nothing is held.
+  ///
+  /// A 429 `rate_limited` from `/wardrive` (data batch or heartbeat) parks
+  /// every sender on that door until the server's `Retry-After` has run: the
+  /// batch upload, the keepalive and the per-ping session check alike. The
+  /// brake re-arms its penalty on every blocked hit, so one lane knocking
+  /// through the penalty would keep all of them locked out. The session
+  /// itself stays valid under a brake (APP_API.md, Appendix C item 9).
+  ///
+  /// Deadline math uses `clock.now()` so the fake-async tests can run the
+  /// hold down; in production that is `DateTime.now()`.
+  Duration? get wardriveBackoff {
+    final until = _wardriveBlockedUntil;
+    if (until == null) return null;
+    final left = until.difference(clock.now());
+    if (left <= Duration.zero) {
+      _wardriveBlockedUntil = null;
+      return null;
+    }
+    return left;
+  }
+
+  /// Parse a `Retry-After` header as delta-seconds.
+  ///
+  /// Missing, non-numeric or non-positive values fall back to
+  /// [defaultWardriveRetryAfter] rather than to no backoff at all; anything
+  /// longer than [maxWardriveRetryAfter] is clamped to it. HTTP-date values
+  /// are not used by the wardrive API and take the default.
+  static Duration parseRetryAfter(String? raw) {
+    final seconds = int.tryParse(raw?.trim() ?? '');
+    if (seconds == null || seconds <= 0) return defaultWardriveRetryAfter;
+    final wait = Duration(seconds: seconds);
+    return wait > maxWardriveRetryAfter ? maxWardriveRetryAfter : wait;
+  }
+
+  /// Record a 429 from the wardrive door as a hold on every sender.
+  void _noteWardriveRateLimit(http.Response response, String lane) {
+    final wait = parseRetryAfter(response.headers['retry-after']);
+    _wardriveBlockedUntil = clock.now().add(wait);
+    debugWarn(
+        '[API] /wardrive-api.php/wardrive ($lane) rate limited by the server: '
+        'holding every wardrive send for ${wait.inSeconds}s');
   }
 
   /// Submit wardrive data batch to API
   /// Matches submitWardriveData() in wardrive.js
   ///
   /// @param entries List of wardrive entries (TX/RX)
-  /// @returns Map with success, expires_at, reason, message
+  /// @returns Map with success, expires_at, reason, message, or null when the
+  /// server answered with something unusable
+  /// @throws when the request never reached the server, so the caller can tell
+  /// that apart from a rejection and hold the data without spending a retry
   Future<Map<String, dynamic>?> submitWardriveData(
       List<Map<String, dynamic>> entries) async {
     if (_sessionId == null) {
@@ -539,19 +1051,24 @@ class ApiService {
 
     final stopwatch = Stopwatch()..start();
     try {
+      final autoMode = currentAutoMode?.call();
       final payload = {
         'key': apiKey,
         'session_id': _sessionId,
         'data': entries,
+        if (autoMode != null) 'auto_mode': autoMode,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(wardriveEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _send(
+        'POST /wardrive-api.php/wardrive',
+        () => _client
+            .post(
+              Uri.parse(wardriveEndpoint),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30)),
+      );
 
       stopwatch.stop();
 
@@ -560,6 +1077,9 @@ class ApiService {
             '[API] /wardrive-api.php/wardrive returned HTTP ${response.statusCode}');
         debugError(
             '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+      if (response.statusCode == 429) {
+        _noteWardriveRateLimit(response, 'data');
       }
 
       Map<String, dynamic> data;
@@ -574,14 +1094,20 @@ class ApiService {
 
       // Log with data summary including external_antenna values
       final antennaSummary = entries
-          .map((e) => '${e['type']}:external_antenna=${e['external_antenna']}')
+          .map((e) => e['type'] == 'DEFER'
+              ? 'DEFER'
+              : '${e['type']}:external_antenna=${e['external_antenna']}')
           .join(', ');
       _logApiCall(
         endpoint: '/wardrive-api.php/wardrive',
         method: 'POST',
         stopwatch: stopwatch,
         statusCode: response.statusCode,
-        request: {'data': '${entries.length} items', 'items': antennaSummary},
+        request: {
+          'data': '${entries.length} items',
+          'items': antennaSummary,
+          if (autoMode != null) 'auto_mode': autoMode,
+        },
         response: data,
       );
 
@@ -595,6 +1121,9 @@ class ApiService {
     } catch (e) {
       stopwatch.stop();
       debugError('[API] POST /wardrive-api.php/wardrive failed: $e');
+      // Let uploadBatch tell the two failures apart. Returning null for both
+      // is what let a dead socket spend a retry (#437).
+      if (_requestNeverReachedServer(e)) throw _RequestNeverReachedServer(e);
       return null;
     }
   }
@@ -612,10 +1141,12 @@ class ApiService {
 
     final stopwatch = Stopwatch()..start();
     try {
+      final autoMode = currentAutoMode?.call();
       final payload = <String, dynamic>{
         'key': apiKey,
         'session_id': _sessionId,
         'heartbeat': true,
+        if (autoMode != null) 'auto_mode': autoMode,
       };
 
       if (lat != null && lon != null) {
@@ -626,13 +1157,16 @@ class ApiService {
         };
       }
 
-      final response = await _client
-          .post(
-            Uri.parse(wardriveEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _send(
+        'POST /wardrive-api.php/wardrive (heartbeat)',
+        () => _client
+            .post(
+              Uri.parse(wardriveEndpoint),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30)),
+      );
 
       stopwatch.stop();
 
@@ -641,6 +1175,9 @@ class ApiService {
             '[API] /wardrive-api.php/wardrive (heartbeat) returned HTTP ${response.statusCode}');
         debugError(
             '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+      if (response.statusCode == 429) {
+        _noteWardriveRateLimit(response, 'heartbeat');
       }
 
       Map<String, dynamic> data;
@@ -660,7 +1197,11 @@ class ApiService {
         method: 'POST',
         stopwatch: stopwatch,
         statusCode: response.statusCode,
-        request: {'heartbeat': true, 'has_coords': hasCoords},
+        request: {
+          'heartbeat': true,
+          'has_coords': hasCoords,
+          if (autoMode != null) 'auto_mode': autoMode,
+        },
         response: data,
       );
 
@@ -700,6 +1241,17 @@ class ApiService {
       );
     }
 
+    // Server backoff (see wardriveBackoff): the brake keeps the session
+    // valid, and the check itself is a wardrive post that would re-arm the
+    // penalty. Let the action proceed on the last known verdict.
+    final hold = wardriveBackoff;
+    if (hold != null) {
+      debugWarn(
+          '[SESSION] Server backoff has ${hold.inSeconds}s left, skipping the '
+          'check; session assumed still valid');
+      return (isValid: true, reason: null, message: null);
+    }
+
     debugLog('[SESSION] Checking session validity via heartbeat...');
     final result = await sendHeartbeat(lat: lat, lon: lon);
 
@@ -723,6 +1275,16 @@ class ApiService {
     final message = result['message'] as String?;
     debugWarn('[SESSION] Session invalid: $reason - $message');
 
+    final recovery =
+        reason == 'session_expired' ? await _recoverExpiredSession() : null;
+    if (recovery == SessionRecoveryResult.recovered) {
+      return (isValid: true, reason: null, message: null);
+    }
+    if (recovery == SessionRecoveryResult.superseded) {
+      debugLog('[SESSION] Ignoring stale expired-session preflight');
+      return (isValid: false, reason: reason, message: message);
+    }
+
     // Trigger session error callback for critical errors
     const criticalErrors = {
       'session_expired',
@@ -737,15 +1299,70 @@ class ApiService {
     };
     if (criticalErrors.contains(reason)) {
       _clearSession();
-      onSessionError?.call(reason, message);
+      await onSessionError?.call(reason, message);
     }
 
     // outside_zone: notify listener but preserve session (backend auto-transfers on zone re-entry)
     if (reason == 'outside_zone') {
-      onSessionError?.call(reason, message);
+      await onSessionError?.call(reason, message);
     }
 
     return (isValid: false, reason: reason, message: message);
+  }
+
+  /// Run at most one replacement auth for a server-expired live session.
+  ///
+  /// The provider owns the connection-specific request data and rejects this
+  /// callback while disconnecting, transferring zones, or offline. Keeping
+  /// that policy outside this service lets every wardrive door share one
+  /// recovery without coupling ApiService to BLE state.
+  Future<SessionRecoveryResult> _recoverExpiredSession() {
+    final inFlight = _sessionRecoveryInFlight;
+    if (inFlight != null) return inFlight;
+
+    late final Future<SessionRecoveryResult> recovery;
+    recovery = _recoverExpiredSessionImpl().whenComplete(() {
+      if (identical(_sessionRecoveryInFlight, recovery)) {
+        _sessionRecoveryInFlight = null;
+      }
+    });
+    _sessionRecoveryInFlight = recovery;
+    return recovery;
+  }
+
+  Future<SessionRecoveryResult> _recoverExpiredSessionImpl() async {
+    final recover = onSessionExpiredRecovery;
+    if (recover == null) {
+      debugWarn('[SESSION] Session expired with no live recovery handler');
+      return SessionRecoveryResult.failed;
+    }
+
+    try {
+      debugWarn('[SESSION] Session expired, refreshing live auth');
+      final outcome = await recover();
+      if (outcome == SessionRecoveryResult.superseded) {
+        debugLog('[SESSION] Live session refresh was superseded');
+        return outcome;
+      }
+      if (outcome != SessionRecoveryResult.recovered || _sessionId == null) {
+        debugWarn('[SESSION] Live session refresh did not complete');
+        return SessionRecoveryResult.failed;
+      }
+
+      // A recovery auth replaces expires_at but deliberately does not call
+      // enableHeartbeat(), because that would reset a lane the connection
+      // already owns. It does own the next schedule, so the expired chain
+      // cannot stack a retry behind the replacement session.
+      final expiresAt = _sessionExpiresAt;
+      if (_heartbeatEnabled && expiresAt != null) {
+        scheduleHeartbeat(expiresAt);
+      }
+      debugLog('[SESSION] Live session refresh complete');
+      return SessionRecoveryResult.recovered;
+    } catch (e) {
+      debugError('[SESSION] Live session refresh failed: $e');
+      return SessionRecoveryResult.failed;
+    }
   }
 
   /// Enable heartbeat mode (called when auto mode starts)
@@ -786,33 +1403,111 @@ class ApiService {
 
     if (!_heartbeatEnabled) return;
 
-    // Calculate when to send heartbeat (1 minute before expiry)
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    // Calculate when to send heartbeat (1 minute before expiry). The lane's
+    // clock reads go through clock.now() (DateTime.now() in production) so
+    // the fake-async regression tests see the same timeline the device does.
+    final now = clock.now().millisecondsSinceEpoch ~/ 1000;
     final secondsUntilExpiry = expiresAt - now;
     final secondsUntilHeartbeat =
         secondsUntilExpiry - heartbeatBuffer.inSeconds;
 
-    if (secondsUntilHeartbeat <= 0) {
+    // Pacing floor (see minHeartbeatSpacing): a heartbeat may go out at most
+    // once per floor interval, no matter how expired the expiry reads. This
+    // is what stops a fast device clock from turning every success response
+    // into the trigger for the next send.
+    final lastSent = _lastHeartbeatSentAt;
+    final floorSeconds = lastSent == null
+        ? 0
+        : minHeartbeatSpacing.inSeconds -
+            clock.now().difference(lastSent).inSeconds;
+    // Server backoff (see wardriveBackoff): while the storm brake's
+    // Retry-After runs, the keepalive waits it out like every other sender on
+    // the wardrive door. Rounded up so the send lands after the hold clears.
+    final hold = wardriveBackoff;
+    final holdSeconds = hold == null ? 0 : (hold.inMilliseconds + 999) ~/ 1000;
+    final delaySeconds =
+        max(secondsUntilHeartbeat, max(max(floorSeconds, holdSeconds), 0));
+
+    if (delaySeconds <= 0) {
       // Session is about to expire or already expired - send heartbeat immediately
       debugWarn(
           '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
       _sendScheduledHeartbeat();
+      return;
+    }
+
+    if (holdSeconds > 0 && holdSeconds >= secondsUntilHeartbeat) {
+      debugWarn('[HEARTBEAT] Server asked us to back off, next keepalive in '
+          '${delaySeconds}s (session expires in ${secondsUntilExpiry}s)');
+    } else if (secondsUntilHeartbeat <= 0) {
+      debugWarn(
+          '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s but a heartbeat '
+          'just went out, next in ${delaySeconds}s');
     } else {
       debugLog(
           '[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
-
-      _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
-        debugLog('[HEARTBEAT] Timer fired, sending keepalive');
-        _sendScheduledHeartbeat();
-      });
     }
+    _heartbeatTimer = Timer(Duration(seconds: delaySeconds), () {
+      debugLog('[HEARTBEAT] Timer fired, sending keepalive');
+      _sendScheduledHeartbeat();
+    });
   }
 
   /// Send scheduled heartbeat with GPS coordinates
   Future<void> _sendScheduledHeartbeat() async {
-    // Get GPS coordinates from provider (matching wardrive.js behavior)
-    final coords = _gpsProvider?.call();
-    final result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+    // One send in flight at a time. scheduleHeartbeat() cancels pending
+    // timers but cannot cancel an already-awaiting send, so without this
+    // guard every re-entrant caller (upload success, per-ping session check)
+    // stacked another concurrent send chain that never died. Skipping is
+    // safe: the in-flight send's own response schedules the next heartbeat.
+    if (_heartbeatInFlight) {
+      debugLog('[HEARTBEAT] Send already in flight, skipping duplicate');
+      return;
+    }
+
+    // Server backoff (see wardriveBackoff): a timer armed before the 429
+    // landed must not knock on the closed door, since every blocked hit
+    // re-arms the penalty. Come back once the hold has run.
+    final hold = wardriveBackoff;
+    if (hold != null) {
+      debugWarn(
+          '[HEARTBEAT] Server backoff has ${hold.inSeconds}s left, deferring keepalive');
+      _heartbeatRetryTimer?.cancel();
+      _heartbeatRetryTimer =
+          Timer(hold + const Duration(seconds: 1), _sendScheduledHeartbeat);
+      return;
+    }
+
+    // Circuit breaker (see maxHeartbeatsPerMinute): if the lane somehow still
+    // runs hot, pause it for a minute rather than storm the server.
+    final now = clock.now();
+    final windowStart = _heartbeatWindowStart;
+    if (windowStart == null ||
+        now.difference(windowStart) >= const Duration(minutes: 1)) {
+      _heartbeatWindowStart = now;
+      _heartbeatWindowCount = 0;
+    }
+    if (_heartbeatWindowCount >= maxHeartbeatsPerMinute) {
+      debugError(
+          '[HEARTBEAT] Circuit breaker tripped: $maxHeartbeatsPerMinute sends '
+          'inside a minute, pausing heartbeats for 60s');
+      _heartbeatRetryTimer?.cancel();
+      _heartbeatRetryTimer =
+          Timer(const Duration(seconds: 60), _sendScheduledHeartbeat);
+      return;
+    }
+    _heartbeatWindowCount++;
+    _heartbeatInFlight = true;
+    _lastHeartbeatSentAt = now;
+
+    Map<String, dynamic>? result;
+    try {
+      // Get GPS coordinates from provider (matching wardrive.js behavior)
+      final coords = _gpsProvider?.call();
+      result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+    } finally {
+      _heartbeatInFlight = false;
+    }
 
     if (result?['success'] == true) {
       debugLog('[HEARTBEAT] Heartbeat successful');
@@ -854,12 +1549,33 @@ class ApiService {
         'zone_disabled',
       };
 
+      final recovery =
+          reason == 'session_expired' ? await _recoverExpiredSession() : null;
+      if (recovery == SessionRecoveryResult.recovered) {
+        _heartbeatRetryCount = 0;
+        _heartbeatRetryTimer?.cancel();
+        _heartbeatRetryTimer = null;
+        return;
+      }
+      if (recovery == SessionRecoveryResult.superseded) {
+        debugLog('[HEARTBEAT] Stale expired-session heartbeat ended quietly');
+        return;
+      }
+
       if (criticalErrors.contains(reason)) {
         _clearSession();
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
       } else if (reason == 'outside_zone') {
         // Preserve session — backend auto-transfers on zone re-entry
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
+      } else if (reason == 'rate_limited') {
+        // The storm brake keeps the session valid and names its own wait
+        // (APP_API.md, Appendix C item 9). Going quiet here instead is what
+        // let a braked session lapse while the car was stopped: nothing
+        // restarted the lane, the next post got a 401, and the app minted a
+        // fresh session id, which is exactly what the brake must not cause.
+        final expiresAt = _sessionExpiresAt;
+        if (expiresAt != null) scheduleHeartbeat(expiresAt);
       } else {
         _onSessionExpiring?.call();
       }
@@ -881,23 +1597,85 @@ class ApiService {
     _floodDisabled = false;
     _minModeInterval = 15;
     _apiHopBytes = 1;
+    _enforceSmartPing = false;
+    _apiSmartPingDays = 14;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     _heartbeatRetryCount = 0;
+    _wardriveBlockedUntil = null;
     debugLog('[API] Session cleared');
   }
 
   /// Legacy: Check if we have a slot (compatibility with old code)
   bool get hasSlot => hasSession;
 
+  /// Re-authenticate a still-live companion after the server reports the
+  /// one recoverable session error. The provider owns the auth payload and
+  /// decides whether its connection state still permits recovery.
+  Future<SessionRecoveryResult> Function()? onSessionExpiredRecovery;
+
   /// Callback for session errors (session_expired, bad_session, outside_zone)
   /// Set by AppStateProvider to handle auto-disconnect
-  Future<void> Function(String? reason, String? message)? onSessionError;
+  ///
+  /// [subReason] carries the server's `sub_reason` where it narrows the reason
+  /// enough to change what the app does. Only the upload path passes it today:
+  /// a stationary revoke can only be raised by an upload, never a heartbeat.
+  Future<void> Function(String? reason, String? message, {String? subReason})?
+      onSessionError;
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
+
+  /// Fired when /auth returns a session id different from the one we held.
+  /// Wired to ApiQueueService.dropStaleTaggedItems(). See that method for why.
+  Future<void> Function(String previousSessionId, String newSessionId)?
+      onSessionIdChanged;
+
+  /// The auto mode running right now, as the server's enum (`active`,
+  /// `hybrid`, `passive`, `trace`, `none`). Wired by the provider to
+  /// `wireAutoMode`. Read at the moment of each batch post, heartbeat and
+  /// release so the server can credit the seconds since the previous call to
+  /// the mode that call reported. Null means the field is not sent (older
+  /// behaviour). Never consulted by the offline upload: the server ignores
+  /// mode time on offline sessions by design.
+  ///
+  /// Not sent on a release that names an explicit session id either (the
+  /// offline upload closing its own session).
+  String Function()? currentAutoMode;
+
+  /// The radio preset filter for every region read (`f_freq`, `f_bw`,
+  /// `f_sf`; see `lib/utils/radio_filter.dart`), or null for none. Wired by
+  /// the provider: the live radio while connected, the last-seen config
+  /// while disconnected, so the map keeps painting the right preset between
+  /// sessions. Read at the moment of each request.
+  Map<String, String>? Function()? radioFilterGetter;
+
+  /// The filter as query parameters, empty when there is none.
+  Map<String, String> _radioFilterParams() =>
+      radioFilterGetter?.call() ?? const <String, String>{};
+
+  /// The filter as a `&k=v` suffix for string-built URLs, empty when none.
+  /// Values are digits and dots only, so no encoding is needed.
+  String _radioFilterSuffix() =>
+      _radioFilterParams().entries.map((e) => '&${e.key}=${e.value}').join();
+
+  /// The radio preset filter as it was last logged, so a change is announced
+  /// once rather than repeated on every tile URL. A five hour session fetches
+  /// thousands of tiles and the suffix is identical on all of them until the
+  /// radio's preset changes, which is the only moment worth a line.
+  String? _loggedRadioFilter;
+
+  /// Log the radio preset filter when it differs from the last one logged.
+  /// Called by the tile lanes, whose per-tile lines no longer carry it.
+  void _logRadioFilterIfChanged() {
+    final filter = _radioFilterSuffix();
+    if (filter == _loggedRadioFilter) return;
+    _loggedRadioFilter = filter;
+    debugLog('[API] Radio preset tile filter now '
+        '${filter.isEmpty ? '(none)' : filter}');
+  }
 
   /// Force-rebuild one vector coverage tile on the region server
   /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
@@ -905,8 +1683,14 @@ class ApiService {
   /// fresh tile bytes back so the caller can patch the user's own cells onto
   /// the map without touching the rest of the overlay.
   ///
+  /// z11-13 only warm the server cache. If-None-Match: * lets the server
+  /// finish the fresh render and return its change verdict without a body.
+  /// z14 stays unconditional: its bytes supply the live coverage patch even
+  /// when the server's previous cached copy was already up to date.
+  ///
   /// `changed`: true/false from the X-Tile-Changed header; null on network
-  /// failure, non-2xx, or a server that doesn't implement fresh=1 yet.
+  /// failure, an unexpected status, or an absent header. A requested z11-13
+  /// 304 retains this verdict; it does not mean the render was unchanged.
   /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
   /// is empty; package:http has already gunzipped the response).
   Future<({bool? changed, Uint8List? body})> freshenVectorTile({
@@ -915,21 +1699,34 @@ class ApiService {
     required int x,
     required int y,
     int gsize = 300,
+    int? recentDays,
   }) async {
-    final url = Uri.parse(
-        'https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
-        '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1');
+    final filter = '${_radioFilterSuffix()}'
+        '${recentDays == null ? '' : '&f_days=$recentDays'}';
+    final url =
+        Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
+            '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
+    final verdictOnly = z >= 11 && z <= 13;
     final sw = Stopwatch()..start();
-    debugLog(
-        '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1 (zone ${zone.toLowerCase()})');
+    // No GET line here: the response and failure lines below both name the
+    // tile, the zone and the outcome, so announcing the request first only
+    // repeated z/x/y. The preset filter, the one part they do not carry, is
+    // logged when it changes.
+    _logRadioFilterIfChanged();
     try {
-      final response =
-          await _client.get(url).timeout(const Duration(seconds: 8));
+      final response = await _send(
+        'GET /vector_tile.php?z=$z&x=$x&y=$y (fresh)',
+        () => _client
+            .get(url, headers: verdictOnly ? {'If-None-Match': '*'} : null)
+            .timeout(const Duration(seconds: 8)),
+      );
       final changed = response.headers['x-tile-changed'];
       debugLog(
-          '[API]   Tile $z/$x/$y response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
+          '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
           '${response.bodyBytes.length}B, X-Tile-Changed=${changed ?? 'absent'}');
-      if (response.statusCode != 200 && response.statusCode != 204) {
+      if (response.statusCode != 200 &&
+          response.statusCode != 204 &&
+          !(verdictOnly && response.statusCode == 304)) {
         return (changed: null, body: null);
       }
       final body = response.statusCode == 200 ? response.bodyBytes : null;
@@ -939,8 +1736,65 @@ class ApiService {
       );
     } catch (e) {
       debugWarn(
-          '[API]   Tile $z/$x/$y fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+          '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
       return (changed: null, body: null);
+    }
+  }
+
+  /// Fetch one z13 coverage tile filtered to the cells that have a green
+  /// (bidir / TX heard) or cyan (disc / trace) result inside the last [days]
+  /// days. Smart Pinging decodes it into "recently covered" grid cells
+  /// (`lib/services/recent_coverage_service.dart`). Contract:
+  /// MeshMapper_Server/docs/VECTOR_TILES.md, "Coverage filters".
+  ///
+  /// Returns the uncompressed MVT bytes on 200, an EMPTY list on 204 (the
+  /// server has nothing covered in this tile: a real answer), and null when
+  /// the request could not be answered (network, timeout, non-2xx).
+  Future<Uint8List?> fetchRecentCoverageTile({
+    required String zone,
+    required int x,
+    required int y,
+    required int gsize,
+    required int days,
+  }) async {
+    const z = 13;
+    final filter = _radioFilterParams();
+    final url =
+        Uri.https('${zone.toLowerCase()}.meshmapper.net', '/vector_tile.php', {
+      'z': '$z',
+      'x': '$x',
+      'y': '$y',
+      'gsize': '$gsize',
+      'f_days': '$days',
+      'f_types': 'green,cyan',
+      ...filter,
+    });
+    final sw = Stopwatch()..start();
+    debugLog(
+        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
+    try {
+      final response = await _send(
+        'GET /vector_tile.php?z=$z&x=$x&y=$y (recent coverage)',
+        () => _client.get(url).timeout(const Duration(seconds: 8)),
+      );
+      final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
+      if (response.statusCode == 204) {
+        debugLog(
+            '[COVERAGE]   Recent tile $z/$x/$y: nothing covered (204) in ${secs}s');
+        return Uint8List(0);
+      }
+      if (response.statusCode != 200) {
+        debugWarn(
+            '[COVERAGE]   Recent tile $z/$x/$y HTTP ${response.statusCode} in ${secs}s');
+        return null;
+      }
+      debugLog(
+          '[COVERAGE]   Recent tile $z/$x/$y: ${response.bodyBytes.length}B in ${secs}s');
+      return response.bodyBytes;
+    } catch (e) {
+      debugWarn(
+          '[COVERAGE]   Recent tile $z/$x/$y fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+      return null;
     }
   }
 
@@ -949,6 +1803,15 @@ class ApiService {
   /// Triggers onSessionError callback for session-related errors
   Future<UploadResult> uploadBatch(List<Map<String, dynamic>> pings) async {
     if (pings.isEmpty) return UploadResult.success;
+
+    // Server backoff (see wardriveBackoff): do not knock while the storm
+    // brake's Retry-After runs. Not a verdict on the data, so not a retry.
+    final hold = wardriveBackoff;
+    if (hold != null) {
+      debugLog(
+          '[API] Upload batch held: server backoff has ${hold.inSeconds}s left');
+      return UploadResult.held;
+    }
 
     try {
       final result = await submitWardriveData(pings);
@@ -981,13 +1844,31 @@ class ApiService {
         'zone_full', 'zone_disabled',
       };
 
+      final recovery =
+          reason == 'session_expired' ? await _recoverExpiredSession() : null;
+      if (recovery == SessionRecoveryResult.recovered) {
+        debugLog(
+            '[API] Upload batch held after live session refresh: ${pings.length} items');
+        return UploadResult.held;
+      }
+      if (recovery == SessionRecoveryResult.superseded) {
+        debugLog('[API] Upload batch held by a superseded session request');
+        return UploadResult.held;
+      }
+
       if (criticalErrors.contains(reason)) {
-        debugError('[API] Upload batch session error: $reason');
+        final subReason = result['sub_reason'] as String?;
+        debugError('[API] Upload batch session error: $reason'
+            '${subReason != null ? ' ($subReason)' : ''}');
         final message = result['message'] as String?;
         // Clear session locally since it's invalid on server
         _clearSession();
-        // Notify listener for auto-disconnect
-        onSessionError?.call(reason, message);
+        // Notify listener for auto-disconnect. MUST be awaited: the handler
+        // snapshots the queue to offline storage, and returning nonRetryable
+        // makes the caller DISCARD that same batch. Fired bare, the snapshot's
+        // first real suspension (a non-empty RX buffer flushing to Hive) let
+        // the discard land first, so the preserved pings came back short.
+        await onSessionError?.call(reason, message, subReason: subReason);
         return UploadResult.nonRetryable;
       }
 
@@ -997,7 +1878,7 @@ class ApiService {
         debugWarn(
             '[API] Upload batch outside_zone — discarding batch, preserving session');
         final message = result['message'] as String?;
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
         return UploadResult.nonRetryable;
       }
 
@@ -1016,6 +1897,9 @@ class ApiService {
       }
 
       return UploadResult.retryable;
+    } on _RequestNeverReachedServer catch (e) {
+      debugWarn('[API] Upload batch could not reach the server: ${e.cause}');
+      return UploadResult.unreachable;
     } catch (e) {
       debugError('[API] Upload batch exception: $e');
       return UploadResult.retryable;
@@ -1028,13 +1912,14 @@ class ApiService {
     final stopwatch = Stopwatch()..start();
     const endpoint = '/get_repeaters.php';
     try {
-      final url = 'https://${iata.toLowerCase()}.meshmapper.net$endpoint';
+      final filter = _radioFilterParams();
+      final url = Uri.https('${iata.toLowerCase()}.meshmapper.net', endpoint,
+          filter.isEmpty ? null : filter);
 
-      final response = await _client
-          .get(
-            Uri.parse(url),
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await _send(
+        'GET $endpoint',
+        () => _client.get(url).timeout(const Duration(seconds: 15)),
+      );
 
       stopwatch.stop();
 
@@ -1085,13 +1970,19 @@ class ApiService {
   /// GRID SUMMARY. Posts to the region's app-facing endpoint
   /// (`app_coverage.php` → `api.php` `map_data`); the app aggregates the points
   /// client-side (see `coverage_summary.dart`). Returns `[]` on any failure.
+  ///
+  /// NOTE: unlike [fetchRepeaterCoverage] this still collapses a failed request
+  /// into `[]`. The cell summary has no "couldn't load" state yet
+  /// (MeshMapper_Server#109 covers the repeater sheet only) and its tap flow
+  /// chains straight into `filterWithinBlob`. Give the cell sheet that state
+  /// before propagating the null here.
   Future<List<Map<String, dynamic>>> fetchMapData({
     required String zone,
     required double lat,
     required double lon,
     required double radiusMeters,
-  }) {
-    return _fetchCoveragePoints(
+  }) async {
+    final points = await _fetchCoveragePoints(
       zone: zone,
       label: 'map_data',
       body: {
@@ -1101,13 +1992,17 @@ class ApiService {
         'radius': radiusMeters,
       },
     );
+    return points ?? const <Map<String, dynamic>>[];
   }
 
   /// Fetch the coverage points referencing a repeater (a hex-prefix superset),
   /// for the repeater detail sheet's BIDIR/TX/RX/DISC/DEAD totals + max range.
-  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`. Returns `[]`
-  /// on any failure.
-  Future<List<Map<String, dynamic>>> fetchRepeaterCoverage({
+  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`.
+  ///
+  /// Returns `null` when the request could not be answered, and `[]` when the
+  /// zone genuinely has nothing for this prefix. The sheet renders those
+  /// differently (MeshMapper_Server#109).
+  Future<List<Map<String, dynamic>>?> fetchRepeaterCoverage({
     required String zone,
     required String prefix,
   }) {
@@ -1122,8 +2017,14 @@ class ApiService {
   }
 
   /// Shared POST to `https://<zone>.meshmapper.net/app_coverage.php` with the app
-  /// key in the JSON body. Returns a list of point maps, or `[]` on any failure.
-  Future<List<Map<String, dynamic>>> _fetchCoveragePoints({
+  /// key in the JSON body.
+  ///
+  /// Returns the point maps on success, which may legitimately be an EMPTY list
+  /// meaning the server has no coverage for this query, or `null` when the
+  /// request could not be answered at all. Callers MUST keep those apart:
+  /// collapsing them into `[]` was MeshMapper_Server#109, where a failed fetch
+  /// rendered as a repeater that had heard nothing.
+  Future<List<Map<String, dynamic>>?> _fetchCoveragePoints({
     required String zone,
     required String label,
     required Map<String, dynamic> body,
@@ -1131,15 +2032,21 @@ class ApiService {
     final z = zone.toLowerCase();
     final url = Uri.parse('https://$z.meshmapper.net/app_coverage.php');
     final sw = Stopwatch()..start();
-    debugLog('[COVERAGE] POST /app_coverage.php ($label, zone $z)');
+    final filter = _radioFilterSuffix();
+    debugLog(
+        '[COVERAGE] POST /app_coverage.php ($label, zone $z${filter.isEmpty ? '' : ', filter $filter'})');
     try {
-      final response = await _client
-          .post(
-            url,
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({'key': apiKey, ...body}),
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await _send(
+        'POST /app_coverage.php ($label)',
+        () => _client
+            .post(
+              url,
+              headers: {'Content-Type': 'application/json'},
+              body: json
+                  .encode({'key': apiKey, ...body, ..._radioFilterParams()}),
+            )
+            .timeout(const Duration(seconds: 15)),
+      );
       final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
 
       if (response.statusCode != 200) {
@@ -1150,13 +2057,13 @@ class ApiService {
                 : response.body);
         debugWarn(
             '[COVERAGE]   $label HTTP ${response.statusCode} in ${secs}s: $snippet');
-        return [];
+        return null;
       }
 
       final decoded = json.decode(response.body);
       if (decoded is! List) {
         debugWarn('[COVERAGE]   $label: unexpected response (not a JSON list)');
-        return [];
+        return null;
       }
       final points = decoded
           .whereType<Map>()
@@ -1167,7 +2074,7 @@ class ApiService {
     } catch (e) {
       debugWarn(
           '[COVERAGE]   $label POST failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
-      return [];
+      return null;
     }
   }
 
@@ -1185,13 +2092,16 @@ class ApiService {
         'data': entries,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(wardriveEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _send(
+        'POST /wardrive-api.php/wardrive (offline)',
+        () => _client
+            .post(
+              Uri.parse(wardriveEndpoint),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30)),
+      );
 
       stopwatch.stop();
 

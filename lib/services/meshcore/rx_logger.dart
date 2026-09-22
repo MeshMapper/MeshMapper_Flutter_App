@@ -23,8 +23,9 @@ class RxLogger {
   /// Callback for immediate observation (fires before batching, for real-time UI)
   final void Function(RxObservation)? onObservation;
 
-  /// GPS location provider
-  final ({double lat, double lon})? Function() getGpsLocation;
+  /// GPS location provider. `alt` is meters or null when the phone did not
+  /// know its altitude; it rides along to the API entry, nothing else reads it.
+  final ({double lat, double lon, double? alt})? Function() getGpsLocation;
 
   /// Function to check if a repeater ID should be ignored
   /// Returns true if the repeater should be filtered out
@@ -34,9 +35,19 @@ class RxLogger {
   /// Called with repeater ID and reason when a packet is dropped due to carpeater detection
   final void Function(String repeaterId, String reason)? onCarpeaterDrop;
 
+  /// Callback fired (throttled to once per 30s) when an otherwise-valid RX
+  /// packet is dropped purely because no GPS fix is available. Lets the UI
+  /// explain why detection went quiet instead of looking offline (#340).
+  final void Function()? onNoGpsDrop;
+  DateTime? _lastNoGpsNotify;
+
   /// CARpeater prefix — when set, multi-hop packets with this firstHop are stripped
   /// to report the underlying repeater with null SNR/RSSI
   String? carpeaterPrefix;
+
+  /// Regional CARpeater check (the region's shared list). A delivering hop
+  /// that matches is a plain drop, unlike the user's own, which is stripped.
+  bool Function(String hopHex)? isRegionalCarpeater;
 
   RxLogger({
     required this.onRxEntry,
@@ -44,7 +55,9 @@ class RxLogger {
     required this.getGpsLocation,
     this.shouldIgnoreRepeater,
     this.onCarpeaterDrop,
+    this.onNoGpsDrop,
     this.carpeaterPrefix,
+    this.isRegionalCarpeater,
   });
 
   /// Start passive RX wardriving
@@ -106,10 +119,26 @@ class RxLogger {
         repeaterId = lastHopHex;
       }
 
+      // Regional CARpeaters (the shared list) are a plain drop, on the hop
+      // we are about to credit, after the own-CARpeater strip. Debug log
+      // only, never the error log.
+      if (isRegionalCarpeater != null && isRegionalCarpeater!(repeaterId)) {
+        debugLog('[RX LOG] ❌ DROPPED: $repeaterId is a regional CARpeater');
+        return false;
+      }
+
       // Get current GPS location
       final gpsLocation = getGpsLocation();
       if (gpsLocation == null) {
         debugLog('[RX LOG] No GPS fix available, skipping entry');
+        // Surface the reason at most once per 30s so a missing GPS fix doesn't
+        // look like the app has gone offline despite an active connection (#340).
+        final now = DateTime.now();
+        if (_lastNoGpsNotify == null ||
+            now.difference(_lastNoGpsNotify!) > const Duration(seconds: 30)) {
+          _lastNoGpsNotify = now;
+          onNoGpsDrop?.call();
+        }
         return false;
       }
 
@@ -168,6 +197,7 @@ class RxLogger {
         header: metadata.header,
         lat: gpsLocation.lat,
         lon: gpsLocation.lon,
+        alt: gpsLocation.alt,
         timestamp: DateTime.now(),
         metadata: metadata,
         displayHops: displayHops,
@@ -220,7 +250,7 @@ class RxLogger {
     required int? rssi,
     required int pathLength,
     required int header,
-    required ({double lat, double lon}) currentLocation,
+    required ({double lat, double lon, double? alt}) currentLocation,
     required PacketMetadata metadata,
     required List<String> displayHops,
   }) async {
@@ -240,6 +270,7 @@ class RxLogger {
           header: header,
           lat: currentLocation.lat,
           lon: currentLocation.lon,
+          alt: currentLocation.alt,
           timestamp: DateTime.now(),
           metadata: metadata,
           displayHops: displayHops,
@@ -277,6 +308,7 @@ class RxLogger {
           header: header,
           lat: buffer.firstLocation.lat, // Keep original location
           lon: buffer.firstLocation.lon, // Keep original location
+          alt: buffer.firstLocation.alt, // and its altitude
           timestamp: DateTime.now(),
           metadata: metadata,
           displayHops: displayHops,
@@ -379,6 +411,7 @@ class RxLogger {
       repeaterId: repeaterId,
       lat: best.lat,
       lon: best.lon,
+      alt: best.alt,
       snr: best.snr,
       rssi: best.rssi,
       pathLength: best.pathLength,
@@ -470,7 +503,7 @@ class RxLogger {
 
 /// Batch buffer for a single repeater
 class RxBatch {
-  final ({double lat, double lon}) firstLocation;
+  final ({double lat, double lon, double? alt}) firstLocation;
   RxObservation bestObservation;
   Timer? timeoutTimer;
 
@@ -490,8 +523,12 @@ class RxObservation {
   final int header;
   final double lat;
   final double lon;
+
+  /// Altitude in meters at [lat],[lon], null when unknown.
+  final double? alt;
   final DateTime timestamp;
   final PacketMetadata metadata;
+
   /// Display path hops, origin → ... → us. Already CARpeater-stripped (the
   /// user's own carpeater, when present, has been removed from the tail).
   final List<String> displayHops;
@@ -504,6 +541,7 @@ class RxObservation {
     required this.header,
     required this.lat,
     required this.lon,
+    this.alt,
     required this.timestamp,
     required this.metadata,
     this.displayHops = const [],
@@ -515,12 +553,16 @@ class RxApiEntry {
   final String repeaterId;
   final double lat;
   final double lon;
+
+  /// Altitude in meters at [lat],[lon], null when unknown.
+  final double? alt;
   final double? snr; // Null for CARpeater pass-through
   final int? rssi; // Null for CARpeater pass-through
   final int pathLength;
   final int header;
   final DateTime timestamp;
   final PacketMetadata metadata;
+
   /// Display path hops, origin → ... → us. Already CARpeater-stripped.
   final List<String> displayHops;
 
@@ -528,6 +570,7 @@ class RxApiEntry {
     required this.repeaterId,
     required this.lat,
     required this.lon,
+    this.alt,
     this.snr,
     this.rssi,
     required this.pathLength,

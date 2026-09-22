@@ -50,9 +50,9 @@ class _RepeaterPickerBodyState extends State<_RepeaterPickerBody> {
   }
 
   List<Repeater> _filterAndSort(List<Repeater> repeaters, Position? position) {
+    final q = _query.toLowerCase();
     List<Repeater> filtered;
-    if (_query.isNotEmpty) {
-      final q = _query.toLowerCase();
+    if (q.isNotEmpty) {
       filtered = repeaters
           .where((r) =>
               r.name.toLowerCase().contains(q) ||
@@ -62,8 +62,20 @@ class _RepeaterPickerBodyState extends State<_RepeaterPickerBody> {
       filtered = List.of(repeaters);
     }
 
-    // Sort: active first, then by distance (if GPS), then alphabetically
+    // When searching, a hex-prefix match is almost always the intended result,
+    // so it must rank above a repeater that merely has the query somewhere in
+    // its name. Without this, an active/closer name match sorts to the top and
+    // looks like the search returned the wrong ID (e.g. "6a" surfacing "63"
+    // because that node's name contains "6a") (#382).
+    int hexRank(Repeater r) =>
+        q.isNotEmpty && r.hexId.toLowerCase().startsWith(q) ? 0 : 1;
+
+    // Sort: hex-prefix matches first, then active, then by distance (if GPS),
+    // then alphabetically
     filtered.sort((a, b) {
+      // Hex-prefix matches first (only affects ordering while searching)
+      final byRelevance = hexRank(a).compareTo(hexRank(b));
+      if (byRelevance != 0) return byRelevance;
       // Active first
       if (a.isActive != b.isActive) return a.isActive ? -1 : 1;
       // By distance if GPS available

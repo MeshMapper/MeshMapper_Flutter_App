@@ -36,9 +36,8 @@ class TxTracker {
       onEchoReceived;
 
   /// Callback fired when a multi-hop echo is received (for real-time UI updates)
-  void Function(
-          String repeaterId, double? snr, int? rssi, List<String> pathHops, bool isNew)?
-      onMultiHopEchoReceived;
+  void Function(String repeaterId, double? snr, int? rssi,
+      List<String> pathHops, bool isNew)? onMultiHopEchoReceived;
 
   /// Callback for carpeater drops (for quiet error logging)
   /// Called with repeater ID and reason when an echo is dropped due to carpeater detection
@@ -47,6 +46,10 @@ class TxTracker {
   /// Function to check if a repeater ID should be ignored (user carpeater filter)
   /// Returns true if the repeater should be filtered out
   bool Function(String repeaterId)? shouldIgnoreRepeater;
+
+  /// Regional CARpeater check (the region's shared list). A hop that matches
+  /// is a plain drop, unlike the user's own CARpeater, which is stripped.
+  bool Function(String hopHex)? isRegionalCarpeater;
 
   /// When true, skip RSSI carpeater check (user setting)
   bool disableRssiFilter = false;
@@ -173,11 +176,27 @@ class TxTracker {
       if (isMultiHop) {
         pathHex = metadata.lastHopHex!;
         displayHops = [
-          for (var i = 0; i < metadata.pathHashCount; i++) metadata.getHopHex(i)!,
+          for (var i = 0; i < metadata.pathHashCount; i++)
+            metadata.getHopHex(i)!,
         ];
         debugLog(
             '[TX LOG] Multi-hop echo (pathHashCount=${metadata.pathHashCount}): '
             'reporting repeater=$pathHex, path=${displayHops.join(' → ')}');
+      }
+
+      // Regional CARpeaters (the shared list) are a plain drop, checked on
+      // the repeater about to be credited AFTER the own-CARpeater strip: a
+      // packet can arrive as someone else's CARpeater into ours, and the
+      // strip would otherwise credit the other car. The first hop is checked
+      // too, because a CARpeater that heard our ping says nothing about fixed
+      // coverage. Debug log only: a car followed for ten minutes would flood
+      // the error log.
+      if (isRegionalCarpeater != null &&
+          (isRegionalCarpeater!(pathHex) ||
+              isRegionalCarpeater!(metadata.firstHopHex!))) {
+        debugLog(
+            '[TX LOG] ❌ DROPPED: echo via regional CARpeater (first=${metadata.firstHopHex}, credited=$pathHex)');
+        return TxEchoResult.notEcho;
       }
 
       // VALIDATION STEP 2: Check user carpeater filter
@@ -344,8 +363,7 @@ class TxTracker {
       // Notify appropriate callback
       final best = targetMap[pathHex]!;
       if (isMultiHop) {
-        debugLog(
-            '[TX LOG] Invoking onMultiHopEchoReceived callback');
+        debugLog('[TX LOG] Invoking onMultiHopEchoReceived callback');
         onMultiHopEchoReceived?.call(
             pathHex, best.snr, best.rssi, displayHops, isNewRepeater);
       } else {

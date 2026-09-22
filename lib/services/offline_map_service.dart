@@ -450,8 +450,8 @@ class OfflineMapService extends ChangeNotifier {
       for (final r in rawRegions) {
         try {
           final actual = sizes[r.id];
-          parsed.add(
-              OfflineMapRegion.fromOfflineRegion(r, actualBytes: actual));
+          parsed
+              .add(OfflineMapRegion.fromOfflineRegion(r, actualBytes: actual));
           downloadsSum += actual ?? 0;
         } catch (e) {
           debugWarn('[OFFLINE_MAP] Failed to parse region ${r.id}: $e');
@@ -543,10 +543,10 @@ class OfflineMapService extends ChangeNotifier {
   /// Web Mercator tile-Y index for a given latitude at zoom level `2^z = n`.
   static int _mercatorTileY(double latDeg, int n) {
     final latRad = latDeg * math.pi / 180.0;
-    final y = (1 -
-            math.log(math.tan(latRad) + 1 / math.cos(latRad)) / math.pi) /
-        2 *
-        n;
+    final y =
+        (1 - math.log(math.tan(latRad) + 1 / math.cos(latRad)) / math.pi) /
+            2 *
+            n;
     return y.floor().clamp(0, n - 1);
   }
 
@@ -568,9 +568,7 @@ class OfflineMapService extends ChangeNotifier {
   /// subtracting progress.
   int get _activePendingBytes {
     final progress = _downloadProgress ?? 0;
-    return ((1 - progress) * _activeEstBytes)
-        .clamp(0, _activeEstBytes)
-        .toInt();
+    return ((1 - progress) * _activeEstBytes).clamp(0, _activeEstBytes).toInt();
   }
 
   // ── Download ──

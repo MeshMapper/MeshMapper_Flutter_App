@@ -15,14 +15,15 @@ import '../models/repeater.dart';
 
 /// Matches `hex(?)(snr)[lat,lon]` repeater path tokens. Groups: 1=hex, 2=`?`,
 /// 3=snr, 4=`lat,lon`. Mirrors the web regex used in both functions.
-final RegExp _tokenRe =
-    RegExp(r'([a-f0-9]+)(\?)?(?:\((.*?)\))?(?:\[(.*?)\])?', caseSensitive: false);
+final RegExp _tokenRe = RegExp(r'([a-f0-9]+)(\?)?(?:\((.*?)\))?(?:\[(.*?)\])?',
+    caseSensitive: false);
 final RegExp _hexOnlyRe = RegExp(r'[^a-fA-F0-9]');
 final RegExp _snrParenRe = RegExp(r'\(([\d.-]+)\)');
 final RegExp _coordBracketRe = RegExp(r'\[([\d.-]+),([\d.-]+)\]');
 
 double _haversineMeters(double lat1, double lon1, double lat2, double lon2) {
-  const r = 6371000.0; // same earth radius as Leaflet map.distance + coordsWithin100m
+  const r =
+      6371000.0; // same earth radius as Leaflet map.distance + coordsWithin100m
   final dLat = (lat2 - lat1) * math.pi / 180;
   final dLon = (lon2 - lon1) * math.pi / 180;
   final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
@@ -202,7 +203,8 @@ class _RepInfo {
   final double lon;
   final int status; // enabled: 1 active, 2 ambiguous/excluded
   final bool hidden;
-  const _RepInfo(this.id, this.hexId, this.lat, this.lon, this.status, this.hidden);
+  const _RepInfo(
+      this.id, this.hexId, this.lat, this.lon, this.status, this.hidden);
 }
 
 /// Indexes the loaded repeaters the same three ways the web does: by id
@@ -213,6 +215,8 @@ class RepeaterLookup {
   final Map<String, _RepInfo> _byId = {};
   final Map<String, _RepInfo> _byFullHex = {};
   final Map<String, List<_RepInfo>> _byShortHex = {};
+  final Map<String, List<Repeater>> _identityByFullHex = {};
+  final Map<String, List<Repeater>> _identityByLegacyId = {};
 
   RepeaterLookup._(this.prefixLen);
 
@@ -224,6 +228,14 @@ class RepeaterLookup {
     for (final r in repeaters) {
       // web adds enabled IN (1,2) to the lookup
       if (r.enabled != 1 && r.enabled != 2) continue;
+      final identityHex = _cleanIdentityHex(r.hexId);
+      if (identityHex.isNotEmpty) {
+        (lk._identityByFullHex[identityHex] ??= <Repeater>[]).add(r);
+      }
+      final legacyId = _cleanIdentityHex(r.id);
+      if (legacyId.isNotEmpty) {
+        (lk._identityByLegacyId[legacyId] ??= <Repeater>[]).add(r);
+      }
       if (r.lat.isNaN || r.lon.isNaN) continue;
       // Web parity (index.php:10231 `if (rep.lat && rep.lon && rep.id)`): a 0
       // lat/lon is the "location not published" sentinel — exclude it, or MAX
@@ -236,8 +248,9 @@ class RepeaterLookup {
       final hidden = r.name.startsWith('🚫') || r.name.endsWith('🚫');
       final info = _RepInfo(id, cleanHex, r.lat, r.lon, r.enabled, hidden);
       lk._byId[id] = info;
-      final shortHex =
-          cleanHex.length >= prefixLen ? cleanHex.substring(0, prefixLen) : cleanHex;
+      final shortHex = cleanHex.length >= prefixLen
+          ? cleanHex.substring(0, prefixLen)
+          : cleanHex;
       if (shortHex.length >= 2) {
         (lk._byShortHex[shortHex] ??= <_RepInfo>[]).add(info);
         final firstByte = cleanHex.length >= 2 ? cleanHex.substring(0, 2) : '';
@@ -248,6 +261,29 @@ class RepeaterLookup {
       if (cleanHex.isNotEmpty) lk._byFullHex[cleanHex] = info;
     }
     return lk;
+  }
+
+  /// Resolves a full key, unique key prefix, or unique legacy id without ever
+  /// choosing arbitrarily between colliding repeaters. Identity indexes include
+  /// repeaters whose location is unpublished; coverage indexes remain limited
+  /// to located repeaters so distance calculations keep their existing rules.
+  Repeater? resolveByHex(String value) {
+    final clean = _cleanIdentityHex(value);
+    if (clean.isEmpty) return null;
+
+    final exact = _identityByFullHex[clean] ?? const <Repeater>[];
+    if (exact.length == 1) return exact.first;
+    if (exact.length > 1) return null;
+
+    final prefixMatches = <Repeater>[];
+    _identityByFullHex.forEach((hex, repeaters) {
+      if (hex.startsWith(clean)) prefixMatches.addAll(repeaters);
+    });
+    if (prefixMatches.length == 1) return prefixMatches.first;
+    if (prefixMatches.length > 1) return null;
+
+    final legacy = _identityByLegacyId[clean] ?? const <Repeater>[];
+    return legacy.length == 1 ? legacy.first : null;
   }
 
   /// Port of `narrowCandidates` (`dev/index.php:9709`): greedy narrowing on a
@@ -283,7 +319,8 @@ class RepeaterLookup {
     final full = _byFullHex[rid];
     if (full != null) return <_RepInfo>[full];
     final short = rid.length >= prefixLen ? rid.substring(0, prefixLen) : rid;
-    final cands = _narrowCandidates(_byShortHex[short] ?? const <_RepInfo>[], rid);
+    final cands =
+        _narrowCandidates(_byShortHex[short] ?? const <_RepInfo>[], rid);
     if (cands.isEmpty) {
       final loc = _byId[rid];
       if (loc != null) return <_RepInfo>[loc];
@@ -299,10 +336,19 @@ class RepeaterLookup {
     final full = _byFullHex[rid];
     if (full != null) return full;
     final short = rid.length >= prefixLen ? rid.substring(0, prefixLen) : rid;
-    final cands = _narrowCandidates(_byShortHex[short] ?? const <_RepInfo>[], rid);
+    final cands =
+        _narrowCandidates(_byShortHex[short] ?? const <_RepInfo>[], rid);
     if (cands.length == 1) return cands.first;
     return _byId[rid];
   }
+}
+
+String _cleanIdentityHex(String value) {
+  final clean = value
+      .replaceAll('!', '')
+      .replaceAll(RegExp('0x', caseSensitive: false), '')
+      .toLowerCase();
+  return RegExp(r'^[a-f0-9]+$').hasMatch(clean) ? clean : '';
 }
 
 // --- cell GRID SUMMARY -------------------------------------------------------
@@ -441,8 +487,9 @@ class GridSummary {
 
       // DISC full-id check via public_key.
       if (s == 6 && p['public_key'] is String) {
-        final pkClean =
-            (p['public_key'] as String).replaceAll(_hexOnlyRe, '').toLowerCase();
+        final pkClean = (p['public_key'] as String)
+            .replaceAll(_hexOnlyRe, '')
+            .toLowerCase();
         final targetRep = lookup._byFullHex[pkClean];
         if (targetRep != null) {
           final hrStr = hr is String ? hr : '';
@@ -453,7 +500,7 @@ class GridSummary {
             if (tLat != null &&
                 tLon != null &&
                 _within100m(targetRep.lat, targetRep.lon, tLat, tLon)) {
-              ids.add(targetRep.id);
+              ids.add(targetRep.hexId);
             }
           }
         }
@@ -508,10 +555,8 @@ class RepeaterStats {
 
   int get totalMatched => bidir + tx + rx + disc + dead;
 
-  factory RepeaterStats.fromCoverage(
-          List<Map<String, dynamic>> points,
-          Repeater target,
-          RepeaterLookup lookup,
+  factory RepeaterStats.fromCoverage(List<Map<String, dynamic>> points,
+          Repeater target, RepeaterLookup lookup,
           {bool disableDupLogic = false}) =>
       fromCoverageWithPoints(points, target, lookup,
               disableDupLogic: disableDupLogic)
@@ -522,14 +567,14 @@ class RepeaterStats {
   /// `_matchedPoints`), so callers can draw the repeater's coverage cells +
   /// connection lines. [fromCoverage] delegates here, so there is ONE source of
   /// matching truth.
-  static ({RepeaterStats stats, List<Map<String, dynamic>> matched})
-      fromCoverageWithPoints(
-          List<Map<String, dynamic>> points,
-          Repeater target,
-          RepeaterLookup lookup,
-          {bool disableDupLogic = false}) {
+  static ({
+    RepeaterStats stats,
+    List<Map<String, dynamic>> matched
+  }) fromCoverageWithPoints(
+      List<Map<String, dynamic>> points, Repeater target, RepeaterLookup lookup,
+      {bool disableDupLogic = false}) {
     final matchedPoints = <Map<String, dynamic>>[];
-    final repId = target.id.toLowerCase();
+    final targetHex = target.hexId.replaceAll(_hexOnlyRe, '').toLowerCase();
     final repLat = target.lat;
     final repLon = target.lon;
     int bidir = 0, tx = 0, rx = 0, disc = 0, dead = 0;
@@ -539,7 +584,7 @@ class RepeaterStats {
       if (!disableDupLogic && m.group(2) == '?') return false;
       final rID = m.group(1)!.toLowerCase();
       final candidates = lookup._candidatesFor(rID);
-      if (!candidates.any((c) => c.id == repId)) return false;
+      if (!candidates.any((c) => c.hexId == targetHex)) return false;
       final coords = m.group(4);
       if (coords != null) {
         final c = coords.split(',');
@@ -598,10 +643,11 @@ class RepeaterStats {
       }
 
       if (status == 6 && p['public_key'] is String) {
-        final pk =
-            (p['public_key'] as String).replaceAll(_hexOnlyRe, '').toLowerCase();
+        final pk = (p['public_key'] as String)
+            .replaceAll(_hexOnlyRe, '')
+            .toLowerCase();
         final tr = lookup._byFullHex[pk];
-        if (tr != null && tr.id == repId) {
+        if (tr != null && tr.hexId == targetHex) {
           final hrStr = hr is String ? hr : '';
           final cm = _coordBracketRe.firstMatch(hrStr);
           if (cm != null) {
@@ -750,7 +796,8 @@ final RegExp _hexRunRe = RegExp(r'[a-f0-9]+', caseSensitive: false);
 /// and hidden candidates, skip VIA tokens already heard, honour the DISC
 /// public_key pre-branch and the DISC/TRACE coord requirement. The
 /// ambiguous-`?`-no-candidate fallback is omitted because it only ever yields
-/// duplicate-marked endpoints (which the intercept skips).
+/// duplicate-marked endpoints (which the intercept skips). [repeaterId] is the
+/// full cleaned repeater key so downstream selection never aliases a short id.
 List<HeardEndpoint> heardEndpointsForCell(
     List<Map<String, dynamic>> blobPoints, RepeaterLookup lookup,
     {required double startLat, required double startLon}) {
@@ -759,7 +806,8 @@ List<HeardEndpoint> heardEndpointsForCell(
   void addEndpoint(_RepInfo rep, double? snr) {
     if (rep.hidden) return;
     // Self-line guard (web drawLine skips start==end within 1e-6).
-    if ((startLat - rep.lat).abs() < 1e-6 && (startLon - rep.lon).abs() < 1e-6) {
+    if ((startLat - rep.lat).abs() < 1e-6 &&
+        (startLon - rep.lon).abs() < 1e-6) {
       return;
     }
     final key = '${rep.lat.toStringAsFixed(6)},${rep.lon.toStringAsFixed(6)}';
@@ -768,7 +816,7 @@ List<HeardEndpoint> heardEndpointsForCell(
       lat: rep.lat,
       lon: rep.lon,
       snr: snr,
-      repeaterId: rep.id,
+      repeaterId: rep.hexId,
       distanceMeters: _haversineMeters(startLat, startLon, rep.lat, rep.lon),
     );
   }
@@ -878,7 +926,8 @@ List<HeardEndpoint> heardEndpointsForCell(
                   .toList();
         }
       } else {
-        candidates = const <_RepInfo>[]; // no coords -> drop (default dup logic)
+        candidates =
+            const <_RepInfo>[]; // no coords -> drop (default dup logic)
       }
       if ((dbm == null || dbm.isEmpty) && (status == 6 || status == 7)) {
         dbm = (_toDouble(p['remote_snr']) ?? _toDouble(p['local_snr']))

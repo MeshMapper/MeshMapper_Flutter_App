@@ -246,6 +246,7 @@ class InteractiveNoiseFloorChartState
       PingEventType.discFail => 'Discovery Failed',
       PingEventType.traceSuccess => 'Trace Success',
       PingEventType.traceFail => 'Trace Failed',
+      PingEventType.deferred => 'Deferred',
     };
 
     final eventDescription = switch (marker.type) {
@@ -258,6 +259,8 @@ class InteractiveNoiseFloorChartState
       PingEventType.discFail => 'Discovery got no response',
       PingEventType.traceSuccess => 'Trace got response from target',
       PingEventType.traceFail => 'Trace got no response from target',
+      PingEventType.deferred =>
+        'Ping held because this square already has recent coverage',
     };
 
     final hasLocation = marker.latitude != null && marker.longitude != null;
@@ -463,8 +466,7 @@ class InteractiveNoiseFloorChartState
   /// Build direct and multi-hop repeater sections for the marker detail sheet
   List<Widget> _buildMarkerRepeaterSections(
       BuildContext context, List<MarkerRepeaterInfo> repeaters) {
-    final directRepeaters =
-        repeaters.where((r) => r.pathHops == null).toList();
+    final directRepeaters = repeaters.where((r) => r.pathHops == null).toList();
     final multiHopRepeaters =
         repeaters.where((r) => r.pathHops != null).toList();
 
@@ -979,11 +981,13 @@ class InteractiveNoiseFloorChartState
         _legendItem(context, PingColors.discSuccess, 'DISC Success'),
         _legendItem(context, PingColors.traceSuccess, 'Trace Success'),
         _legendItem(context, PingColors.noResponse, 'No Response'),
+        _legendItem(context, PingColors.deferred, 'Deferred', outlined: true),
       ],
     );
   }
 
-  Widget _legendItem(BuildContext context, Color color, String label) {
+  Widget _legendItem(BuildContext context, Color color, String label,
+      {bool outlined = false}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -991,9 +995,11 @@ class InteractiveNoiseFloorChartState
           width: 10,
           height: 10,
           decoration: BoxDecoration(
-            color: color,
+            color: outlined ? Colors.transparent : color,
             shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 1),
+            border: Border.all(
+                color: outlined ? color : Colors.white,
+                width: outlined ? 2 : 1),
           ),
         ),
         const SizedBox(width: 4),
@@ -1073,9 +1079,11 @@ class _MarkerPainter extends CustomPainter {
       final x = leftPadding + (xRatio * chartWidth);
       final y = topPadding + chartHeight - (yRatio * chartHeight);
 
+      final deferred = marker.type == PingEventType.deferred;
       final paint = Paint()
         ..color = marker.color
-        ..style = PaintingStyle.fill;
+        ..style = deferred ? PaintingStyle.stroke : PaintingStyle.fill
+        ..strokeWidth = 2.5;
 
       canvas.drawCircle(Offset(x, y), 6, paint);
 
@@ -1084,7 +1092,7 @@ class _MarkerPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5;
 
-      canvas.drawCircle(Offset(x, y), 6, borderPaint);
+      if (!deferred) canvas.drawCircle(Offset(x, y), 6, borderPaint);
     }
   }
 

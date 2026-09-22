@@ -80,6 +80,9 @@ class GlobalMethodHandler implements MethodChannel.MethodCallHandler {
       case "mergeOfflineRegions":
         OfflineManagerUtils.mergeRegions(result, context, methodCall.argument("path"));
         break;
+      case "getOfflineDatabasePath":
+        result.success(new File(context.getFilesDir(), DATABASE_NAME).getAbsolutePath());
+        break;
       case "setOfflineTileCountLimit":
         OfflineManagerUtils.setOfflineTileCountLimit(
             result, context, methodCall.<Number>argument("limit").longValue());
@@ -124,6 +127,40 @@ class GlobalMethodHandler implements MethodChannel.MethodCallHandler {
       case "deleteOfflineRegion":
         OfflineManagerUtils.deleteRegion(
             result, context, methodCall.<Number>argument("id").longValue());
+        break;
+      case "clearAmbientCache":
+        OfflineManagerUtils.clearAmbientCache(result, context);
+        break;
+      case "resetOfflineDatabase":
+        OfflineManagerUtils.resetOfflineDatabase(result, context);
+        break;
+      case "pauseOfflineRegionDownload":
+        OfflineManagerUtils.pauseRegion(
+            result, context, methodCall.<Number>argument("id").longValue());
+        break;
+      case "resumeOfflineRegionDownload":
+        OfflineManagerUtils.resumeRegion(
+            result, context, methodCall.<Number>argument("id").longValue());
+        break;
+      case "getOfflineRegionStatus":
+        OfflineManagerUtils.getRegionStatus(
+            result, context, methodCall.<Number>argument("id").longValue());
+        break;
+      case "setOfflineMaxConcurrentRequests":
+        {
+          Number maxRequestsNum = methodCall.argument("maxRequests");
+          Number maxRequestsPerHostNum = methodCall.argument("maxRequestsPerHost");
+          Integer maxRequests = maxRequestsNum != null ? maxRequestsNum.intValue() : null;
+          Integer maxRequestsPerHost =
+              maxRequestsPerHostNum != null ? maxRequestsPerHostNum.intValue() : null;
+          MapLibreHttpRequestUtil.setMaxConcurrentRequests(maxRequests, maxRequestsPerHost, result);
+          break;
+        }
+      case "preWarm":
+        // MapLibreUtils.getMapLibre(context) at line 67 already triggers
+        // MapLibre.getInstance(context) on every method call. This case
+        // exists as an explicit, documented entry point for pre-warming.
+        result.success(null);
         break;
       default:
         result.notImplemented();

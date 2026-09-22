@@ -20,6 +20,48 @@ void main() {
   final target = _rep('ab12', 'ab12cd34', 45.0, -75.0);
   final lookup = RepeaterLookup.fromRepeaters([target], hopBytes: 2);
 
+  group('RepeaterLookup.resolveByHex', () {
+    final durham = _rep(
+      'DF85',
+      'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+      36.000378,
+      -78.912449,
+      name: 'df85353ab65d',
+    );
+    final georgia = _rep(
+      'DF85',
+      'DF85F67DCAC04FB8D567C77853DE6DF0DF72C2CE4575C94D03FB990A48A5E702',
+      34.52335,
+      -84.03748,
+      name: 'Dahlonega Solar RAK 1W',
+    );
+    final colliding =
+        RepeaterLookup.fromRepeaters([durham, georgia], hopBytes: 2);
+
+    test('full keys resolve each real DF85 repeater independently', () {
+      expect(colliding.resolveByHex(durham.hexId), same(durham));
+      expect(
+          colliding.resolveByHex(georgia.hexId.toLowerCase()), same(georgia));
+    });
+
+    test('an ambiguous prefix or legacy id is rejected', () {
+      expect(colliding.resolveByHex('DF85'), isNull);
+    });
+
+    test('a unique longer prefix resolves its repeater', () {
+      expect(colliding.resolveByHex('df8535'), same(durham));
+      expect(colliding.resolveByHex('DF85F6'), same(georgia));
+    });
+
+    test('a repeater without a published location remains resolvable', () {
+      final noLocation = _rep('A102', 'A102${'CD' * 30}', 0, 0);
+      final lk = RepeaterLookup.fromRepeaters([noLocation], hopBytes: 2);
+
+      expect(lk.resolveByHex(noLocation.hexId), same(noLocation));
+      expect(lk.resolveByHex('A102'), same(noLocation));
+    });
+  });
+
   group('GridSummary.fromPoints', () {
     final points = <Map<String, dynamic>>[
       // BIDIR, snr 10, noise -100, 0.02° west of the repeater (~1573 m).
@@ -191,6 +233,34 @@ void main() {
       {'status': 0, 'lat': 45.0, 'lon': -75.0},
     ];
 
+    test('a colliding colocated repeater full token does not match target', () {
+      final durham = _rep(
+        'DF85',
+        'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+        36.000378,
+        -78.912449,
+      );
+      final sibling = _rep(
+        'DF85',
+        'DF85F67DCAC04FB8D567C77853DE6DF0DF72C2CE4575C94D03FB990A48A5E702',
+        36.000378,
+        -78.912449,
+      );
+      final lk = RepeaterLookup.fromRepeaters([durham, sibling], hopBytes: 2);
+      final siblingPoint = <String, dynamic>{
+        'status': 1,
+        'lat': 36.001,
+        'lon': -78.912449,
+        'heard_repeats': '${sibling.hexId}(7)[36.000378,-78.912449]',
+      };
+
+      final result =
+          RepeaterStats.fromCoverageWithPoints([siblingPoint], durham, lk);
+
+      expect(result.stats.totalMatched, 0);
+      expect(result.matched, isEmpty);
+    });
+
     final stats = RepeaterStats.fromCoverage(points, target, lookup);
 
     test('per-status counts attributed to the target', () {
@@ -210,7 +280,12 @@ void main() {
     test('no matches yields zeros + null range', () {
       final none = RepeaterStats.fromCoverage(
         const [
-          {'status': 1, 'lat': 40.0, 'lon': -70.0, 'heard_repeats': 'ff99(9)[40,-70]'},
+          {
+            'status': 1,
+            'lat': 40.0,
+            'lon': -70.0,
+            'heard_repeats': 'ff99(9)[40,-70]'
+          },
         ],
         target,
         lookup,
@@ -224,7 +299,8 @@ void main() {
     // 100 m Detailed grid steps (kCoverageGridSteps[100]).
     const latStep = 0.0009, lonStep = 0.00128;
 
-    test('taps anywhere in a cell resolve to the same cell; centre is inside', () {
+    test('taps anywhere in a cell resolve to the same cell; centre is inside',
+        () {
       final cell = GridCell.containing(45.26970, -75.77795, latStep, lonStep);
       final a =
           GridCell.containing(cell.centerLat, cell.centerLon, latStep, lonStep);
@@ -241,7 +317,10 @@ void main() {
       final cell = GridCell.containing(45.0, -75.0, latStep, lonStep);
       final pts = <Map<String, dynamic>>[
         {'lat': cell.centerLat, 'lon': cell.centerLon}, // in cell (num)
-        {'lat': '${cell.centerLat}', 'lon': '${cell.centerLon}'}, // in cell (string)
+        {
+          'lat': '${cell.centerLat}',
+          'lon': '${cell.centerLon}'
+        }, // in cell (string)
         {
           'lat': (cell.i + 3) * latStep + latStep * 0.5,
           'lon': cell.centerLon
@@ -288,7 +367,8 @@ void main() {
       expect(cell.filterWithinBlob(pts, 0).length, 1);
     });
 
-    test('blob fetch radius reaches the ±blob block corner, floored at gridSize',
+    test(
+        'blob fetch radius reaches the ±blob block corner, floored at gridSize',
         () {
       // Detailed: blob=1, 100 m floor → must exceed 100 m and reach the block's
       // far corner (~212 m here) so blob-neighbour pings get fetched.
@@ -414,7 +494,32 @@ void main() {
     });
 
     test('picks the highest-priority (lowest st) across a mix', () {
-      expect(dominantCoverageStatus([p(2), p(6), p(3)]), 2); // orange/cyan/grey -> cyan
+      expect(dominantCoverageStatus([p(2), p(6), p(3)]),
+          2); // orange/cyan/grey -> cyan
     });
+  });
+
+  test('heard endpoints carry the full repeater identity', () {
+    final rep = _rep(
+        'DF85',
+        'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+        36.0,
+        -78.9);
+    final lk = RepeaterLookup.fromRepeaters([rep], hopBytes: 2);
+
+    final endpoints = heardEndpointsForCell(
+      [
+        {
+          'status': 1,
+          'heard_repeats': '${rep.hexId}(6)[36.0,-78.9]',
+        }
+      ],
+      lk,
+      startLat: 35.9,
+      startLon: -78.9,
+    );
+
+    expect(endpoints, hasLength(1));
+    expect(endpoints.single.repeaterId, rep.hexId.toLowerCase());
   });
 }

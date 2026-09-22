@@ -78,8 +78,13 @@ abstract class BluetoothService implements CompanionTransport {
   /// Stop scanning for devices
   Future<void> stopScan();
 
-  /// Connect to a device by ID
-  Future<void> connect(String deviceId);
+  /// Connect to a device by ID.
+  ///
+  /// [maxAttempts] caps the implementation's internal retry loop. The
+  /// auto-reconnect path passes 1: its own retry ladder and 30s budget
+  /// replace the internal retries, which would otherwise consume the whole
+  /// budget inside one call.
+  Future<void> connect(String deviceId, {int? maxAttempts});
 
   /// Disconnect from current device
   @override

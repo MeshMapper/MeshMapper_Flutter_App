@@ -1,18 +1,20 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
 import '../models/api_queue_item.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
 import 'custom_api_service.dart';
+import 'network_state_service.dart';
 
 /// API queue service with batch upload and retry logic
 /// Ported from apiQueue and batchUpload() in wardrive.js
 ///
 /// Features:
 /// - Queue pings locally with Hive persistence
-/// - Batch upload every 50 entries OR 30 seconds
+/// - Upload batches contain up to 50 entries and use network-aware timers
 /// - RX buffering: group by repeater ID (max 4 per batch)
 /// - Retry with exponential backoff for failed uploads
 /// - Offline mode: accumulates pings without uploading
@@ -20,13 +22,22 @@ class ApiQueueService {
   static const String _boxName = 'api_queue';
   static const int _batchSize = 50;
   static const Duration _batchTimeout = Duration(seconds: 15);
+  // Wider cadence while on a constrained (e.g. satellite) link: fewer, larger
+  // batches beat frequent small ones when every round trip carries high
+  // per-request latency.
+  static const Duration _batchTimeoutConstrained = Duration(seconds: 60);
+  static const Duration _pingFlushTimeout = Duration(seconds: 5);
+  static const Duration _pingFlushTimeoutConstrained = Duration(seconds: 60);
   static const int _maxRetries = 5;
   static const int _maxRxPerRepeater = 4;
 
   final ApiService _apiService;
+  final NetworkStateSource _networkState;
   Box<ApiQueueItem>? _box;
   Timer? _batchTimer;
   Timer? _pingFlushTimer;
+  StreamSubscription<NetworkState>? _networkStateSubscription;
+  late bool _lastIsConstrained;
   bool _isUploading = false;
   bool _isRecovering = false;
 
@@ -36,6 +47,15 @@ class ApiQueueService {
   // Offline mode
   bool offlineMode = false;
   final List<Map<String, dynamic>> _offlinePings = [];
+
+  /// Airborne block for Offline Mode. While set, accepted fixes are NOT
+  /// appended to the offline recording: an offline upload is the one path
+  /// that could carry in-flight rows to the server after the forced app
+  /// upgrade (the online queue is dropped by the session end), and the server
+  /// owner chose the app as the only control on it. Driven by the provider on
+  /// every latch flip; logged once on pause and once on resume, never per row.
+  bool _offlineRecordingPaused = false;
+  int _offlineRowsDroppedWhilePaused = 0;
 
   // RX buffer for grouping by repeater
   final Map<String, List<ApiQueueItem>> _rxBuffer = {};
@@ -58,10 +78,59 @@ class ApiQueueService {
   /// Custom API service for forwarding pings to third-party endpoint
   CustomApiService? customApiService;
 
+  /// The auto mode running right now, as the server's enum, or null when
+  /// nothing is wired. Read by every enqueue when it builds its item, so one
+  /// wire covers every producer (PingService, RxLogger) with the callers
+  /// untouched. An item is stamped when its enqueue is called. For RX that is
+  /// when RxLogger hands the row over (up to 30 s or 25 m after the packet was
+  /// heard), not when the queue's own buffer flushes.
+  String Function()? autoModeGetter;
+
+  /// The live radio's configuration tag (`freqMHz,bwKHz,SF,CR`) or null,
+  /// read at every enqueue the same way [autoModeGetter] is. Live only: the
+  /// stamp says what the radio was running when the item was recorded, so
+  /// the provider wires the connection's SelfInfo here, never a remembered
+  /// value.
+  String? Function()? radioConfigGetter;
+
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
 
-  ApiQueueService({required ApiService apiService}) : _apiService = apiService;
+  /// Whether the airborne pause is holding the offline recording.
+  bool get isOfflineRecordingPaused => _offlineRecordingPaused;
+
+  /// Pause or resume the offline recording (see [_offlineRecordingPaused]).
+  void setOfflineRecordingPaused(bool paused) {
+    if (paused == _offlineRecordingPaused) return;
+    _offlineRecordingPaused = paused;
+    if (paused) {
+      _offlineRowsDroppedWhilePaused = 0;
+      if (offlineMode) {
+        debugWarn(
+            '[OFFLINE] Recording paused: airborne (no rows until the latch clears)');
+      }
+    } else if (offlineMode) {
+      debugLog(
+          '[OFFLINE] Recording resumed ($_offlineRowsDroppedWhilePaused rows dropped while airborne)');
+    }
+  }
+
+  /// True when the airborne pause swallowed this offline row.
+  bool _dropOfflineRowIfPaused() {
+    if (!_offlineRecordingPaused) return false;
+    _offlineRowsDroppedWhilePaused++;
+    return true;
+  }
+
+  ApiQueueService({
+    required ApiService apiService,
+    NetworkStateSource? networkState,
+  })  : _apiService = apiService,
+        _networkState = networkState ?? NetworkStateService.instance {
+    _lastIsConstrained = _networkState.current.isConstrained;
+    _networkStateSubscription =
+        _networkState.stream.listen(_handleNetworkState);
+  }
 
   /// Initialize the queue (must be called before use)
   Future<void> init() async {
@@ -97,6 +166,7 @@ class ApiQueueService {
     // Start batch timer
     debugLog('[API QUEUE] Starting batch timer...');
     _startBatchTimer();
+
     debugLog('[API QUEUE] init() complete');
   }
 
@@ -242,6 +312,7 @@ class ApiQueueService {
     double? power,
     int? pingCounter,
     String? wireTag,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
@@ -253,10 +324,14 @@ class ApiQueueService {
       power: power,
       pingCounter: pingCounter,
       wireTag: wireTag,
+      altitude: altitude,
+      autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] TX enqueued (offline): $heardRepeats');
       return;
@@ -272,12 +347,7 @@ class ApiQueueService {
           '[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Enqueue an RX observation
@@ -291,6 +361,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromRx(
       latitude: latitude,
@@ -300,10 +371,14 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       return;
     }
@@ -336,6 +411,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromDisc(
       latitude: latitude,
@@ -350,10 +426,14 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] DISC enqueued (offline): $repeaterId');
       return;
@@ -369,12 +449,7 @@ class ApiQueueService {
           '[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Enqueue a TRACE ping result (targeted zero-hop trace)
@@ -389,6 +464,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromTrace(
       latitude: latitude,
@@ -401,10 +477,14 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] TRACE enqueued (offline): $repeaterId');
       return;
@@ -420,12 +500,7 @@ class ApiQueueService {
           '[API QUEUE] TRACE enqueued: $repeaterId at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Enqueue a failed DISC discovery (no nodes responded)
@@ -436,6 +511,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromDiscDrop(
       latitude: latitude,
@@ -444,10 +520,14 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] DISC drop enqueued (offline)');
       return;
@@ -463,12 +543,47 @@ class ApiQueueService {
           '[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
+  }
+
+  /// Report a square where smart pinging held a ping. [held] is `tx` or
+  /// `disc`. The server verifies the square against its own coverage and
+  /// credits it once per session; a dropped one is silent. Modelled on
+  /// enqueueDiscDrop: offline rows honour the airborne pause, a closed box
+  /// falls back to memory, and the network-aware flush timer sends it on.
+  Future<void> enqueueDefer({
+    required double latitude,
+    required double longitude,
+    required int timestamp,
+    required String held,
+  }) async {
+    final item = ApiQueueItem.fromDefer(
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: timestamp,
+      held: held,
+      radioFreq: radioConfigGetter?.call(),
+    );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
+      _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] DEFER ($held) enqueued (offline)');
+      return;
+    }
+
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog(
+          '[API QUEUE] DEFER ($held) enqueued (memory fallback) at $latitude, $longitude (queue size: $queueSize)');
+    } else {
+      debugLog(
+          '[API QUEUE] DEFER ($held) enqueued at $latitude, $longitude (queue size: $queueSize)');
+    }
+    onQueueUpdated?.call(queueSize);
+    _schedulePingFlush();
   }
 
   // Guard to prevent concurrent RX buffer flushes
@@ -516,12 +631,44 @@ class ApiQueueService {
     }
   }
 
-  void _startBatchTimer() {
-    _batchTimer?.cancel();
-    _batchTimer = Timer.periodic(_batchTimeout, (_) {
-      debugLog('[API QUEUE] Batch timer fired (15s interval)');
+  void _handleNetworkState(NetworkState state) {
+    if (state.isConstrained == _lastIsConstrained) return;
+
+    _lastIsConstrained = state.isConstrained;
+    debugLog('[API QUEUE] Network pacing changed: '
+        '${state.isConstrained ? 'constrained' : 'ordinary'}');
+
+    if (_batchTimer != null) _startBatchTimer();
+    if (_pingFlushTimer?.isActive ?? false) _schedulePingFlush();
+  }
+
+  void _schedulePingFlush() {
+    final timeout =
+        _lastIsConstrained ? _pingFlushTimeoutConstrained : _pingFlushTimeout;
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(timeout, () {
+      debugLog('[API QUEUE] Ping flush timer fired '
+          '(${timeout.inSeconds}s delay'
+          '${_lastIsConstrained ? ', constrained network' : ''}), '
+          '$queueSize queued');
       _flushRxBuffer();
-      _uploadBatch();
+      _uploadBatch(silentWhenEmpty: true);
+    });
+  }
+
+  void _startBatchTimer() {
+    final constrained = _lastIsConstrained;
+    final timeout = constrained ? _batchTimeoutConstrained : _batchTimeout;
+    _batchTimer?.cancel();
+    _batchTimer = Timer.periodic(timeout, (_) {
+      // The tick carries the queue depth, so an idle lane is one line instead
+      // of this plus an "Upload skipped: queue empty" underneath it. The tick
+      // itself stays: its cadence is what shows the lane going quiet.
+      debugLog('[API QUEUE] Batch timer fired (${timeout.inSeconds}s interval'
+          '${constrained ? ', constrained network' : ''}), '
+          '$queueSize queued');
+      _flushRxBuffer();
+      _uploadBatch(silentWhenEmpty: true);
     });
   }
 
@@ -532,7 +679,12 @@ class ApiQueueService {
   }
 
   /// Upload batch of queued items (from Hive box or in-memory fallback)
-  Future<void> _uploadBatch() async {
+  ///
+  /// [silentWhenEmpty] suppresses the empty-queue line for callers that
+  /// already report the depth themselves (the periodic timers). Every other
+  /// caller keeps it: on the disconnect flush, "queue empty" is the line that
+  /// distinguishes a drained queue from an upload that never ran.
+  Future<void> _uploadBatch({bool silentWhenEmpty = false}) async {
     if (_isUploading) {
       debugLog('[API QUEUE] Upload skipped: already uploading');
       return;
@@ -542,7 +694,9 @@ class ApiQueueService {
     final memoryEmpty = _memoryQueue.isEmpty;
 
     if (hiveEmpty && memoryEmpty) {
-      debugLog('[API QUEUE] Upload skipped: queue empty');
+      if (!silentWhenEmpty) {
+        debugLog('[API QUEUE] Upload skipped: queue empty');
+      }
       return;
     }
 
@@ -614,6 +768,9 @@ class ApiQueueService {
           _memoryQueue.remove(item);
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
+        // The network is demonstrably back, so give anything the ladder has
+        // already written off one more chance.
+        _reviveFailedItems();
         onUploadSuccess?.call(uploadedCount, items);
         // Fire-and-forget: forward to custom API endpoint
         customApiService?.forwardPings(pings);
@@ -629,6 +786,19 @@ class ApiQueueService {
         }
         debugWarn(
             '[API QUEUE] Discarded ${items.length} items (non-retryable error)');
+      } else if (result == UploadResult.unreachable) {
+        // We never got an answer, so this says nothing about the data. Leave
+        // retryCount and lastRetryAt alone: spending a retry here meant ~75s
+        // out of coverage wrote every queued ping off for good (#437). The
+        // flush cadence is the pacing; there is nothing to back off from.
+        debugLog(
+            '[API QUEUE] Upload deferred: ${items.length} items held, no route to server');
+      } else if (result == UploadResult.held) {
+        // The server's storm brake is running for this session and named its
+        // own wait; the batch never left. Same rule as unreachable: no retry
+        // spent, the timer comes back once the hold has run.
+        debugLog(
+            '[API QUEUE] Upload held: ${items.length} items wait out the server backoff');
       } else {
         // Mark items as retried
         for (final item in hiveItems) {
@@ -716,6 +886,42 @@ class ApiQueueService {
     }
   }
 
+  /// Put items the retry ladder has written off back in the running.
+  ///
+  /// Called after a successful upload, which is the only proof we have that the
+  /// server is reachable and answering. Without it [_maxRetries] is a one-way
+  /// door: nothing resets the counter, so a written-off ping sat in Hive
+  /// forever, never uploaded and never surfaced (#437).
+  ///
+  /// Only items past the ladder are touched. Anything still climbing it is
+  /// mid-backoff for a reason the server gave us, and is left alone.
+  void _reviveFailedItems() {
+    final stranded = failedItems;
+    if (stranded.isEmpty) return;
+
+    for (final item in stranded) {
+      item.retryCount = 0;
+      item.lastRetryAt = null;
+      if (item.isInBox) {
+        try {
+          item.save();
+        } catch (_) {}
+      }
+    }
+    debugLog('[API QUEUE] Revived ${stranded.length} items the retry ladder '
+        'had written off');
+  }
+
+  /// Every item currently held, Hive and memory alike.
+  ///
+  /// Exists so tests can set an item's retry state directly instead of spending
+  /// 31 seconds of real time climbing the backoff ladder to reach it.
+  @visibleForTesting
+  List<ApiQueueItem> get heldItems => [
+        ..._safeRead((box) => box.values.toList(), <ApiQueueItem>[]),
+        ..._memoryQueue,
+      ];
+
   /// Get failed items (exceeded max retries)
   List<ApiQueueItem> get failedItems {
     final hiveItems = _safeRead(
@@ -747,8 +953,65 @@ class ApiQueueService {
     _offlinePings.clear();
   }
 
+  /// Drop every queued item whose wire tag can no longer be validated.
+  ///
+  /// A wire tag only re-derives under the session that minted it: the server
+  /// recomputes it from the session_id the batch is POSTed under and skips the
+  /// entry entirely on a mismatch, while still returning success, so the app
+  /// prunes the item as uploaded and the TX ping is lost with no error
+  /// anywhere (`wardrive-api.php`, action=wire_tag_mismatch).
+  ///
+  /// Call this whenever the session id changes underneath a preserved queue.
+  /// Every item queued at that moment was necessarily minted under the old
+  /// session (anything minted under the new one is enqueued afterwards), so
+  /// dropping all tagged items is exact and needs no per-item bookkeeping.
+  ///
+  /// Auto-reconnect is the path that matters: it deliberately preserves the
+  /// queue, and /auth only reuses a session while it is status=1 and
+  /// unexpired. Otherwise a fresh session_id comes back and everything
+  /// already queued is stale.
+  ///
+  /// Dropping rather than un-tagging is deliberate. Re-minting under the new
+  /// session would claim a tag that never went out on the air. Stripping the
+  /// tag sends the ping down the server coords path, where hours (or just a
+  /// reconnect) later there is no status-4 WAIT row to join, so it inserts as
+  /// DEAD(3) and renders a GREY "dead" cell for a ping that was actually
+  /// heard. At roughly 0.2% of TX pings, an honest drop beats a misleading
+  /// map.
+  Future<void> dropStaleTaggedItems() async {
+    final staleHive = _safeRead(
+      (box) => box.values.where((i) => i.hasWireTag).toList(),
+      <ApiQueueItem>[],
+    );
+    for (final item in staleHive) {
+      try {
+        await item.delete();
+      } catch (e) {
+        debugError('[API QUEUE] Failed to drop stale tagged item: $e');
+      }
+    }
+
+    final beforeMemory = _memoryQueue.length;
+    _memoryQueue.removeWhere((i) => i.hasWireTag);
+    final dropped = staleHive.length + (beforeMemory - _memoryQueue.length);
+
+    if (dropped > 0) {
+      debugWarn(
+          '[API QUEUE] Session changed: dropped $dropped queued TX ping(s) whose wire tag '
+          'was minted under the old session (undeliverable)');
+      onQueueUpdated?.call(queueSize);
+    }
+  }
+
   /// Extract all queued items as API JSON without clearing the queue.
   /// Used to preserve data before session-expiry disconnect.
+  ///
+  /// Tagged TX pings are left OUT of the snapshot. It is bound for offline
+  /// storage and gets re-uploaded under a brand new `offline-YYYYMMDD-NNNN`
+  /// session, where the tag cannot re-derive: the server would skip the row
+  /// while still reporting success, so the ping is lost either way. Preserving
+  /// it only buys a wire_tag_mismatch warn. RX/DISC/TRACE carry no tag and are
+  /// preserved exactly as before.
   Future<List<Map<String, dynamic>>> extractAllAsJson() async {
     // Flush RX buffer first so all items are in the main queue
     await _flushRxBuffer();
@@ -762,13 +1025,22 @@ class ApiQueueService {
 
     if (allItems.isEmpty) return [];
 
-    return allItems.map((item) => item.toApiJson()).toList();
+    final deliverable = allItems.where((i) => !i.hasWireTag).toList();
+    final skipped = allItems.length - deliverable.length;
+    if (skipped > 0) {
+      debugWarn(
+          '[API QUEUE] Preserving offline: skipped $skipped tagged TX ping(s) that no '
+          'offline session could upload (kept ${deliverable.length} untagged item(s))');
+    }
+
+    return deliverable.map((item) => item.toApiJson()).toList();
   }
 
   /// Dispose of resources
   void dispose() {
     _batchTimer?.cancel();
     _pingFlushTimer?.cancel();
+    _networkStateSubscription?.cancel();
     _box?.close();
   }
 }

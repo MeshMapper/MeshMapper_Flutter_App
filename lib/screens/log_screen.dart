@@ -6,6 +6,7 @@ import '../models/log_entry.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/ping_colors.dart';
+import '../widgets/log_table_cell_fit.dart';
 import '../widgets/repeater_id_chip.dart';
 import '../widgets/rx_path_chain.dart';
 
@@ -686,7 +687,16 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   double _nodeColumnWidthForLength(int idLength) {
     if (idLength <= 2) return 60;
     if (idLength <= 4) return 70;
-    return 80;
+    // 6-char (3-byte) IDs need extra room or the last digit clips on some
+    // devices (#383).
+    return 88;
+  }
+
+  /// DISC rows also show the node type after the ID and info icon.
+  double _discNodeColumnWidthForLength(int idLength) {
+    if (idLength <= 2) return 70;
+    if (idLength <= 4) return 80;
+    return 92;
   }
 
   Widget _buildTxCard(BuildContext context, TxLogEntry entry,
@@ -768,7 +778,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
+                SizedBox(
+                    width: nodeWidth, child: _tableHeader(context, 'Node')),
                 Expanded(child: _tableHeader(context, 'SNR', center: true)),
                 Expanded(child: _tableHeader(context, 'RSSI', center: true)),
               ],
@@ -859,7 +870,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
+                SizedBox(
+                    width: nodeWidth, child: _tableHeader(context, 'Node')),
                 Expanded(child: _tableHeader(context, 'SNR', center: true)),
                 Expanded(child: _tableHeader(context, 'RSSI', center: true)),
               ],
@@ -894,9 +906,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         Expanded(
                             child: Center(
                                 child: _buildChip(
-                                    event.rssi != null
-                                        ? '${event.rssi}'
-                                        : '-',
+                                    event.rssi != null ? '${event.rssi}' : '-',
                                     rssiColor))),
                       ],
                     ),
@@ -914,9 +924,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                           child: Icon(
                             Icons.route,
                             size: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                         const SizedBox(width: 4),
@@ -1044,8 +1053,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                     Expanded(
                       child: RxPathChain(
                         hops: entry.pathHops,
-                        fromLatLng:
-                            (lat: entry.latitude, lon: entry.longitude),
+                        fromLatLng: (lat: entry.latitude, lon: entry.longitude),
                         fontSize: 12,
                       ),
                     ),
@@ -1066,6 +1074,13 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   Widget _buildDiscCard(BuildContext context, DiscLogEntry entry,
       {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
+    var maxIdLen = 0;
+    for (final node in entry.discoveredNodes) {
+      if (node.repeaterId.length > maxIdLen) {
+        maxIdLen = node.repeaterId.length;
+      }
+    }
+    final nodeWidth = _discNodeColumnWidthForLength(maxIdLen);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -1103,23 +1118,28 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         child: Row(
                           children: [
                             SizedBox(
-                                width: 70,
-                                child: _tableHeader(context, 'Node')),
+                                width: nodeWidth,
+                                child: LogTableCellFit(
+                                    alignment: Alignment.centerLeft,
+                                    child: _tableHeader(context, 'Node'))),
                             Expanded(
-                                child: _tableHeader(context, 'RX SNR',
-                                    center: true)),
+                                child: LogTableCellFit(
+                                    child: _tableHeader(context, 'RX SNR',
+                                        center: true))),
                             Expanded(
-                                child: _tableHeader(context, 'RX RSSI',
-                                    center: true)),
+                                child: LogTableCellFit(
+                                    child: _tableHeader(context, 'RX RSSI',
+                                        center: true))),
                             Expanded(
-                                child: _tableHeader(context, 'TX SNR',
-                                    center: true)),
+                                child: LogTableCellFit(
+                                    child: _tableHeader(context, 'TX SNR',
+                                        center: true))),
                           ],
                         ),
                       ),
                       Divider(height: 1, color: Theme.of(context).dividerColor),
-                      ...entry.discoveredNodes.map((node) =>
-                          _buildDiscNodeRow(context, node, widget.repeaters)),
+                      ...entry.discoveredNodes.map((node) => _buildDiscNodeRow(
+                          context, node, nodeWidth, widget.repeaters)),
                     ],
                   ),
                 ),
@@ -1141,8 +1161,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildDiscNodeRow(
-      BuildContext context, DiscoveredNodeEntry node, List<Repeater> repeaters) {
+  Widget _buildDiscNodeRow(BuildContext context, DiscoveredNodeEntry node,
+      double nodeWidth, List<Repeater> repeaters) {
     final rxSnrColor = _snrColorFromValue(node.localSnr);
     final rssiColor = _rssiColor(node.localRssi);
     final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
@@ -1156,34 +1176,37 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         child: Row(
           children: [
             SizedBox(
-              width: 70,
-              child: Row(
-                children: [
-                  Flexible(
-                      child: RepeaterIdChip(
-                          repeaterId: node.repeaterId,
-                          fontSize: 14,
-                          isAmbiguous: isAmbiguous)),
-                  Text(
-                    node.nodeTypeLabel,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: PingColors.discSuccess,
+              width: nodeWidth,
+              child: LogTableCellFit(
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    RepeaterIdChip(
+                        repeaterId: node.repeaterId,
+                        fontSize: 14,
+                        isAmbiguous: isAmbiguous),
+                    Text(
+                      node.nodeTypeLabel,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: PingColors.discSuccess,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
             Expanded(
-                child: Center(
+                child: LogTableCellFit(
                     child: _buildChip(
                         node.localSnr.toStringAsFixed(1), rxSnrColor))),
             Expanded(
-                child:
-                    Center(child: _buildChip('${node.localRssi}', rssiColor))),
+                child: LogTableCellFit(
+                    child: _buildChip('${node.localRssi}', rssiColor))),
             Expanded(
-                child: Center(
+                child: LogTableCellFit(
                     child: _buildChip(
                         node.remoteSnr.toStringAsFixed(1), txSnrColor))),
           ],

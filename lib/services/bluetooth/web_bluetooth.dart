@@ -118,7 +118,8 @@ class WebBluetoothService implements BluetoothService {
   }
 
   @override
-  Future<void> connect(String deviceId) async {
+  Future<void> connect(String deviceId, {int? maxAttempts}) async {
+    // maxAttempts is a mobile concern; web connects are single-attempt.
     try {
       _updateStatus(ConnectionStatus.connecting);
       debugLog('[BLE] Connecting to device: $deviceId');

@@ -16,15 +16,20 @@ import io.flutter.plugin.common.BinaryMessenger;
 class MapLibreMapBuilder implements MapLibreMapOptionsSink {
   public final String TAG = getClass().getSimpleName();
   private final MapLibreMapOptions options =
-      new MapLibreMapOptions().attributionEnabled(true).logoEnabled(false).textureMode(true);
+      new MapLibreMapOptions().attributionEnabled(true).logoEnabled(false).textureMode(false);
   private boolean trackCameraPosition = false;
   private boolean myLocationEnabled = false;
   private boolean dragEnabled = true;
+  private boolean featureTapsTriggersMapClick = false;
   private int myLocationTrackingMode = 0;
   private int myLocationRenderMode = 0;
   private String styleString = "";
   private LatLngBounds bounds = null;
   private LocationEngineRequest locationEngineRequest = null;
+  private String locationSourceToken = "platform";
+  private boolean translucentRequested = false;
+  private boolean hybridCompositionActive = false;
+  private Integer attributionButtonColor = null;
 
   MapLibreMapController build(
       int id,
@@ -34,12 +39,21 @@ class MapLibreMapBuilder implements MapLibreMapOptionsSink {
 
     final MapLibreMapController controller =
         new MapLibreMapController(
-            id, context, messenger, lifecycleProvider, options, styleString, dragEnabled);
+            id, 
+            context, 
+            messenger, 
+            lifecycleProvider, 
+            options, 
+            styleString, 
+            dragEnabled, 
+            featureTapsTriggersMapClick
+        );
     controller.init();
     controller.setMyLocationEnabled(myLocationEnabled);
     controller.setMyLocationTrackingMode(myLocationTrackingMode);
     controller.setMyLocationRenderMode(myLocationRenderMode);
     controller.setTrackCameraPosition(trackCameraPosition);
+    controller.setLocationSource(locationSourceToken);
 
     if (null != bounds) {
       controller.setCameraTargetBounds(bounds);
@@ -47,6 +61,10 @@ class MapLibreMapBuilder implements MapLibreMapOptionsSink {
 
     if(null != locationEngineRequest ){
       controller.setLocationEngineProperties(locationEngineRequest);
+    }
+
+    if (null != attributionButtonColor) {
+      controller.setAttributionButtonColor(attributionButtonColor);
     }
 
     return controller;
@@ -104,6 +122,11 @@ class MapLibreMapBuilder implements MapLibreMapOptionsSink {
   @Override
   public void setZoomGesturesEnabled(boolean zoomGesturesEnabled) {
     options.zoomGesturesEnabled(zoomGesturesEnabled);
+  }
+
+  @Override
+  public void setDoubleClickZoomEnabled(boolean doubleClickZoomEnabled) {
+    options.doubleTapGesturesEnabled(doubleClickZoomEnabled);
   }
 
   @Override
@@ -232,13 +255,31 @@ class MapLibreMapBuilder implements MapLibreMapOptionsSink {
     }
   }
 
+  @Override
+  public void setAttributionButtonColor(int color) {
+    // The tint is applied through UiSettings, which only exists once the map
+    // is ready, so stash it and forward to the controller in build().
+    this.attributionButtonColor = color;
+  }
+
   public void setDragEnabled(boolean enabled) {
     this.dragEnabled = enabled;
+  }
+
+  public void setFeatureTapsTriggersMapClick(boolean triggers) {
+    this.featureTapsTriggersMapClick = triggers;
   }
 
   @Override
   public void setLocationEngineProperties(@NonNull LocationEngineRequest locationEngineRequest) {
     this.locationEngineRequest = locationEngineRequest;
+  }
+
+  @Override
+  public void setLocationSource(@NonNull String token) {
+    // Store the raw token here and forward it to the controller in build();
+    // the token -> behavior mapping is resolved on the controller (native side).
+    this.locationSourceToken = token;
   }
 
   @Override
@@ -248,6 +289,16 @@ class MapLibreMapBuilder implements MapLibreMapOptionsSink {
 
   @Override
   public void setTranslucentTextureSurface(boolean translucentTextureSurface) {
+    this.translucentRequested = translucentTextureSurface;
     options.translucentTextureSurface(translucentTextureSurface);
+    // textureMode must be on if EITHER a translucent surface is required OR Flutter is
+    // using Hybrid Composition (TLHC). Both are correctness requirements, not knobs.
+    options.textureMode(translucentRequested || hybridCompositionActive);
+  }
+
+  @Override
+  public void setUseHybridComposition(boolean useHybridComposition) {
+    this.hybridCompositionActive = useHybridComposition;
+    options.textureMode(translucentRequested || hybridCompositionActive);
   }
 }

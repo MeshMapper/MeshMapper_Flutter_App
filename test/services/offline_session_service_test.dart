@@ -10,7 +10,7 @@ import 'package:mesh_mapper/services/offline_session_service.dart';
 /// The final save (`_saveOfflineSession` in AppStateProvider) must finalize that
 /// SAME tracked session — if it instead calls `saveSession()` it creates a second
 /// session holding the same pings, surfacing as two identical sessions at the
-/// same time under Settings → Offline Sessions.
+/// same time under Settings → Data → Offline Sessions.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 

@@ -1,0 +1,1064 @@
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/services/meshcore/buffer_utils.dart';
+import 'package:mesh_mapper/services/meshcore/connection.dart';
+import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
+import 'package:mesh_mapper/utils/debug_logger_io.dart';
+
+import 'fake_companion_transport.dart';
+
+/// Byte vectors for the repeater-admin frames, taken from
+/// examples/companion_radio/MyMesh.cpp (writeContactRespFrame,
+/// updateContactFromFrame, CMD_SEND_LOGIN, CMD_SEND_BINARY_REQ,
+/// onContactResponse, onContactPathUpdated).
+Uint8List key(int fill) => Uint8List.fromList(List<int>.filled(32, fill));
+
+/// A RESP_CODE_CONTACT payload (147 bytes after the code byte).
+List<int> contactPayload({
+  required Uint8List pubkey,
+  int type = 2,
+  int flags = 0,
+  int outPathLen = 0xFF,
+  List<int> outPath = const [],
+  String name = 'Hilltop',
+  int lastAdvert = 1700000000,
+  int latMicro = 45269740,
+  int lonMicro = -75777460,
+  int lastMod = 1700000100,
+}) {
+  final w = BufferWriter();
+  w.writeBytes(pubkey);
+  w.writeByte(type);
+  w.writeByte(flags);
+  w.writeByte(outPathLen);
+  final path = Uint8List(64)..setRange(0, outPath.length, outPath);
+  w.writeBytes(path);
+  w.writeCString(name, 32);
+  w.writeUInt32LE(lastAdvert);
+  w.writeUInt32LE(latMicro.toUnsigned(32));
+  w.writeUInt32LE(lonMicro.toUnsigned(32));
+  w.writeUInt32LE(lastMod);
+  return w.toBytes();
+}
+
+void main() {
+  late FakeCompanionTransport transport;
+  late MeshCoreConnection connection;
+
+  setUp(() {
+    transport = FakeCompanionTransport();
+    connection = MeshCoreConnection(transport: transport);
+  });
+
+  tearDown(() {
+    connection.dispose();
+    transport.dispose();
+  });
+
+  group('ContactRecord', () {
+    test('round-trips the 147-byte payload', () {
+      final payload = contactPayload(
+          pubkey: key(0xAB), outPathLen: 2, outPath: [0x4E, 0x7A]);
+      expect(payload.length, ContactRecord.payloadLength);
+      final rec = ContactRecord.parse(BufferReader(payload));
+      expect(rec.publicKeyHex, 'AB' * 32);
+      expect(rec.type, 2);
+      expect(rec.outPathLen, 2);
+      expect(rec.routeBytes, [0x4E, 0x7A]);
+      expect(rec.hasRoute, isTrue);
+      expect(rec.name, 'Hilltop');
+      expect(rec.lastAdvert, 1700000000);
+      expect(rec.latMicro, 45269740);
+      expect(rec.lonMicro, -75777460);
+      expect(rec.lastMod, 1700000100);
+      final frame = rec.toFrame(CommandCodes.addUpdateContact);
+      expect(frame[0], CommandCodes.addUpdateContact);
+      expect(frame.sublist(1), payload);
+    });
+
+    test('out_path_len carries the hop width in its top two bits', () {
+      // The frame the field log showed: one 3-byte hop (0x81) with the
+      // leftovers of an older three-hop route still in the buffer.
+      final rec = ContactRecord.parse(BufferReader(contactPayload(
+          pubkey: key(1),
+          outPathLen: 0x81,
+          outPath: [0x4E, 0x31, 0x92, 0xBD, 0x60, 0x89, 0xF0, 0x62, 0xEB])));
+      expect(rec.routeHopBytes, 3);
+      expect(rec.routeHopCount, 1);
+      expect(rec.hasRoute, isTrue);
+      expect(rec.routeBytes, [0x4E, 0x31, 0x92]);
+    });
+
+    test('a zero hop count is a learned direct route, not no route', () {
+      // What the radio stored once CBC-FORTUNE-R1 answered a flooded login
+      // directly on 2026-09-10, and then sent to with flood=false.
+      final rec = ContactRecord.parse(
+          BufferReader(contactPayload(pubkey: key(1), outPathLen: 0x80)));
+      expect(rec.hasRoute, isTrue);
+      expect(rec.routeHopCount, 0);
+      expect(rec.routeBytes, isEmpty);
+    });
+
+    test('0xFF path length is no route', () {
+      final rec = ContactRecord.parse(
+          BufferReader(contactPayload(pubkey: key(1), outPathLen: 0xFF)));
+      expect(rec.hasRoute, isFalse);
+      expect(rec.routeBytes, isEmpty);
+    });
+
+    test('newRepeater builds a flood contact of type repeater', () {
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(7),
+          name: 'A name that is far too long for the thirty-two byte field',
+          lat: 45.26974,
+          lon: -75.77746,
+          nowSecs: 1234);
+      expect(rec.type, AdvTypes.repeater);
+      expect(rec.outPathLen, ProtocolConstants.outPathUnknown);
+      expect(rec.latMicro, 45269740);
+      expect(rec.lonMicro, -75777460);
+      expect(rec.lastAdvert, 1234);
+      expect(rec.lastMod, 1234);
+      final frame = rec.toFrame(CommandCodes.addUpdateContact);
+      expect(frame.length, 1 + ContactRecord.payloadLength);
+      // Name is truncated to 31 bytes plus NUL.
+      expect(ContactRecord.parse(BufferReader(frame.sublist(1))).name.length,
+          31);
+    });
+
+    test('rejects invalid public key and out path lengths before framing', () {
+      ContactRecord direct({required int keyLength, required int pathLength}) {
+        return ContactRecord(
+          publicKey: Uint8List(keyLength),
+          type: AdvTypes.repeater,
+          flags: 0,
+          outPathLen: ProtocolConstants.outPathUnknown,
+          outPath: Uint8List(pathLength),
+          name: 'R',
+          lastAdvert: 1,
+          latMicro: 2,
+          lonMicro: 3,
+          lastMod: 4,
+        );
+      }
+
+      for (final length in [31, 33]) {
+        expect(
+          () => direct(keyLength: length, pathLength: 64),
+          throwsArgumentError,
+          reason: 'a $length-byte public key would shift the frame',
+        );
+        expect(
+          () => ContactRecord.newRepeater(
+            publicKey: Uint8List(length),
+            name: 'R',
+            lat: 1,
+            lon: 2,
+            nowSecs: 3,
+          ),
+          throwsArgumentError,
+        );
+      }
+      for (final length in [63, 65]) {
+        expect(
+          () => direct(keyLength: 32, pathLength: length),
+          throwsArgumentError,
+          reason: 'a $length-byte out path would shift the frame',
+        );
+      }
+
+      final valid = direct(keyLength: 32, pathLength: 64);
+      expect(valid.toFrame(CommandCodes.addUpdateContact).length,
+          1 + ContactRecord.payloadLength);
+    });
+
+    test('a short payload throws FormatException', () {
+      expect(() => ContactRecord.parse(BufferReader(Uint8List(100))),
+          throwsFormatException);
+    });
+  });
+
+  group('getContacts', () {
+    test('collects CONTACT frames until END_OF_CONTACTS', () async {
+      final future = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.length, 1);
+      expect(transport.writes[0], [CommandCodes.getContacts, 0, 0, 0, 0]);
+
+      transport.emit([ResponseCodes.contactsStart, 2, 0, 0, 0]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(1))]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(2))]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+
+      final contacts = await future;
+      expect(contacts.map((c) => c.publicKeyHex).toList(),
+          ['01' * 32, '02' * 32]);
+    });
+
+    test('skips a malformed CONTACT inside a contact stream', () async {
+      final future = connection.getContacts();
+      await transport.settle();
+
+      transport.emit([ResponseCodes.contactsStart, 3, 0, 0, 0]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(1))]);
+      transport.emit([ResponseCodes.contact, 1, 2, 3]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(2))]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+
+      final contacts = await future;
+      expect(contacts.map((c) => c.publicKeyHex).toList(),
+          ['01' * 32, '02' * 32]);
+    });
+
+    test('drops an unsolicited CONTACTS_START', () async {
+      final lines = <String>[];
+      final originalDebugPrint = debugPrint;
+      final originalEnabled = DebugLogger.isEnabled;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) lines.add(message);
+      };
+      DebugLogger.setEnabled(true);
+      addTearDown(() {
+        debugPrint = originalDebugPrint;
+        DebugLogger.setEnabled(originalEnabled);
+      });
+
+      transport.emit([ResponseCodes.contactsStart, 1, 0, 0, 0]);
+      await transport.settle();
+
+      expect(lines.any((line) =>
+          line.contains('[CONN] Ignoring unsolicited CONTACTS_START')), isTrue);
+    });
+
+    test('an unsolicited CONTACT cannot seed the contact cache', () async {
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(7))]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      await transport.settle();
+
+      final future = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+
+      expect(await future, isEmpty);
+    });
+
+    test('a second read asks only for changes and merges them in', () async {
+      // First read primes the cache and learns the newest lastmod (100).
+      final first = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 2, 0, 0, 0]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(pubkey: key(1), lastMod: 90),
+      ]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(pubkey: key(2), lastMod: 100),
+      ]);
+      transport.emit([ResponseCodes.endOfContacts, 100, 0, 0, 0]);
+      expect((await first).length, 2);
+
+      // Second read: since=100 on the wire, and only key(1) comes back,
+      // now with a learned route. The result is still the whole list, with
+      // key(1) replaced in place.
+      final second = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.last, [CommandCodes.getContacts, 100, 0, 0, 0]);
+      transport.emit([ResponseCodes.contactsStart, 1, 0, 0, 0]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(
+            pubkey: key(1),
+            outPathLen: 0x81,
+            outPath: [0x4E, 0x31, 0x92],
+            lastMod: 150),
+      ]);
+      transport.emit([ResponseCodes.endOfContacts, 150, 0, 0, 0]);
+      final merged = await second;
+      expect(merged.map((c) => c.publicKeyHex).toList(), ['01' * 32, '02' * 32]);
+      expect(merged[0].routeBytes, [0x4E, 0x31, 0x92]);
+
+      // An empty sync reports lastmod 0 and must not move since backwards.
+      final third = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.last, [CommandCodes.getContacts, 150, 0, 0, 0]);
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect((await third).length, 2);
+      final fourth = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.last, [CommandCodes.getContacts, 150, 0, 0, 0]);
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      await fourth;
+    });
+
+    test('resetPath clears the cached route, the radio never resends it',
+        () async {
+      final first = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 1, 0, 0, 0]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(
+            pubkey: key(1), outPathLen: 0x81, outPath: [0x4E, 0x31, 0x92]),
+      ]);
+      transport.emit([ResponseCodes.endOfContacts, 5, 0, 0, 0]);
+      expect((await first).single.hasRoute, isTrue);
+
+      final reset = connection.resetPath(key(1));
+      await transport.settle();
+      transport.emit([ResponseCodes.ok]);
+      await reset;
+
+      final second = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      final after = await second;
+      expect(after.single.hasRoute, isFalse);
+      expect(after.single.name, 'Hilltop');
+    });
+
+    test('addContact lands in the cache once primed', () async {
+      final first = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await first, isEmpty);
+
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      final add = connection.addContact(rec);
+      await transport.settle();
+      transport.emit([ResponseCodes.ok]);
+      await add;
+
+      final second = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect((await second).single.publicKeyHex, '09' * 32);
+    });
+
+    test('ERR while iterating fails with the radio code', () async {
+      final future = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.badState]);
+      await expectLater(
+          future,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.errorCode, 'code', ErrorCodes.badState)));
+    });
+
+    test('a second getContacts while one runs is refused', () async {
+      final first = connection.getContacts();
+      await transport.settle();
+      expect(() => connection.getContacts(), throwsA(isA<StateError>()));
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await first, isEmpty);
+    });
+
+    test(
+        'a write failure clears the completer so a later abort has no '
+        'listener to yell at', () async {
+      transport.failWrites = true;
+      await expectLater(
+          connection.getContacts(), throwsA(isA<StateError>()));
+      // If the orphaned completer were still registered, disposing here
+      // would call completeError on it with nobody awaiting the future,
+      // which flutter_test reports as an unhandled asynchronous error and
+      // fails this test.
+      connection.dispose();
+    });
+
+    test('an aborted parked command cannot clear a replacement command slot',
+        () async {
+      final sign = connection.sign(
+        Uint8List.fromList([9, 9, 9]),
+        timeout: const Duration(milliseconds: 20),
+      );
+      final signFailure = expectLater(sign, throwsA(isA<TimeoutException>()));
+      await transport.settle();
+      expect(transport.writes.single[0], CommandCodes.signStart);
+
+      final first = connection.login(key(5), 'first');
+      await transport.settle();
+      expect(transport.writes.length, 1,
+          reason: 'the first login is parked behind the sign');
+
+      final firstFailure =
+          expectLater(first, throwsA(isA<RadioAbortedException>()));
+      connection.abortPendingAdmin();
+      final replacement = connection.login(key(6), 'replacement');
+      await transport.settle();
+      expect(transport.writes.length, 1,
+          reason: 'the replacement is parked behind the same sign');
+
+      await signFailure;
+      await firstFailure;
+      await transport.settle();
+      await transport.settle();
+      expect(
+        transport.writes.where((w) => w[0] == CommandCodes.sendLogin).length,
+        2,
+      );
+
+      await expectLater(
+        connection.resetPath(
+          key(3),
+          timeout: const Duration(milliseconds: 10),
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      final replacementFailure =
+          expectLater(replacement, throwsA(isA<RadioAbortedException>()));
+      connection.abortPendingAdmin();
+      await replacementFailure;
+    });
+  });
+
+  group('addContact', () {
+    test('writes the 148-byte frame and resolves on OK', () async {
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      final future = connection.addContact(rec);
+      await transport.settle();
+      expect(transport.writes.single.length, 148);
+      expect(transport.commandAt(0), CommandCodes.addUpdateContact);
+      transport.emit([ResponseCodes.ok]);
+      await future;
+    });
+
+    test('ERR 3 is table full', () async {
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      final future = connection.addContact(rec);
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.tableFull]);
+      await expectLater(
+          future,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.isTableFull, 'isTableFull', isTrue)));
+    });
+
+    test(
+        'a write failure clears the completer so a later abort has no '
+        'listener to yell at', () async {
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      transport.failWrites = true;
+      await expectLater(
+          connection.addContact(rec), throwsA(isA<StateError>()));
+      // Same orphan-completer hazard as getContacts: a leftover
+      // _adminOkCompleter would take disposal's completeError with no
+      // listener, which flutter_test reports as an unhandled asynchronous
+      // error and fails this test.
+      connection.dispose();
+    });
+  });
+
+  group('SENT', () {
+    test('a 10-byte SENT still completes the legacy send completer', () async {
+      final future = connection.sendChannelTextMessage(0, 1, 0, 'hi');
+      await transport.settle();
+      transport.emit(
+          [ResponseCodes.sent, 1, 0xDE, 0xAD, 0xBE, 0xEF, 0x10, 0x27, 0, 0]);
+      await future;
+    });
+  });
+
+  group('login', () {
+    final pubkey = key(0x5A);
+    List<int> sentFrame({int est = 0, int flood = 1}) => [
+          ResponseCodes.sent,
+          flood,
+          0x5A, 0x5A, 0x5A, 0x5A,
+          est & 0xFF, (est >> 8) & 0xFF, (est >> 16) & 0xFF, (est >> 24) & 0xFF,
+        ];
+
+    test('writes pubkey plus raw password and parses the long reply', () async {
+      final future = connection.login(pubkey, 'hunter2',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      final frame = transport.writes.single;
+      expect(frame[0], CommandCodes.sendLogin);
+      expect(frame.sublist(1, 33), pubkey);
+      expect(String.fromCharCodes(frame.sublist(33)), 'hunter2');
+      expect(frame.length, 33 + 7, reason: 'no trailing NUL');
+
+      transport.emit(sentFrame());
+      await transport.settle();
+      // [0x85][is_admin][prefix:6][tag:4][acl_perms][fw_level]
+      transport.emit([
+        PushCodes.loginSuccess, 1,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        1, 2, 3, 4,
+        3, 2,
+      ]);
+      final r = await future;
+      expect(r.success, isTrue);
+      expect(r.isAdmin, isTrue);
+      expect(r.aclPerms, 3);
+      expect(r.fwLevel, 2);
+    });
+
+    test('a LOGIN_SUCCESS shorter than 14 bytes is a protocol error', () async {
+      // Companion firmware older than v1.9.0 pushes 8 bytes. The app gates
+      // Manage on the companion version, so this cannot happen past the gate;
+      // if it does, fail loudly rather than guess.
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([PushCodes.loginSuccess, 1, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A]);
+      await expectLater(future, throwsA(isA<FormatException>()));
+    });
+
+    test('a guest reply is success without admin', () async {
+      final future = connection.login(pubkey, 'guest',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([
+        PushCodes.loginSuccess, 0,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        0, 0, 0, 0, 0, 1,
+      ]);
+      final r = await future;
+      expect(r.success, isTrue);
+      expect(r.isAdmin, isFalse);
+      expect(r.fwLevel, 1);
+    });
+
+    test('LOGIN_FAIL resolves as not successful', () async {
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([PushCodes.loginFail, 0, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A]);
+      final r = await future;
+      expect(r.success, isFalse);
+    });
+
+    test('a push for another prefix is ignored and the login times out', () async {
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(milliseconds: 50));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([PushCodes.loginSuccess, 1, 1, 2, 3, 4, 5, 6]);
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+    });
+
+    test('ERR 2 on the send is not found', () async {
+      final future = connection.login(pubkey, 'x');
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.notFound]);
+      await expectLater(
+          future,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.isNotFound, 'isNotFound', isTrue)));
+    });
+
+    test('a stats ERR does not fail a login that is still waiting', () async {
+      // An ERR frame carries no correlation. The noise floor poll runs every
+      // 5s while a login can wait up to 60s, so the ERR belongs to whichever
+      // other consumer is pending, not to the admin lane.
+      final loginFuture = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(seconds: 5));
+      await transport.settle();
+
+      var loginSettled = false;
+      unawaited(loginFuture.then((_) => loginSettled = true,
+          onError: (_) => loginSettled = true));
+
+      final statsFuture = connection.getStats(StatsTypes.radio);
+      await transport.settle();
+      // Claim the stats error before the frame lands, or it reaches an
+      // unlistened future and flutter_test reports it as unhandled.
+      final statsFailure = expectLater(statsFuture, throwsA(isA<Exception>()));
+      transport.emit([ResponseCodes.err, ErrorCodes.badState]);
+      await transport.settle();
+      await statsFailure;
+      expect(loginSettled, isFalse,
+          reason: 'the stats poll owns that ERR, not the login');
+
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([
+        PushCodes.loginSuccess, 1,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        1, 2, 3, 4,
+        3, 2,
+      ]);
+      final r = await loginFuture;
+      expect(r.success, isTrue);
+    });
+
+    test(
+        'a stats write that throws hands the slot back so the next ERR '
+        'reaches the admin lane', () async {
+      // The write never reached the radio, so no stats reply is coming. Only
+      // the timeout leg used to clear the slot, which a throw never gets to:
+      // the stats completer stayed set for the life of the connection and the
+      // ERR router went on handing every ERR to a poll that was long gone.
+      transport.failWrites = true;
+      await expectLater(
+          connection.getStats(StatsTypes.radio), throwsA(isA<StateError>()));
+      transport.failWrites = false;
+
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(milliseconds: 50));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.badState]);
+      await expectLater(
+          future,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.errorCode, 'code', ErrorCodes.badState)));
+    });
+
+    test('the reply timeout is built from the SENT estimate', () async {
+      int? seen;
+      final future = connection.login(pubkey, 'x', replyTimeout: (est) {
+        seen = est;
+        return const Duration(milliseconds: 20);
+      });
+      await transport.settle();
+      transport.emit(sentFrame(est: 12345));
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+      expect(seen, 12345);
+    });
+
+    test('dispose mid-login aborts the completer', () async {
+      final future = connection.login(pubkey, 'x');
+      await transport.settle();
+      connection.dispose();
+      await expectLater(future, throwsA(isA<RadioAbortedException>()));
+    });
+
+    test(
+        'a write parked behind the sign gate does not leave the login '
+        'completers unobserved when dispose fires', () async {
+      // sign() sets _signGate before it ever writes and only clears/
+      // completes it in its own finally, so leaving CMD_SIGN_START
+      // unanswered keeps the gate open for the rest of this test. login()'s
+      // frame then parks behind that gate inside _write (connection.dart,
+      // the sign-gate queueing in _write).
+      final signFuture = connection.sign(Uint8List.fromList([9, 9, 9]));
+      await transport.settle();
+      expect(transport.writes.length, 1); // CMD_SIGN_START only
+
+      final future = connection.login(pubkey, 'x');
+      await transport.settle();
+      // login's frame is queued behind the still-open sign gate, not
+      // written yet.
+      expect(transport.writes.length, 1);
+
+      connection.dispose();
+
+      // Both completers login() registered before the parked write were
+      // given a no-op listener immediately, so the abort each one gets from
+      // dispose (delivered while the write is still parked) does not
+      // surface as an unhandled zone error - only as these two matchers.
+      // Attach both matchers before awaiting either: sign()'s own future
+      // completes with its abort inside dispose() above (synchronously,
+      // no listener of its own yet), so it must not sit unobserved while
+      // we await the other expectation first.
+      final loginExpectation =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      final signExpectation =
+          expectLater(signFuture, throwsA(isA<SignException>()));
+      await loginExpectation;
+      await signExpectation;
+    });
+
+    test('the password never reaches the debug log', () async {
+      // Same harness as sign_flow_test.dart: capture debugPrint with the
+      // logger switched on, restore both in tearDown.
+      final lines = <String>[];
+      final originalDebugPrint = debugPrint;
+      final originalEnabled = DebugLogger.isEnabled;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) lines.add(message);
+      };
+      DebugLogger.setEnabled(true);
+      addTearDown(() {
+        debugPrint = originalDebugPrint;
+        DebugLogger.setEnabled(originalEnabled);
+      });
+
+      final future = connection.login(pubkey, 'S3cretPassw0rd',
+          replyTimeout: (_) => const Duration(milliseconds: 20));
+      await transport.settle();
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+
+      expect(lines, isNotEmpty);
+      expect(lines.any((l) => l.contains('S3cretPassw0rd')), isFalse);
+      expect(lines.any((l) => l.contains('Login frame sent')), isTrue);
+    });
+  });
+
+  group('sendBinaryRequest', () {
+    final pubkey = key(0x33);
+    test('matches the response on the SENT tag', () async {
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]),
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      final frame = transport.writes.single;
+      expect(frame, [CommandCodes.sendBinaryReq, ...pubkey, 0x05, 0, 0]);
+
+      transport.emit([ResponseCodes.sent, 0, 0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0]);
+      await transport.settle();
+      // A response for a different tag is ignored.
+      transport.emit([PushCodes.binaryResponse, 0, 1, 2, 3, 4, 9, 9]);
+      await transport.settle();
+      transport.emit([PushCodes.binaryResponse, 0, 0xAA, 0xBB, 0xCC, 0xDD, 7, 8, 9]);
+      expect(await future, [7, 8, 9]);
+    });
+
+    test('no response is a timeout', () async {
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]),
+          replyTimeout: (_) => const Duration(milliseconds: 20));
+      await transport.settle();
+      transport.emit([ResponseCodes.sent, 0, 1, 1, 1, 1, 0, 0, 0, 0]);
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+    });
+
+    test('ERR 3 on the send surfaces as a radio error', () async {
+      final future =
+          connection.sendBinaryRequest(pubkey, Uint8List.fromList([0x06]));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.tableFull]);
+      await expectLater(future, throwsA(isA<RadioErrorException>()));
+    });
+
+    test('a short SENT is an admin protocol FormatException', () async {
+      final future =
+          connection.sendBinaryRequest(pubkey, Uint8List.fromList([0x06]));
+      await transport.settle();
+
+      transport.emit([ResponseCodes.sent]);
+
+      await expectLater(future, throwsA(isA<FormatException>()));
+    });
+
+    test('a second request while one is pending is refused', () async {
+      final first = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]),
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      expect(() => connection.sendBinaryRequest(pubkey, Uint8List(1)),
+          throwsA(isA<StateError>()));
+      transport.emit([ResponseCodes.sent, 0, 1, 1, 1, 1, 0, 0, 0, 0]);
+      await transport.settle();
+      transport.emit([PushCodes.binaryResponse, 0, 1, 1, 1, 1]);
+      expect(await first, isEmpty);
+    });
+
+    test(
+        'a write parked behind the sign gate does not leave the binary '
+        'request completers unobserved when dispose fires', () async {
+      // Same hazard as login's sign-gate test: sign() holds the gate open
+      // (CMD_SIGN_START unanswered), so sendBinaryRequest's frame parks
+      // inside _write and never reaches the transport.
+      final signFuture = connection.sign(Uint8List.fromList([9, 9, 9]));
+      await transport.settle();
+      expect(transport.writes.length, 1); // CMD_SIGN_START only
+
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]));
+      await transport.settle();
+      expect(transport.writes.length, 1);
+
+      connection.dispose();
+
+      final requestExpectation =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      final signExpectation =
+          expectLater(signFuture, throwsA(isA<SignException>()));
+      await requestExpectation;
+      await signExpectation;
+    });
+
+    test('dispose after SENT aborts a request awaiting its reply', () async {
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]));
+      await transport.settle();
+      transport.emit(
+          [ResponseCodes.sent, 0, 0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0]);
+      await transport.settle();
+
+      final failure =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      connection.dispose();
+
+      await failure;
+    });
+  });
+
+  group('resetPath and PATH_UPDATED', () {
+    test('resetPath writes the key and resolves on OK', () async {
+      final future = connection.resetPath(key(4));
+      await transport.settle();
+      expect(transport.writes.single, [CommandCodes.resetPath, ...key(4)]);
+      transport.emit([ResponseCodes.ok]);
+      await future;
+    });
+
+    test('resetPath ERR 2 is not found', () async {
+      final future = connection.resetPath(key(4));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.notFound]);
+      await expectLater(future, throwsA(isA<RadioErrorException>()));
+    });
+
+    test('a late reset OK cannot complete a later addContact', () async {
+      final reset = connection.resetPath(
+        key(4),
+        timeout: const Duration(milliseconds: 20),
+      );
+      await transport.settle();
+      await expectLater(reset, throwsA(isA<TimeoutException>()));
+
+      final contact = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      final rejected = expectLater(
+        connection.addContact(
+          contact,
+          timeout: const Duration(milliseconds: 50),
+        ),
+        throwsA(isA<StateError>()),
+      );
+      await transport.settle();
+
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      await rejected;
+      expect(transport.writes.length, 1,
+          reason: 'the old reset still owns the uncorrelated OK');
+
+      final add = connection.addContact(contact);
+      var addCompleted = false;
+      unawaited(add.then((_) => addCompleted = true));
+      await transport.settle();
+      expect(transport.writes.length, 2);
+      expect(addCompleted, isFalse,
+          reason: 'the late reset OK was drained before this add started');
+
+      transport.emit([ResponseCodes.ok]);
+      await add;
+      expect(addCompleted, isTrue);
+    });
+
+    test('PATH_UPDATED pushes the 32-byte key', () async {
+      final seen = <Uint8List>[];
+      final sub = connection.pathUpdatedStream.listen(seen.add);
+      transport.emit([PushCodes.pathUpdated, ...key(0x77)]);
+      await transport.settle();
+      expect(seen.single, key(0x77));
+      await sub.cancel();
+    });
+
+    test(
+        'a write parked behind the sign gate does not leave the resetPath '
+        'completer unobserved when dispose fires', () async {
+      final signFuture = connection.sign(Uint8List.fromList([9, 9, 9]));
+      await transport.settle();
+      expect(transport.writes.length, 1); // CMD_SIGN_START only
+
+      final future = connection.resetPath(key(4));
+      await transport.settle();
+      expect(transport.writes.length, 1);
+
+      connection.dispose();
+
+      final resetExpectation =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      final signExpectation =
+          expectLater(signFuture, throwsA(isA<SignException>()));
+      await resetExpectation;
+      await signExpectation;
+    });
+  });
+
+  group('poll drain', () {
+    // RESP_CODE_STATS [type:1][noise:int16 LE][lastRssi][lastSnr]
+    // [txAirSecs:u32][rxAirSecs:u32], 13 bytes on the wire.
+    List<int> statsFrame(int noise) => [
+          ResponseCodes.stats,
+          StatsTypes.radio,
+          noise & 0xFF,
+          (noise >> 8) & 0xFF,
+          0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+
+    ContactRecord newContact() => ContactRecord.newRepeater(
+        publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+
+    test('an admin frame waits for a stats request already on the wire',
+        () async {
+      // The poll hold (_pollsHeld) only stops ticks that start after the slot
+      // is claimed. This one is already on the wire.
+      final stats = connection.getStats(StatsTypes.radio);
+      await transport.settle();
+      expect(transport.commandAt(0), CommandCodes.getStats);
+
+      final add = connection.addContact(newContact());
+      await transport.settle();
+      expect(transport.writes.length, 1,
+          reason: 'the add must not join a poll that is still pending');
+
+      transport.emit(statsFrame(-120));
+      expect(await stats, -120);
+      await transport.settle();
+      expect(transport.commandAt(1), CommandCodes.addUpdateContact,
+          reason: 'the drained poll lets the admin frame out');
+
+      transport.emit([ResponseCodes.ok]);
+      await add;
+    });
+
+    test('a battery request already on the wire is drained too', () async {
+      // Fire and forget, so its window is the write. Nothing is pending by
+      // the time the admin frame goes out.
+      final battery = connection.getBatteryVoltage();
+      final contacts = connection.getContacts();
+      await transport.settle();
+      await battery;
+      await transport.settle();
+      expect(transport.commandAt(0), CommandCodes.getBatteryVoltage);
+      expect(transport.commandAt(1), CommandCodes.getContacts);
+
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await contacts, isEmpty);
+    });
+
+    test('an ERR after the drain fails the admin command and frees the slot',
+        () async {
+      // The bug: with the stats poll still pending, the ERR the radio sent
+      // for the add was handed to the poller, the add timed out holding the
+      // slot, and every later tap was refused.
+      final stats = connection.getStats(StatsTypes.radio);
+      await transport.settle();
+
+      final add = connection.addContact(newContact());
+      await transport.settle();
+      expect(transport.writes.length, 1);
+
+      transport.emit(statsFrame(-115));
+      expect(await stats, -115);
+      await transport.settle();
+      expect(transport.writes.length, 2);
+
+      transport.emit([ResponseCodes.err, ErrorCodes.tableFull]);
+      await expectLater(
+          add,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.isTableFull, 'isTableFull', isTrue)));
+
+      // The slot is free, which is also what un-holds the two pollers:
+      // _pollsHeld is exactly "a command owns the slot".
+      expect(connection.hasPendingAdminCommand, isFalse);
+      final next = connection.getContacts();
+      await transport.settle();
+      expect(transport.commandAt(2), CommandCodes.getContacts);
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await next, isEmpty);
+    });
+  });
+
+  group('late-response backstop', () {
+    late FakeCompanionTransport t;
+    late MeshCoreConnection c;
+
+    setUp(() {
+      t = FakeCompanionTransport();
+      c = MeshCoreConnection(
+          transport: t,
+          lateResponseBackstop: const Duration(milliseconds: 40));
+    });
+
+    tearDown(() {
+      c.dispose();
+      t.dispose();
+    });
+
+    ContactRecord newContact() => ContactRecord.newRepeater(
+        publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+
+    test('hands the slot back when the owed reply never arrives', () async {
+      await expectLater(
+          c.addContact(newContact(),
+              timeout: const Duration(milliseconds: 10)),
+          throwsA(isA<TimeoutException>()));
+      expect(c.hasPendingAdminCommand, isTrue,
+          reason: 'the slot is still held for the bare OK the radio owes');
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(c.hasPendingAdminCommand, isFalse,
+          reason: 'the backstop releases it rather than waiting for the '
+              'sheet to close');
+    });
+
+    test('the next command after the backstop is answered normally', () async {
+      // The backstop arms nothing on its way out. A bare OK carries no
+      // correlation, so ignoring "the next OK" would cascade: the next
+      // command's real OK eaten, that command timed out, the late state
+      // re-armed, the backstop fired again, and so on down the line.
+      await expectLater(
+          c.addContact(newContact(),
+              timeout: const Duration(milliseconds: 10)),
+          throwsA(isA<TimeoutException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final second =
+          c.addContact(newContact(), timeout: const Duration(seconds: 2));
+      await t.settle();
+      expect(t.writes.length, 2, reason: 'the freed slot took the next tap');
+
+      t.emit([ResponseCodes.ok]);
+      await second;
+    });
+
+    test('a stray OK with nothing pending is harmless', () async {
+      await expectLater(
+          c.addContact(newContact(),
+              timeout: const Duration(milliseconds: 10)),
+          throwsA(isA<TimeoutException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(c.hasPendingAdminCommand, isFalse);
+
+      // The OK the radio still owed that add, arriving with nothing pending:
+      // it falls through the handler the way any unsolicited OK always has.
+      t.emit([ResponseCodes.ok]);
+      await t.settle();
+      expect(c.hasPendingAdminCommand, isFalse);
+
+      // The lane is still usable afterwards.
+      final next = c.addContact(newContact(), timeout: const Duration(seconds: 2));
+      await t.settle();
+      expect(t.commandAt(1), CommandCodes.addUpdateContact);
+      t.emit([ResponseCodes.ok]);
+      await next;
+    });
+  });
+}

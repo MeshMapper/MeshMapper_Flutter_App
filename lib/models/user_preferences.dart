@@ -1,3 +1,5 @@
+import '../utils/public_key.dart';
+
 /// User preferences for wardriving configuration
 /// Reference: Settings in wardrive.js
 class UserPreferences {
@@ -19,8 +21,9 @@ class UserPreferences {
   /// Ignore carpeater signals (RSSI ≥ -30 dBm)
   final bool ignoreCarpeater;
 
-  /// Repeater ID to ignore (hex string, e.g., "FF")
-  final String? ignoreRepeaterId;
+  /// Full public key (upper-case 64 hex) of the user's own CARpeater, or
+  /// null. Shared with the server on auth while [ignoreCarpeater] is on.
+  final String? carpeaterPublicKey;
 
   /// Power was auto-set based on device model (not manually selected)
   final bool autoPowerSet;
@@ -54,6 +57,20 @@ class UserPreferences {
 
   /// Hybrid mode enabled (alternates Active + Discovery pings)
   final bool hybridModeEnabled;
+
+  /// Smart Pinging: auto mode skips squares that already have a recent
+  /// bidir or disc result. See DEVELOPMENT.md "Smart Pinging".
+  final bool smartPingEnabled;
+
+  /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
+  final int smartPingDays;
+
+  /// Limit the map overlay to the effective Smart Pinging coverage window.
+  final bool smartPingRecentCoverageOnly;
+
+  /// Show hollow circle markers on the map where pings were deferred by
+  /// Smart Pinging.
+  final bool showDeferredMarkers;
 
   /// Map auto-follow GPS position
   final bool mapAutoFollow;
@@ -94,6 +111,13 @@ class UserPreferences {
   /// Show top 3 repeaters by SNR on the map during wardriving
   final bool showTopRepeaters;
 
+  /// Double the size of the Top 3 repeaters overlay for easier reading
+  final bool largerTopRepeaters;
+
+  /// Live Activity heard rows show resolved repeater names (fewer, named
+  /// rows). When false the card packs a two-column hex grid instead.
+  final bool liveActivityShowNames;
+
   /// Coverage marker style on the map (dot, pin, diamond)
   final String markerStyle;
 
@@ -110,7 +134,6 @@ class UserPreferences {
   /// 1.0 = fully opaque). Applied to the `meshmapper-overlay-layer` raster
   /// layer so users can see the base map underneath the coverage squares.
   final double coverageOverlayOpacity;
-
 
   /// Coverage grid preset, matching the web UI's Grid Mode: 300 = Simplified
   /// (300 m cells, the default), 100 = Detailed (100 m cells + 3×3 blob,
@@ -142,7 +165,7 @@ class UserPreferences {
     this.externalAntennaSet = false,
     this.autoPingInterval = 30,
     this.ignoreCarpeater = false,
-    this.ignoreRepeaterId,
+    this.carpeaterPublicKey,
     this.autoPowerSet = false,
     this.powerLevelSet = false,
     this.offlineMode = false,
@@ -154,6 +177,10 @@ class UserPreferences {
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
     this.hybridModeEnabled = true,
+    this.smartPingEnabled = true,
+    this.smartPingDays = SmartPingDays.defaultDays,
+    this.smartPingRecentCoverageOnly = false,
+    this.showDeferredMarkers = true,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
@@ -166,6 +193,8 @@ class UserPreferences {
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
+    this.largerTopRepeaters = false,
+    this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
     this.colorVisionType = 'none',
@@ -189,7 +218,8 @@ class UserPreferences {
       externalAntennaSet: (json['externalAntennaSet'] as bool?) ?? false,
       autoPingInterval: (json['autoPingInterval'] as int?) ?? 30,
       ignoreCarpeater: (json['ignoreCarpeater'] as bool?) ?? false,
-      ignoreRepeaterId: json['ignoreRepeaterId'] as String?,
+      carpeaterPublicKey:
+          normalizePublicKey(json['carpeaterPublicKey'] as String?),
       autoPowerSet: (json['autoPowerSet'] as bool?) ?? false,
       powerLevelSet: (json['powerLevelSet'] as bool?) ?? false,
       offlineMode: false, // Never persist - always off by default
@@ -202,6 +232,14 @@ class UserPreferences {
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
+      smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
+      smartPingRecentCoverageOnly:
+          (json['smartPingRecentCoverageOnly'] as bool?) ?? false,
+      showDeferredMarkers: (json['showDeferredMarkers'] as bool?) ?? true,
+      smartPingDays: switch ((json['smartPingDays'] as num?)?.toInt()) {
+        final int d when d >= SmartPingDays.min && d <= SmartPingDays.max => d,
+        _ => SmartPingDays.defaultDays,
+      },
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
@@ -215,6 +253,8 @@ class UserPreferences {
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
+      largerTopRepeaters: (json['largerTopRepeaters'] as bool?) ?? false,
+      liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
@@ -237,6 +277,28 @@ class UserPreferences {
     );
   }
 
+  /// JSON key the pre-share versions wrote the 6-hex CARpeater prefix under.
+  static const String legacyCarpeaterJsonKey = 'ignoreRepeaterId';
+
+  /// Strips the old 6-hex CARpeater prefix out of a stored preferences map.
+  ///
+  /// Returns the cleaned map and whether a prefix was actually there. The
+  /// prefix is not kept in any form: the filter needs the full public key
+  /// now, and the switch is turned off with it so an unshared prefix can
+  /// never be reported. A map without the legacy key is returned untouched.
+  static ({Map<String, dynamic> json, bool wiped}) stripLegacyCarpeater(
+      Map<String, dynamic> json) {
+    if (!json.containsKey(legacyCarpeaterJsonKey)) {
+      return (json: json, wiped: false);
+    }
+    final legacy = json[legacyCarpeaterJsonKey];
+    final wiped = legacy is String && legacy.isNotEmpty;
+    final cleaned = Map<String, dynamic>.from(json)
+      ..remove(legacyCarpeaterJsonKey);
+    if (wiped) cleaned['ignoreCarpeater'] = false;
+    return (json: cleaned, wiped: wiped);
+  }
+
   /// Migrate the legacy 'pacman' gps marker id to 'chomper' after the rename.
   static String _migrateGpsMarkerStyle(String? value) {
     if (value == null) return 'arrow';
@@ -253,7 +315,7 @@ class UserPreferences {
       'externalAntennaSet': externalAntennaSet,
       'autoPingInterval': autoPingInterval,
       'ignoreCarpeater': ignoreCarpeater,
-      'ignoreRepeaterId': ignoreRepeaterId,
+      'carpeaterPublicKey': carpeaterPublicKey,
       'autoPowerSet': autoPowerSet,
       'powerLevelSet': powerLevelSet,
       // offlineMode intentionally not persisted - always off on app start
@@ -265,6 +327,10 @@ class UserPreferences {
       'themeMode': themeMode,
       'unitSystem': unitSystem,
       'hybridModeEnabled': hybridModeEnabled,
+      'smartPingEnabled': smartPingEnabled,
+      'smartPingDays': smartPingDays,
+      'smartPingRecentCoverageOnly': smartPingRecentCoverageOnly,
+      'showDeferredMarkers': showDeferredMarkers,
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
@@ -277,6 +343,8 @@ class UserPreferences {
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
+      'largerTopRepeaters': largerTopRepeaters,
+      'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
       'colorVisionType': colorVisionType,
@@ -300,7 +368,8 @@ class UserPreferences {
     bool? externalAntennaSet,
     int? autoPingInterval,
     bool? ignoreCarpeater,
-    String? ignoreRepeaterId,
+    String? carpeaterPublicKey,
+    bool clearCarpeaterPublicKey = false,
     bool? autoPowerSet,
     bool? powerLevelSet,
     bool? offlineMode,
@@ -312,6 +381,10 @@ class UserPreferences {
     String? themeMode,
     String? unitSystem,
     bool? hybridModeEnabled,
+    bool? smartPingEnabled,
+    int? smartPingDays,
+    bool? smartPingRecentCoverageOnly,
+    bool? showDeferredMarkers,
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
@@ -324,6 +397,8 @@ class UserPreferences {
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
+    bool? largerTopRepeaters,
+    bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
     String? colorVisionType,
@@ -344,7 +419,9 @@ class UserPreferences {
       externalAntennaSet: externalAntennaSet ?? this.externalAntennaSet,
       autoPingInterval: autoPingInterval ?? this.autoPingInterval,
       ignoreCarpeater: ignoreCarpeater ?? this.ignoreCarpeater,
-      ignoreRepeaterId: ignoreRepeaterId ?? this.ignoreRepeaterId,
+      carpeaterPublicKey: clearCarpeaterPublicKey
+          ? null
+          : (carpeaterPublicKey ?? this.carpeaterPublicKey),
       autoPowerSet: autoPowerSet ?? this.autoPowerSet,
       powerLevelSet: powerLevelSet ?? this.powerLevelSet,
       offlineMode: offlineMode ?? this.offlineMode,
@@ -358,6 +435,11 @@ class UserPreferences {
       themeMode: themeMode ?? this.themeMode,
       unitSystem: unitSystem ?? this.unitSystem,
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
+      smartPingEnabled: smartPingEnabled ?? this.smartPingEnabled,
+      smartPingDays: smartPingDays ?? this.smartPingDays,
+      smartPingRecentCoverageOnly:
+          smartPingRecentCoverageOnly ?? this.smartPingRecentCoverageOnly,
+      showDeferredMarkers: showDeferredMarkers ?? this.showDeferredMarkers,
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
@@ -372,6 +454,9 @@ class UserPreferences {
           minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
+      largerTopRepeaters: largerTopRepeaters ?? this.largerTopRepeaters,
+      liveActivityShowNames:
+          liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
@@ -426,7 +511,7 @@ class UserPreferences {
         other.externalAntennaSet == externalAntennaSet &&
         other.autoPingInterval == autoPingInterval &&
         other.ignoreCarpeater == ignoreCarpeater &&
-        other.ignoreRepeaterId == ignoreRepeaterId &&
+        other.carpeaterPublicKey == carpeaterPublicKey &&
         other.autoPowerSet == autoPowerSet &&
         other.offlineMode == offlineMode &&
         other.iataCode == iataCode &&
@@ -437,6 +522,9 @@ class UserPreferences {
         other.themeMode == themeMode &&
         other.unitSystem == unitSystem &&
         other.hybridModeEnabled == hybridModeEnabled &&
+        other.smartPingEnabled == smartPingEnabled &&
+        other.smartPingDays == smartPingDays &&
+        other.smartPingRecentCoverageOnly == smartPingRecentCoverageOnly &&
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
         other.mapRotationLocked == mapRotationLocked &&
@@ -449,6 +537,7 @@ class UserPreferences {
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
         other.showTopRepeaters == showTopRepeaters &&
+        other.liveActivityShowNames == liveActivityShowNames &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
         other.colorVisionType == colorVisionType &&
@@ -471,7 +560,7 @@ class UserPreferences {
       externalAntennaSet,
       autoPingInterval,
       ignoreCarpeater,
-      ignoreRepeaterId,
+      carpeaterPublicKey,
       autoPowerSet,
       offlineMode,
       iataCode,
@@ -482,6 +571,9 @@ class UserPreferences {
       themeMode,
       unitSystem,
       hybridModeEnabled,
+      smartPingEnabled,
+      smartPingDays,
+      smartPingRecentCoverageOnly,
       mapAutoFollow,
       mapAlwaysNorth,
       mapRotationLocked,
@@ -494,6 +586,7 @@ class UserPreferences {
       minPingDistanceMeters,
       autoStopAfterIdle,
       showTopRepeaters,
+      liveActivityShowNames,
       markerStyle,
       gpsMarkerStyle,
       colorVisionType,
@@ -543,4 +636,12 @@ class AutoPingInterval {
 /// Minimum ping distance (meters)
 class MinPingDistance {
   static const int min = 25;
+}
+
+/// Smart Pinging window bounds (days). Any whole number in the range is
+/// accepted; an enforced window from the regional admin uses the same range.
+class SmartPingDays {
+  static const int min = 1;
+  static const int max = 365;
+  static const int defaultDays = 14;
 }

@@ -110,11 +110,13 @@ class BackgroundServiceManager {
 
   /// Start the background service.
   /// Called when auto-ping mode (TX/RX or RX-only) is enabled.
+  ///
+  /// [title] and [body] are the finished notification strings. The caller
+  /// composes them (mode name and stats live on the app side); the background
+  /// isolate only displays what it is handed.
   static Future<void> startService({
-    required String mode,
-    int txCount = 0,
-    int rxCount = 0,
-    int queueSize = 0,
+    required String title,
+    required String body,
   }) async {
     if (kIsWeb) {
       debugLog('[BACKGROUND] Cannot start service on web');
@@ -128,31 +130,22 @@ class BackgroundServiceManager {
 
     if (_isRunning) {
       debugLog('[BACKGROUND] Service already running, updating notification');
-      await updateNotification(
-        mode: mode,
-        txCount: txCount,
-        rxCount: rxCount,
-        queueSize: queueSize,
-      );
+      await updateNotification(title: title, body: body);
       return;
     }
 
     try {
-      debugLog('[BACKGROUND] Starting background service (mode: $mode)');
+      debugLog('[BACKGROUND] Starting background service ($title)');
 
-      // Store the mode for the notification
-      _service?.invoke('setMode', {'mode': mode});
+      // Seed the title so the "Starting wardriving..." notification names the
+      // mode before the first stats update lands.
+      _service?.invoke('setInitialTitle', {'title': title});
 
       await _service?.startService();
       _isRunning = true;
 
       // Update notification with initial stats
-      await updateNotification(
-        mode: mode,
-        txCount: txCount,
-        rxCount: rxCount,
-        queueSize: queueSize,
-      );
+      await updateNotification(title: title, body: body);
 
       debugLog('[BACKGROUND] Background service started');
     } catch (e) {
@@ -180,22 +173,18 @@ class BackgroundServiceManager {
     }
   }
 
-  /// Update the notification with current wardriving stats.
+  /// Update the notification with the current wardriving title and body.
   /// Called periodically to show TX/RX counts and queue size.
   static Future<void> updateNotification({
-    required String mode,
-    required int txCount,
-    required int rxCount,
-    required int queueSize,
+    required String title,
+    required String body,
   }) async {
     if (kIsWeb || !_isRunning) return;
 
     try {
       _service?.invoke('updateNotification', {
-        'mode': mode,
-        'txCount': txCount,
-        'rxCount': rxCount,
-        'queueSize': queueSize,
+        'title': title,
+        'body': body,
       });
     } catch (e) {
       debugError('[BACKGROUND] Failed to update notification: $e');
@@ -212,20 +201,32 @@ class BackgroundServiceManager {
   /// On Android, the foreground service can survive app process death.
   /// Call this at app startup to ensure no stale notification persists.
   ///
-  /// This intentionally does NOT call initialize()/configure(), because
-  /// configure() with isForegroundMode:true can cause Android to resurrect
-  /// a killed foreground service as a side effect — producing a phantom
-  /// notification hours later (the "3am notification" bug).
+  /// This intentionally does NOT call BackgroundService.configure()/initialize(),
+  /// because configure() with isForegroundMode:true can cause Android to
+  /// resurrect a killed foreground service as a side effect — producing a
+  /// phantom notification hours later (the "3am notification" bug).
   ///
-  /// Instead, we cancel the notification directly by ID. Without its
-  /// required notification, Android will terminate any orphaned foreground
-  /// service within seconds.
+  /// We DO initialize the local-notifications plugin first: cancel() silently
+  /// no-ops until the plugin's platform channel is initialized, which is why
+  /// the orphaned notification kept reappearing after a reboot (#178).
+  /// Initializing the notifications plugin has no foreground-service side
+  /// effects — only configure() does.
   static Future<void> cleanupOrphanedService() async {
     if (kIsWeb) return;
     try {
       debugLog(
           '[BACKGROUND] Dismissing any orphaned notification from previous session');
       final plugin = FlutterLocalNotificationsPlugin();
+      // Establish the platform channel so cancel() actually reaches native.
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const iosInit = DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      );
+      await plugin.initialize(
+        const InitializationSettings(android: androidInit, iOS: iosInit),
+      );
       await plugin.cancel(_notificationId);
       debugLog('[BACKGROUND] Orphaned notification cleanup complete');
     } catch (e) {
@@ -239,40 +240,29 @@ class BackgroundServiceManager {
     // Required for background execution
     DartPluginRegistrant.ensureInitialized();
 
-    String currentMode = 'Active Mode';
+    String currentTitle = 'MeshMapper';
 
     // Listen for stop command
     service.on('stop').listen((event) {
       service.stopSelf();
     });
 
-    // Listen for mode updates
-    service.on('setMode').listen((event) {
-      if (event != null && event['mode'] != null) {
-        currentMode = event['mode'] as String;
+    // Seed the title used until the first stats update arrives.
+    service.on('setInitialTitle').listen((event) {
+      if (event != null && event['title'] != null) {
+        currentTitle = event['title'] as String;
       }
     });
 
-    // Listen for notification updates
+    // Display the finished title and body composed on the app side. The isolate
+    // no longer knows about modes or stat formatting, so there is nothing here
+    // to drift from the phone.
     service.on('updateNotification').listen((event) {
       if (event != null && service is AndroidServiceInstance) {
-        final mode = event['mode'] as String? ?? currentMode;
-        final txCount = event['txCount'] as int? ?? 0;
-        final rxCount = event['rxCount'] as int? ?? 0;
-        final queueSize = event['queueSize'] as int? ?? 0;
-
-        String body;
-        if (mode == 'Passive Mode') {
-          body = 'RX: $rxCount | Queue: $queueSize';
-        } else if (mode == 'Trace Mode') {
-          body = 'Trace: $txCount | RX: $rxCount | Queue: $queueSize';
-        } else {
-          body = 'TX: $txCount | RX: $rxCount | Queue: $queueSize';
-        }
-
+        currentTitle = event['title'] as String? ?? currentTitle;
         service.setForegroundNotificationInfo(
-          title: 'MeshMapper - $mode',
-          content: body,
+          title: currentTitle,
+          content: event['body'] as String? ?? '',
         );
       }
     });
@@ -281,7 +271,7 @@ class BackgroundServiceManager {
     if (service is AndroidServiceInstance) {
       service.setAsForegroundService();
       service.setForegroundNotificationInfo(
-        title: 'MeshMapper - $currentMode',
+        title: currentTitle,
         content: 'Starting wardriving...',
       );
     }

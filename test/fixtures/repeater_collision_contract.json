@@ -1,0 +1,41 @@
+{
+  "generated_by": "MeshMapper_Server/repeater_collision.php rc_build_index and rc_is_excluded",
+  "rdu_pair": [
+    {
+      "id": "DF85",
+      "hex_id": "DF85F67DCAC04FB8D567C77853DE6DF0DF72C2CE4575C94D03FB990A48A5E702",
+      "name": "Dahlonega Solar RAK 1W",
+      "lat": 34.52335,
+      "lon": -84.03748,
+      "last_heard": 100,
+      "enabled": 1,
+      "advert_bytes": 2,
+      "hop_bytes": 2,
+      "multibyte_capable": 1
+    },
+    {
+      "id": "DF85",
+      "hex_id": "DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4",
+      "name": "df85353ab65d",
+      "lat": 36.000378,
+      "lon": -78.912449,
+      "last_heard": 200,
+      "enabled": 1,
+      "advert_bytes": 2,
+      "hop_bytes": 2,
+      "multibyte_capable": 1
+    }
+  ],
+  "php_expected": [
+    {
+      "hex_id": "DF85F67DCAC04FB8D567C77853DE6DF0DF72C2CE4575C94D03FB990A48A5E702",
+      "excluded": true,
+      "display": "DF85"
+    },
+    {
+      "hex_id": "DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4",
+      "excluded": true,
+      "display": "DF85"
+    }
+  ]
+}

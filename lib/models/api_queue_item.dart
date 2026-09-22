@@ -17,7 +17,7 @@ part 'api_queue_item.g.dart';
 @HiveType(typeId: 3)
 class ApiQueueItem extends HiveObject {
   @HiveField(0)
-  final String type; // 'TX' or 'RX'
+  final String type; // 'TX', 'RX', 'DISC', 'TRACE' or 'DEFER'
 
   @HiveField(1)
   final double latitude;
@@ -64,6 +64,32 @@ class ApiQueueItem extends HiveObject {
   @HiveField(17)
   final String? wireTag;
 
+  /// Altitude of the fix in meters, null when the phone did not know it.
+  /// iOS reports height above mean sea level. Android usually reports height
+  /// above the WGS84 ellipsoid, but Android 14+ substitutes mean sea level
+  /// when the fix carries it, so one device can report either. The two differ
+  /// by the local geoid separation (up to ~100 m).
+  @HiveField(18)
+  final double? altitude;
+
+  /// The auto mode running when this item was queued, as the server's enum:
+  /// `active`, `hybrid`, `passive`, `trace`, or `none` for a manual ping or
+  /// an RX row heard while connected with no mode running. Null only when the
+  /// queue has no mode getter wired, which the server reads as unknown. An
+  /// analytics stamp: the server copies it to the coverage row.
+  @HiveField(19)
+  final String? autoMode;
+
+  /// The radio configuration this item was recorded under, the full
+  /// `freqMHz,bwKHz,SF,CR` tag the radio reported at connect (e.g.
+  /// `910.525,62.5,7,5`). Stamped at enqueue time from the live radio, so
+  /// the server reads the preset off the row instead of joining the session,
+  /// and an item queued before a preset change keeps the preset it was heard
+  /// on. Null when the radio reported no configuration or the queue has no
+  /// getter wired; the server then falls back to the session's value.
+  @HiveField(20)
+  final String? radioFreq;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -78,6 +104,9 @@ class ApiQueueItem extends HiveObject {
     this.power,
     this.pingCounter,
     this.wireTag,
+    this.altitude,
+    this.autoMode,
+    this.radioFreq,
   });
 
   /// Create from TX ping
@@ -92,6 +121,9 @@ class ApiQueueItem extends HiveObject {
     double? power,
     int? pingCounter,
     String? wireTag,
+    double? altitude,
+    String? autoMode,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'TX',
@@ -106,6 +138,9 @@ class ApiQueueItem extends HiveObject {
       power: power,
       pingCounter: pingCounter,
       wireTag: wireTag,
+      altitude: altitude,
+      autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -119,6 +154,9 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
+    String? autoMode,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'RX',
@@ -130,6 +168,9 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -148,6 +189,9 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
+    String? autoMode,
+    String? radioFreq,
   }) {
     // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
     final heardRepeats =
@@ -162,6 +206,9 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -178,6 +225,9 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
+    String? autoMode,
+    String? radioFreq,
   }) {
     final heardRepeats =
         '$repeaterId:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
@@ -191,6 +241,9 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -202,6 +255,9 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
+    String? autoMode,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'DISC',
@@ -213,11 +269,55 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
+      autoMode: autoMode,
+      radioFreq: radioFreq,
+    );
+  }
+
+  /// A square where smart pinging held a ping: the server verifies it was
+  /// covered and credits it. [held] is `tx` or `disc`, stored in the
+  /// heardRepeats slot the way DISC and TRACE overload it. Nothing else is
+  /// carried: the server pays for the square, not the reading, and the item
+  /// is never stamped with the auto mode.
+  factory ApiQueueItem.fromDefer({
+    required double latitude,
+    required double longitude,
+    required int timestamp,
+    required String held,
+    String? radioFreq,
+  }) {
+    return ApiQueueItem(
+      type: 'DEFER',
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: held,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: false,
+      radioFreq: radioFreq,
     );
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
+    // A deferral carries only the square and which kind of ping was held.
+    // Never the mode stamp (the server stores none for a deferral), but the
+    // radio tag rides along.
+    if (type == 'DEFER') {
+      return {
+        'type': type,
+        'lat': latitude,
+        'lon': longitude,
+        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
+        'held': heardRepeats,
+        // The preset the square was crossed on. The server verifies the
+        // square against that preset's coverage, not the region's whole
+        // history.
+        if (radioFreq != null) 'radio_freq': radioFreq,
+      };
+    }
+
     // For TRACE type, parse the heardRepeats field to extract individual values
     if (type == 'TRACE') {
       // Format: "repeaterId:localSnr:localRssi:remoteSnr"
@@ -234,6 +334,9 @@ class ApiQueueItem extends HiveObject {
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+        if (altitude != null) 'altitude': altitude!.round(),
+        if (autoMode != null) 'auto_mode': autoMode,
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
     }
 
@@ -250,6 +353,9 @@ class ApiQueueItem extends HiveObject {
           'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
           'external_antenna': externalAntenna,
           'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+          if (altitude != null) 'altitude': altitude!.round(),
+          if (autoMode != null) 'auto_mode': autoMode,
+          if (radioFreq != null) 'radio_freq': radioFreq,
         };
       }
 
@@ -270,6 +376,9 @@ class ApiQueueItem extends HiveObject {
             1000, // Unix timestamp in seconds
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+        if (altitude != null) 'altitude': altitude!.round(),
+        if (autoMode != null) 'auto_mode': autoMode,
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
     }
 
@@ -287,8 +396,24 @@ class ApiQueueItem extends HiveObject {
       // absence (coords mode / RX) is the unchanged-from-today coords path.
       if (pingCounter != null) 'ping_counter': pingCounter,
       if (wireTag != null) 'wire_tag': wireTag,
+      // Whole meters, omitted when the phone did not know its altitude.
+      if (altitude != null) 'altitude': altitude!.round(),
+      if (autoMode != null) 'auto_mode': autoMode,
+      if (radioFreq != null) 'radio_freq': radioFreq,
     };
   }
+
+  /// Whether this item carries a TX wire-tag claim.
+  ///
+  /// A tag only re-derives under the session that minted it, so a tagged item
+  /// is uploadable ONLY under that session. Once it outlives it the item is
+  /// undeliverable and gets dropped rather than uploaded, because every
+  /// alternative is worse: keeping the tag makes the server skip the row while
+  /// reporting success (a silent loss plus a wire_tag_mismatch warn), and
+  /// stripping it sends the ping down the coords path where, with no status-4
+  /// WAIT row left to join, it inserts as DEAD(3) and paints a GREY "dead"
+  /// cell on the map for a ping that actually got heard.
+  bool get hasWireTag => wireTag != null || pingCounter != null;
 
   /// Calculate next retry delay using exponential backoff
   Duration get nextRetryDelay {

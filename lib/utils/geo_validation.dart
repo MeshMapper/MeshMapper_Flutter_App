@@ -28,7 +28,8 @@ bool isDegenerateBounds(
   double maxLon, {
   double epsilonDeg = 1e-6,
 }) =>
-    (maxLat - minLat).abs() < epsilonDeg && (maxLon - minLon).abs() < epsilonDeg;
+    (maxLat - minLat).abs() < epsilonDeg &&
+    (maxLon - minLon).abs() < epsilonDeg;
 
 /// Clamp fit-bounds edge padding so it can never meet or exceed the map's
 /// rendered size.

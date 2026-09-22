@@ -10,6 +10,10 @@ class ProtocolConstants {
   /// Serial frame types
   static const int serialFrameTypeIncoming = 0x3e; // ">"
   static const int serialFrameTypeOutgoing = 0x3c; // "<"
+
+  /// A contact's out_path_len when no route is known (OUT_PATH_UNKNOWN):
+  /// the next send floods.
+  static const int outPathUnknown = 0xFF;
 }
 
 /// BLE GATT UUIDs for MeshCore devices
@@ -194,4 +198,39 @@ class DiscoveryConstants {
   /// Node types (lower nibble of response byte 0)
   static const int nodeTypeRepeater = 0x02;
   static const int nodeTypeRoom = 0x04;
+}
+
+/// Advert node types (ADV_TYPE_* in the firmware).
+class AdvTypes {
+  AdvTypes._();
+
+  static const int none = 0;
+  static const int chat = 1;
+  static const int repeater = 2;
+  static const int room = 3;
+  static const int sensor = 4;
+}
+
+/// Binary request types carried by CMD_SEND_BINARY_REQ (REQ_TYPE_* in the
+/// repeater firmware).
+class BinaryReqTypes {
+  BinaryReqTypes._();
+
+  static const int getStatus = 0x01;
+  static const int keepAlive = 0x02;
+  static const int getTelemetryData = 0x03;
+  static const int getAccessList = 0x05;
+  static const int getNeighbours = 0x06;
+}
+
+/// ERR frame codes (ERR_CODE_* in examples/companion_radio/MyMesh.cpp).
+class ErrorCodes {
+  ErrorCodes._();
+
+  static const int unsupportedCmd = 1;
+  static const int notFound = 2;
+  static const int tableFull = 3;
+  static const int badState = 4;
+  static const int fileIoError = 5;
+  static const int illegalArg = 6;
 }

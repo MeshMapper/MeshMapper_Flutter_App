@@ -43,14 +43,20 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:collection/collection.dart';
 
 import 'package:maplibre_gl_platform_interface/maplibre_gl_platform_interface.dart';
+
+// Offline database file copy needs dart:io on mobile; the web stub throws.
+import 'src/offline_export_stub.dart'
+    if (dart.library.io) 'src/offline_export_io.dart';
 
 export 'package:maplibre_gl_platform_interface/maplibre_gl_platform_interface.dart'
     show
         Annotation,
         ArgumentCallbacks,
         AttributionButtonPosition,
+        CameraAnimationInterpolation,
         CameraPosition,
         CameraTargetBounds,
         CameraUpdate,
@@ -64,23 +70,32 @@ export 'package:maplibre_gl_platform_interface/maplibre_gl_platform_interface.da
         LatLng,
         LatLngBounds,
         LatLngQuad,
+        LightProperties,
         Line,
         LineOptions,
-        LocationEngineAndroidProperties,
         LocationEnginePlatforms,
         LocationPriority,
+        LocationSource,
         LogoViewPosition,
+        ManualLocationSource,
+        ManualLocationUpdate,
+        MapLibreJsSource,
         MapLibreMethodChannel,
         MapLibrePlatform,
         MinMaxZoomPreference,
         MyLocationRenderMode,
         MyLocationTrackingMode,
         OnPlatformViewCreatedCallback,
+        PlatformLocationSource,
         RasterDemSourceProperties,
         RasterSourceProperties,
+        ScaleControlPosition,
+        ScaleControlUnit,
+        SkyProperties,
         SourceProperties,
         Symbol,
         SymbolOptions,
+        TerrainProperties,
         UserHeading,
         UserLocation,
         VectorSourceProperties,

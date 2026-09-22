@@ -11,21 +11,34 @@ import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:provider/provider.dart';
 
+import 'gps_info_chip.dart';
+
 import '../models/log_entry.dart';
 import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
+import '../services/repeater_admin/repeater_admin_models.dart';
+import '../utils/async_callback_boundary.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
+import '../utils/cluster_spread.dart';
+import '../utils/coalesced_async_runner.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
+import '../utils/public_key.dart';
+import '../utils/repeater_collision.dart';
 import '../utils/repeater_format.dart';
+import '../utils/repeater_marker_painter.dart';
+import '../utils/repeater_marker_style.dart';
+import '../utils/map_style_errors.dart';
+import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
+import 'repeater_admin_sheet.dart';
 import 'repeater_id_chip.dart';
 import 'rx_path_chain.dart';
 
@@ -42,6 +55,8 @@ const _satelliteStyleJson =
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
 const _defaultFontStack = ['Noto Sans Regular'];
 
+String _repeaterIdentity(Repeater repeater) => rcCleanHex(repeater.hexId);
+
 /// Image-name constants for the marker bitmaps registered via
 /// `controller.addImage()` and referenced by `SymbolOptions.iconImage`.
 ///
@@ -52,12 +67,15 @@ const _defaultFontStack = ['Noto Sans Regular'];
 class _MapImages {
   _MapImages._();
 
-  // Repeater shape bitmaps: status × hop_bytes
+  // Simplified-mode repeater CHIP bodies: status x hop_bytes. The chip body is
+  // baked here and MapLibre places the hex on top as a shared-glyph text
+  // label. Width follows the hop's hex length, so the label always has room in
+  // the space right of the state bar.
   // Names: rep_active_1, rep_dead_2, rep_dup_3, etc.
   static String repeater(String status, int hopBytes) =>
       'rep_${status}_$hopBytes';
 
-  // Detailed-mode baked repeater CHIP bitmaps: status × hop_bytes × hex label.
+  // Detailed-mode baked repeater CHIP bitmaps: status x hop_bytes x hex label.
   // The hex is baked into the icon (no text-field) so overlapping un-clustered
   // chips can't have a label detach onto a neighbour's box. One image per
   // distinct (status, hop, hex); registered lazily + deduped. See
@@ -66,7 +84,22 @@ class _MapImages {
   static String repeaterChip(String status, int hopBytes, String hex) =>
       'repchip_${status}_${hopBytes}_$hex';
 
-  static const repeaterStatuses = ['active', 'dead', 'new', 'dup'];
+  // Cluster badge disc, one per DOMINANT state. The count rides on top as a
+  // text label and the presence dots are a separate strip image, so "which
+  // states are present" and "which one dominates" stay two independent facts
+  // instead of needing one bitmap per combination of the two.
+  // Names: repbadge_active, repbadge_backbone, etc.
+  static String repeaterBadge(String status) => 'repbadge_$status';
+
+  // Cluster presence-dot strip, one per bitmask of the states present.
+  // Registered lazily for the masks the visible repeaters can actually
+  // produce: a zone showing three states needs 8 of these, not 32.
+  // Names: repdots_0 .. repdots_31.
+  static String repeaterDots(int mask) => 'repdots_$mask';
+
+  static final List<String> repeaterStatuses = [
+    for (final status in RepeaterMarkerStatus.values) status.wireKey,
+  ];
   static const repeaterHopBytes = [1, 2, 3];
 
   // Coverage marker bitmaps: type × success state
@@ -74,7 +107,7 @@ class _MapImages {
   static String coverage(String type, bool success) =>
       'cov_${type}_${success ? "ok" : "fail"}';
 
-  static const coverageTypes = ['tx', 'rx', 'disc', 'trace'];
+  static const coverageTypes = ['tx', 'rx', 'disc', 'trace', 'deferred'];
 
   // GPS marker bitmaps: one per style
   // Names: gps_arrow, gps_car, etc. The list of styles lives in
@@ -171,100 +204,237 @@ Future<({Uint8List bytes, Size size})> _renderDistanceLabelPng(
   );
 }
 
-/// Bakes a complete repeater "chip" — the status-colored rounded box plus its
-/// centered hex label — into a single PNG, so the label is part of the icon and
-/// can never detach onto a neighbouring chip's box (the MapLibre symbol two-pass
-/// "all icons, then all glyphs" overlap bug). Used ONLY in Detailed grid mode,
-/// where repeaters are un-clustered and can overlap. Simplified mode keeps the
-/// cheap shared-glyph text-field path (clustering guarantees ≥50px spacing).
-///
-/// Variable width — sized to the measured hex like [_renderDistanceLabelPng].
-/// Baked at devicePixelRatio 3.0 to stay crisp on hi-DPI; rendered with
-/// iconSize 1.0 + center anchor. Box visuals mirror [_RepeaterShapePainter]
-/// (drop shadow, filled box, 2px white border) so chips match the Simplified
-/// shape markers.
-Future<Uint8List> _renderRepeaterChipPng(
-  String hex,
-  Color fill,
-  double borderRadius, {
-  double devicePixelRatio = 3.0,
-}) async {
-  const fontSize = 13.0;
-  const horizontalPad = 8.0; // inside the box, each side
-  const boxHeight = 26.0;
-  const shadowBlur = 4.0;
-  const margin = 5.0; // room around the box for the (blurred, +2px) shadow
-
-  final textPainter = TextPainter(
-    text: TextSpan(
-      text: hex,
-      style: const TextStyle(
-        fontSize: fontSize,
-        color: Colors.white,
-        fontWeight: FontWeight.bold,
-      ),
-    ),
-    textDirection: TextDirection.ltr,
-  )..layout();
-
-  final boxWidth = textPainter.width + horizontalPad * 2;
-  final logicalWidth = boxWidth + margin * 2;
-  const logicalHeight = boxHeight + margin * 2;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = Canvas(recorder);
-  canvas.scale(devicePixelRatio);
-
-  final boxRect = Rect.fromLTWH(margin, margin, boxWidth, boxHeight);
-  final radius = Radius.circular(borderRadius);
-
-  // Drop shadow (positioned 2px below the box).
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(boxRect.shift(const Offset(0, 2)), radius),
-    Paint()
-      ..color = Colors.black26
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur),
-  );
-
-  // Filled colored box.
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(boxRect, radius),
-    Paint()..color = fill,
-  );
-
-  // White border (2px, drawn just inside the box edge).
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-      boxRect.deflate(1),
-      Radius.circular(borderRadius - 1),
-    ),
-    Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0,
-  );
-
-  // Centered hex label.
-  textPainter.paint(
-    canvas,
-    Offset(
-      margin + (boxWidth - textPainter.width) / 2,
-      margin + (boxHeight - textPainter.height) / 2,
-    ),
-  );
-
-  final picture = recorder.endRecording();
+/// Encodes a recorded picture of [logicalSize] to PNG bytes at [dpr].
+Future<Uint8List> _encodePicture(
+  ui.Picture picture,
+  Size logicalSize,
+  double dpr,
+  String what,
+) async {
   final image = await picture.toImage(
-    (logicalWidth * devicePixelRatio).round(),
-    (logicalHeight * devicePixelRatio).round(),
+    (logicalSize.width * dpr).round(),
+    (logicalSize.height * dpr).round(),
   );
   final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
   picture.dispose();
   image.dispose();
   if (byteData == null) {
-    throw StateError('Failed to encode repeater chip to PNG bytes');
+    throw StateError('Failed to encode $what to PNG bytes');
   }
   return byteData.buffer.asUint8List();
+}
+
+/// How much of the screen the repeater detail sheet's facts card may occupy
+/// before it starts scrolling inside itself.
+///
+/// Measured, not picked: the sheet used to open at about 58% of the screen,
+/// and a repeater carrying the full set of admin-entered site details pushed
+/// it to 81%. The card accounts for roughly 32 points of that, so capping it
+/// here returns the sheet to its old opening height while leaving every
+/// shorter card, which is most of them, exactly as it was.
+const double _repeaterCardMaxHeightFraction = 0.32;
+
+/// Height of the repeater chip's whole BOX in the detail sheet's header,
+/// glow margin included, against the 44 the old solid pill occupied.
+///
+/// The map bakes its chips at their final size, 24 logical px tall (28 for a
+/// newly discovered one). That is right on a map and small beside a
+/// `titleLarge` name, so the sheet draws the SAME chip scaled up rather than a
+/// lookalike built from a `Container`. Scaling the canvas takes the bar, the
+/// state line, the hairline, the corner radius and the label with it, so the
+/// proportions the design rests on survive exactly.
+///
+/// It measures the BOX, not the body, because [repeaterChipGlowMargin] is
+/// transparent padding the chip needs but the header cannot spend. Sizing the
+/// body to 40 instead put the box at 67 tall and up to 127 wide for a
+/// six-character id, against the old badge's 44 by roughly 70, and the name
+/// beside it had nowhere left to go.
+///
+/// 44 is the old badge's own footprint, so swapping the pill for this chip
+/// cannot reflow the header, and it lands the label at about 13 px, which is
+/// the size the old badge used for anything longer than two characters. Raise
+/// it if the chip reads too small on a device; it is the only number to
+/// change, and everything else scales with it.
+const double _sheetChipBoxHeight = 44;
+
+/// The scale every header chip is drawn at. Derived from the ORDINARY chip, so
+/// it is one number for all of them and a new repeater stays proportionally
+/// taller here exactly as it is on the map, rather than being squashed back to
+/// a common height and losing the signal.
+const double _sheetChipScale = _sheetChipBoxHeight /
+    (RepeaterMarkerStyle.chipHeight + repeaterChipGlowMargin * 2);
+
+/// Draws one repeater chip in the map's marker style, at [_sheetChipScale].
+///
+/// Deliberately a thin wrapper over [paintRepeaterChip] and
+/// [paintRepeaterChipLabel], the same functions that bake the map's bitmaps.
+/// A palette change, a geometry change or a new state then moves the marker
+/// and this chip together; a hand-rolled copy would drift the moment either
+/// side was touched, which is exactly what the old solid-fill pill did.
+class _RepeaterChip extends StatelessWidget {
+  const _RepeaterChip({
+    required this.hex,
+    required this.accent,
+    required this.bodyRadius,
+    required this.isNew,
+  });
+
+  final String hex;
+  final Color accent;
+  final double bodyRadius;
+  final bool isNew;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = repeaterChipLabelPainter(hex, isNew: isNew);
+    final chip = RepeaterMarkerStyle.chipSize(hex.length,
+        isNew: isNew, measuredLabelWidth: label.width);
+    // The glow is drawn outside the chip's own box, so the widget reserves the
+    // same margin the baked bitmaps do or it would be clipped at the edges.
+    final logical = Size(
+      chip.width + repeaterChipGlowMargin * 2,
+      chip.height + repeaterChipGlowMargin * 2,
+    );
+    const scale = _sheetChipScale;
+    return SizedBox(
+      width: logical.width * scale,
+      height: logical.height * scale,
+      child: CustomPaint(
+        painter: _RepeaterChipPainter(
+          label: label,
+          chip: chip,
+          accent: accent,
+          bodyRadius: bodyRadius,
+          isNew: isNew,
+          scale: scale,
+        ),
+      ),
+    );
+  }
+}
+
+class _RepeaterChipPainter extends CustomPainter {
+  _RepeaterChipPainter({
+    required this.label,
+    required this.chip,
+    required this.accent,
+    required this.bodyRadius,
+    required this.isNew,
+    required this.scale,
+  });
+
+  final TextPainter label;
+  final Size chip;
+  final Color accent;
+  final double bodyRadius;
+  final bool isNew;
+  final double scale;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.scale(scale);
+    final body = paintRepeaterChip(
+      canvas,
+      Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width,
+          chip.height),
+      accent,
+      bodyRadius,
+      isNew: isNew,
+    );
+    paintRepeaterChipLabel(canvas, body, label);
+  }
+
+  @override
+  bool shouldRepaint(_RepeaterChipPainter old) =>
+      old.accent != accent ||
+      old.bodyRadius != bodyRadius ||
+      old.isNew != isNew ||
+      old.scale != scale ||
+      old.label.text?.toPlainText() != label.text?.toPlainText();
+}
+
+/// Bakes a complete repeater chip (body, state bar, edge and the hex label)
+/// into a single PNG, so the label is part of the icon and can never detach
+/// onto a neighbouring chip's box (the MapLibre symbol two-pass "all icons,
+/// then all glyphs" overlap bug). Used ONLY in Detailed grid mode, where
+/// repeaters are un-clustered and can overlap. Simplified keeps the cheap
+/// shared-glyph text-field path, since clustering guarantees spacing there.
+Future<Uint8List> _renderRepeaterChipPng(
+  String hex,
+  Color accent,
+  double borderRadius, {
+  required bool isNew,
+  double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
+}) async {
+  final textPainter = repeaterChipLabelPainter(hex, isNew: isNew);
+  final chip = RepeaterMarkerStyle.chipSize(hex.length,
+      isNew: isNew, measuredLabelWidth: textPainter.width);
+  final logical = Size(
+    chip.width + repeaterChipGlowMargin * 2,
+    chip.height + repeaterChipGlowMargin * 2,
+  );
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+
+  final body = paintRepeaterChip(
+    canvas,
+    Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width,
+        chip.height),
+    accent,
+    borderRadius,
+    isNew: isNew,
+  );
+
+  paintRepeaterChipLabel(canvas, body, textPainter);
+
+  return _encodePicture(
+      recorder.endRecording(), logical, devicePixelRatio, 'repeater chip');
+}
+
+/// Bakes the cluster badge disc: neutral body, a ring in the DOMINANT state's
+/// colour, and the hairline outside it. The count and the presence dots are
+/// drawn over this by their own layers.
+///
+/// A circle, not a pill: hex ids like 41, CC and FD are real, so a pill
+/// reading "23" would be ambiguous with a single repeater.
+Future<Uint8List> _renderRepeaterBadgePng(
+  Color ring, {
+  double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
+}) async {
+  const size =
+      Size(RepeaterMarkerStyle.badgeCanvas, RepeaterMarkerStyle.badgeCanvas);
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+  paintRepeaterBadge(canvas, ring);
+
+  return _encodePicture(
+      recorder.endRecording(), size, devicePixelRatio, 'repeater badge');
+}
+
+/// Bakes the cluster badge's presence-dot row: one dot per state PRESENT, all
+/// the same size, centred as a row.
+///
+/// Uniform on purpose. The dots answer "which states are in here"; the badge
+/// ring answers "which one dominates". Sizing them by share would blur the two
+/// questions into one ambiguous picture.
+Future<Uint8List> _renderRepeaterDotsPng(
+  List<Color> dots, {
+  double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
+}) async {
+  const size = Size(
+      RepeaterMarkerStyle.dotStripWidth, RepeaterMarkerStyle.dotStripHeight);
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+  paintRepeaterDots(canvas, dots);
+
+  return _encodePicture(
+      recorder.endRecording(), size, devicePixelRatio, 'repeater dots');
 }
 
 Future<Uint8List> _renderPainterToPng(
@@ -556,9 +726,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // would otherwise never re-run and the coverage layer would stay missing.
   String? _lastOverlayZoneCode;
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
-  // the current preference in _buildMap to detect slider changes and apply
-  // them live via _applyCoverageOverlayOpacity (no layer rebuild needed).
+  // the current preference in _onCoverageOpacityNotify to detect slider
+  // changes and apply them live via _applyCoverageOverlayOpacity (no layer
+  // rebuild needed).
   double? _lastAppliedCoverageOpacity;
+  // Set while _onCoverageOpacityNotify has an apply in flight.
+  // _applyCoverageOverlayOpacity only records the new value AFTER both awaited
+  // setLayerProperties calls, and the listener runs on every provider notify
+  // (GPS at ~2 Hz, the passive-RX storm at 10-20/sec), so without this a single
+  // slider step fires duplicate platform calls and duplicate log lines for the
+  // whole round trip.
+  bool _coverageOpacityApplyInFlight = false;
   // Guard flag that coalesces multiple overlay-refresh triggers (zone and
   // pref changes) in the same frame into a single post-frame callback.
   // Without this, two watchers can schedule concurrent _refreshCoverageOverlay
@@ -582,6 +760,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // paint; a change to either rebuilds the overlay via the build watcher.
   int? _lastAppliedGridSize;
   String? _lastAppliedCvd;
+
+  /// The radio preset filter key the overlay was last built with (Task: the
+  /// preset filter is baked into the tile URL like the grid size). Null
+  /// means unfiltered.
+  String? _lastAppliedRadioKey;
+  int? _lastAppliedRecentDays;
   // Session coverage patch: a GeoJSON layer carrying the user's own
   // freshly-pinged cells ON TOP of the base overlay; the base layer's copies
   // of those cells are hidden via setFilter so translucent fills never stack.
@@ -590,6 +774,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const String _patchSourceId = 'meshmapper-coverage-patch';
   static const String _patchLayerId = 'meshmapper-coverage-patch-layer';
   bool _patchLayerReady = false;
+
+  /// Serializes every coverage overlay/patch style mutation. These flows are
+  /// multi-await sequences whose ready-flags are checked before the first
+  /// await; two of them interleaving (the zone-transfer rebuild racing the
+  /// post-upload patch refresh) double-added the patch source and crashed at
+  /// a region boundary (#495), and the same class of race froze the GPS puck
+  /// when its duplicate install failed permanently (#482). Entry points
+  /// enqueue; the *Locked bodies and the helpers they call must never
+  /// enqueue, or they deadlock the gate.
+  final SerialTaskGate _coverageGate = SerialTaskGate();
 
   // Tap-to-highlight overlay: a fill layer painting the clicked cell's
   // (2·blob+1)² block (3×3 Detailed / 1 cell Simplified), centred on the tapped
@@ -662,6 +856,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // which causes the sync logic to race against itself. This flag bails
   // any nested call.
   bool _styleLoadInProgress = false;
+  final CoalescedAsyncRunner _styleLoadRunner = CoalescedAsyncRunner();
+
+  // Monotonic counter for the Android deferred style re-sync. Bumped when a
+  // style reload BEGINS (a new styleString handed to MapLibreMap), at the
+  // start of every _restoreStyle, and again when a re-sync is armed at the end
+  // of one. The delayed callback bails when the generation it captured no
+  // longer matches, meaning a newer style load superseded it. Bumping at the
+  // start matters: a callback armed by the previous load would otherwise pass
+  // all its checks while the next restore is still mid-flight, pushing into a
+  // style whose cluster layers do not exist yet (so the coverage fill, with no
+  // belowLayerId to anchor to, lands above the repeater stack).
+  int _androidStyleResyncGen = 0;
+
+  // Style URL last handed to MapLibreMap. A change is the true start of a
+  // style reload: the plugin's didUpdateWidget fires a native setStyle that
+  // wipes every source and layer long before onStyleLoadedCallback fires.
+  String? _lastStyleUrl;
 
   // True only after _setupRepeaterClusterLayers has finished creating the
   // cluster GeoJSON source AND all 3 layers. Set to false at the start of
@@ -744,6 +955,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // _ensureRepeaterChipImages; cleared on style reload (native drops images).
   final Set<String> _registeredChipImages = {};
 
+  // Cluster presence-dot strips registered so far, by image name. Grown lazily
+  // by _ensureRepeaterDotImages and cleared on style reload with the chips,
+  // because a native style teardown drops every registered image.
+  final Set<String> _registeredDotImages = {};
+
   // When true, _syncAllAnnotations skips _updateFocusLines and
   // _syncDistanceLabels so the 500ms zoom-to-fit animation runs without
   // contention from heavy native platform calls. The deferred work runs
@@ -754,7 +970,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const _repeaterSourceId = 'repeaters-source';
   static const _repeaterIndividualLayerId = 'repeaters-individual';
   static const _repeaterClusterBubbleLayerId = 'repeaters-cluster-bubble';
+  static const _repeaterClusterDotsLayerId = 'repeaters-cluster-dots';
   static const _repeaterClusterCountLayerId = 'repeaters-cluster-count';
+  static const _repeaterClusterHitLayerId = 'repeaters-cluster-hit';
 
   // Spiderfy source/layer IDs — non-clustered shadow source rendering spread
   // markers + leader lines for stacked repeaters that won't separate by zoom.
@@ -766,6 +984,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // at the user's max zoom` of each other will visually overlap even when
   // fully zoomed in, so they're the candidates that won't be separated by
   // additional zoom and need to be spread apart instead.
+  //
+  // This is ALSO the value handed to the cluster source as `clusterRadius`,
+  // and the one `clusterExpansionZoom` inverts to find the zoom a tap should
+  // jump to. All three have to be the same number or the tap rule starts
+  // describing a map that does not exist.
   static const double _clusterRadiusPx = 50;
   static const double _spiderInnerRadiusPx = 44;
   static const double _spiderOuterRadiusPx = 80;
@@ -827,9 +1050,32 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // _handleGpsPosition. GPS notifies no longer bump mapRevision, so the map's
     // Selector doesn't rebuild on position.
     _patchProviderRef!.addListener(_onPositionNotify);
+    // Coverage overlay opacity is UI-only state that must not bump mapRevision
+    // (a rebuild per slider step would relayout the platform view), so it needs
+    // a direct listener too. See _onCoverageOpacityNotify.
+    _patchProviderRef!.addListener(_onCoverageOpacityNotify);
+    _patchProviderRef!.addListener(_onCoverageFilterNotify);
   }
 
   AppStateProvider? _patchProviderRef;
+
+  /// Auth/release can change the effective window on a UI-only notify.
+  /// Observe it directly so the memoized map never keeps a regional override.
+  void _onCoverageFilterNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted || !_isMapReady || !_styleLoaded) return;
+    if (_lastAppliedRecentDays == appState.coverageOverlayDays) return;
+    _lastAppliedRecentDays = appState.coverageOverlayDays;
+    appState.clearCoveragePatch();
+    _clearCoverageConnections();
+    if (_coverageRefreshScheduled) return;
+    _coverageRefreshScheduled = true;
+    scheduleMicrotask(() async {
+      _coverageRefreshScheduled = false;
+      if (!mounted || !_isMapReady || !_styleLoaded) return;
+      await _refreshCoverageOverlay(appState);
+    });
+  }
 
   void _onCoveragePatchNotify() {
     final appState = _patchProviderRef;
@@ -847,6 +1093,44 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final appState = _patchProviderRef;
     if (appState == null || !mounted) return;
     _handleGpsPosition(appState);
+  }
+
+  /// Fires on every provider notify; pushes a changed coverage overlay opacity
+  /// straight into the live fill layers via the controller, no rebuild.
+  ///
+  /// This CANNOT be a build() watcher. The map is isolated behind the memoized
+  /// mapRevision Selector (home_screen._buildMapSelector) and the opacity
+  /// preference is UI-only state that deliberately does not bump mapRevision,
+  /// so build() never re-runs when the slider moves. The value then only
+  /// reached MapLibre on the next full overlay rebuild (#434).
+  ///
+  /// Skipped while ping focus mode is active (focus forces opacity to 0 and
+  /// _dismissPingFocus restores the preference value directly) and while a
+  /// tapped cell or an isolated repeater dims the backdrop, or this would
+  /// un-dim it mid-sheet.
+  void _onCoverageOpacityNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    if (!_isMapReady || !_styleLoaded) return;
+    if (_focusedPingLocation != null) return;
+    if (_coverageDimmedForCell || _coverageDimmedForRepeater) return;
+    if (_coverageOpacityApplyInFlight) return;
+    final wanted = appState.preferences.coverageOverlayOpacity;
+    if (_lastAppliedCoverageOpacity == null ||
+        _lastAppliedCoverageOpacity == wanted) {
+      return;
+    }
+    _coverageOpacityApplyInFlight = true;
+    _applyCoverageOverlayOpacity(wanted).whenComplete(() {
+      _coverageOpacityApplyInFlight = false;
+      if (!mounted) return;
+      // A slider step that landed mid-flight was dropped by the guard above.
+      // Re-check so the final value still lands when no further notify follows
+      // (e.g. sitting in Settings, not wardriving). Gated on the apply having
+      // actually succeeded: on failure _lastAppliedCoverageOpacity is unchanged
+      // and re-running would spin forever.
+      if (_lastAppliedCoverageOpacity == wanted) _onCoverageOpacityNotify();
+    });
   }
 
   @override
@@ -891,11 +1175,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    final controller = _mapController;
+    // Invalidate the field before any async restore helper can resume. Those
+    // helpers dereference the field after awaits, so they fail closed here;
+    // keep the local only for listener cleanup below.
+    _mapController = null;
+    _styleLoadRunner.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
+    _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
+    _patchProviderRef?.removeListener(_onCoverageFilterNotify);
     _tileLoadTimeoutTimer?.cancel();
-    final controller = _mapController;
     if (controller != null) {
       controller.removeListener(_onCameraChanged);
       // Symbol/feature tap listeners are registered in _onMapCreated onto
@@ -1068,9 +1359,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         !_canAnimateCamera) {
       return;
     }
-    final valid = points
-        .where((p) => isValidLatLng(p.latitude, p.longitude))
-        .toList();
+    final valid =
+        points.where((p) => isValidLatLng(p.latitude, p.longitude)).toList();
     if (valid.length < 2) return;
 
     double minLat = valid[0].latitude, maxLat = valid[0].latitude;
@@ -1344,7 +1634,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _mapController!
           .getMetersPerPixelAtLatitude(position.latitude)
           .then((mapLibreMpx) {
-        debugLog('[MAP CENTER] m/px sanity: formula=${metersPerPixel.toStringAsFixed(4)} '
+        debugLog(
+            '[MAP CENTER] m/px sanity: formula=${metersPerPixel.toStringAsFixed(4)} '
             'maplibre=${mapLibreMpx.toStringAsFixed(4)} '
             'ratio=${(metersPerPixel / mapLibreMpx).toStringAsFixed(3)} '
             '(zoom=${zoom.toStringAsFixed(2)} lat=${position.latitude.toStringAsFixed(4)})');
@@ -1444,8 +1735,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   widget.bottomPaddingPixels,
                   widget.rightPaddingPixels,
                   16.0 - _zoomEpsilon);
-              _animateToPositionWithZoom(
-                  adjustedPosition, 16.0 - _zoomEpsilon);
+              _animateToPositionWithZoom(adjustedPosition, 16.0 - _zoomEpsilon);
               debugLog(
                   '[MAP] Initial zoom to GPS position (with panel offset)');
             } else {
@@ -1534,7 +1824,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState.preferences.gpsMarkerStyle,
       );
       if (gpsVersion != _lastGpsSyncVersion) {
-        _lastGpsSyncVersion = gpsVersion;
+        // NOT recorded here: _syncGpsSymbol records the version of what it
+        // actually pushed. Recording eagerly marked dropped updates (in-flight
+        // skip, failed install) as applied, and with GpsService's
+        // distanceFilter there is no periodic tick to paper over the gap, so
+        // the puck stayed wherever the drop left it until the next real
+        // movement (#482).
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
           if (_gpsSyncInFlight) return;
@@ -1715,7 +2010,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildGpsInfoOverlay(appState),
+                // Rebuilt per fix through its own Selector, never with the
+                // map: build() here runs only on mapRevision bumps, which
+                // left the chip frozen between pings while disconnected.
+                Selector<AppStateProvider, GpsChipReadings>(
+                  selector: (_, state) => GpsChipReadings.from(
+                    position: state.currentPosition,
+                    distanceFromLastPing: state.distanceFromLastPing,
+                    isImperial: state.preferences.isImperial,
+                  ),
+                  builder: (_, readings, __) => GpsInfoChip(readings: readings),
+                ),
                 if (appState.preferences.showTopRepeaters) ...[
                   const SizedBox(height: 6),
                   _buildTopRepeatersOverlay(appState),
@@ -1914,8 +2219,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// maplibre_gl 0.25.0 has no `setOffline` implementation, so we ship our
   /// own: a URLProtocol that fails tile requests fast while offline mode is
   /// engaged, letting MapLibre-iOS render only its cached tiles.
-  static const _iosOfflineChannel =
-      MethodChannel('meshmapper/ios_map_offline');
+  static const _iosOfflineChannel = MethodChannel('meshmapper/ios_map_offline');
 
   /// Toggle MapLibre between online (network tiles) and offline (cache-only).
   /// Android uses the plugin's native `setOffline`; iOS uses our bridge.
@@ -1941,6 +2245,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Always use the real style so downloaded offline tiles can render from
     // cache. Network access is controlled via setOffline() instead.
     final newStyleUrl = mapStyle.styleUrl;
+
+    // A style swap starts here, not at onStyleLoadedCallback: handing a new
+    // styleString to MapLibreMap makes the plugin's didUpdateWidget fire a
+    // native setStyle, and every source, layer and registered image is gone
+    // from that moment. Mark the style as not loaded so nothing pushes into
+    // the style being torn down (_restoreStyle sets it true again once the
+    // new one is up), and bump the deferred re-sync generation so a callback
+    // armed by the previous load bails instead of pushing into the incoming
+    // style.
+    if (_lastStyleUrl != null && _lastStyleUrl != newStyleUrl) {
+      debugLog('[MAP] Style reload starting, marking style not loaded');
+      _styleLoaded = false;
+      _androidStyleResyncGen++;
+    }
+    _lastStyleUrl = newStyleUrl;
 
     // Detect mapTilesEnabled toggle changes and switch MapLibre between
     // online (network tiles) and offline (cache-only) mode. This avoids
@@ -2004,8 +2323,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _styleLoaded &&
         _lastAppliedGridSize != null &&
         _lastAppliedGridSize != prefsForOverlay.coverageGridSize;
+    // Every marker bitmap is baked with the palette that was active when the
+    // style loaded, so a Colour Vision change has to re-bake them. Without
+    // this the repeater markers, the cluster badges and the coverage pins keep
+    // the old palette until the user happens to cycle the basemap.
+    final cvdChanged = _isMapReady &&
+        _styleLoaded &&
+        _lastAppliedCvd != null &&
+        _lastAppliedCvd != prefsForOverlay.colorVisionType;
+    // The preset filter is baked into the tile URL like the grid size, so a
+    // change (connect on a different preset, or the remembered value
+    // arriving) rebuilds the overlay. The first add records the key itself.
+    final radioChanged = _isMapReady &&
+        _styleLoaded &&
+        _lastAppliedGridSize != null &&
+        _lastAppliedRadioKey != appState.radioFilterKey;
 
-    if (zoneChanged || overlayPrefChanged) {
+    if (zoneChanged || overlayPrefChanged || radioChanged) {
       if (zoneChanged) {
         _lastOverlayZoneCode = appState.zoneCode;
         // The session patch belongs to the old region's grid.
@@ -2024,11 +2358,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _lastAppliedGridSize = prefsForOverlay.coverageGridSize;
         _lastAppliedCvd = prefsForOverlay.colorVisionType;
       }
+      if (radioChanged) {
+        debugLog(
+            '[MAP] Coverage overlay preset changed: ${_lastAppliedRadioKey ?? 'any'} -> ${appState.radioFilterKey ?? 'any'}');
+        // The session patch and any open community view were decoded from
+        // the old preset's tiles.
+        appState.clearCoveragePatch();
+        _clearCoverageConnections();
+        _lastAppliedRadioKey = appState.radioFilterKey;
+      }
       if (!_coverageRefreshScheduled) {
         _coverageRefreshScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           _coverageRefreshScheduled = false;
           if (!mounted) return;
+          // Re-bake first: a layer rebuild below would otherwise wire itself
+          // to bitmaps still carrying the outgoing palette. The lazily-baked
+          // caches are dropped so the resync re-registers those too.
+          if (cvdChanged) {
+            _registeredChipImages.clear();
+            _registeredDotImages.clear();
+            await _registerMapImages(appState);
+            debugLog('[MAP] Re-baked marker bitmaps for colour vision '
+                '${prefsForOverlay.colorVisionType}');
+          }
           // Rebuild the repeater source/layers with the new cluster flag BEFORE
           // the coverage overlay refresh — coverage targets the bottom repeater
           // layer as its belowLayerId, so those layers must exist first. Collapse
@@ -2039,6 +2392,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             _clusterLayersReady = false;
             await _setupRepeaterClusterLayers(
                 clustered: appState.preferences.coverageGridSize != 100);
+            await _syncRepeaterSymbols(appState);
+          } else if (cvdChanged) {
+            // addImage replaces by name, so the chips already on the map pick
+            // the new palette up on their own. The lazily-baked ones were just
+            // dropped from the cache and only a sync re-registers them.
             await _syncRepeaterSymbols(appState);
           }
           await _refreshCoverageOverlay(appState);
@@ -2070,24 +2428,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // (Session-patch application: direct provider listener
     // _onCoveragePatchNotify — see initState for why it's not a build watcher.)
 
-    // Detect coverage overlay opacity change (user dragged the slider in
-    // Settings → General) and push it to the live raster layer without
-    // rebuilding the whole overlay. Skipped while ping focus mode is active —
-    // focus forces opacity to 0 and _dismissPingFocus restores the preference
-    // value directly — and while a tapped cell dims the backdrop (_clearCellHighlight
-    // restores it on sheet close), or this would un-dim it mid-sheet.
-    final wantedOpacity = appState.preferences.coverageOverlayOpacity;
-    if (_isMapReady &&
-        _styleLoaded &&
-        _focusedPingLocation == null &&
-        !_coverageDimmedForCell &&
-        !_coverageDimmedForRepeater &&
-        _lastAppliedCoverageOpacity != null &&
-        _lastAppliedCoverageOpacity != wantedOpacity) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _applyCoverageOverlayOpacity(wantedOpacity);
-      });
-    }
+    // (Coverage overlay opacity: direct provider listener
+    // _onCoverageOpacityNotify, for the same reason. Opacity is UI-only state
+    // that must not bump mapRevision, so a build() watcher here would never
+    // run when the slider moves.)
 
     return Stack(
       children: [
@@ -2104,6 +2448,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           zoomGesturesEnabled: true,
           tiltGesturesEnabled: false, // 2D wardriving map
           compassEnabled: false, // We have our own controls
+          // The (i) attribution button carries the OpenStreetMap and
+          // OpenFreeMap credit the ODbL requires, so it has to stay visible.
+          // Bottom-left, lifted by the control panel's height (the same
+          // padding the camera uses), so it rides just above the panel
+          // instead of underneath it. Both platforms apply the margins live
+          // through the map options diff, so it follows the panel as it
+          // opens, minimises and closes.
+          attributionButtonPosition: AttributionButtonPosition.bottomLeft,
+          attributionButtonMargins:
+              math.Point(8, widget.bottomPaddingPixels + 8),
           // CRITICAL: must be true so the controller's `cameraPosition` getter
           // stays synced with the platform side. Without this, the Dart-side
           // _cameraPosition is set once at construction and never updated, which
@@ -2113,7 +2467,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // marker overlay updates.
           trackCameraPosition: true,
           onMapCreated: _onMapCreated,
-          onStyleLoadedCallback: () => _onStyleLoaded(appState),
+          onStyleLoadedCallback: () => _handleStyleLoadedCallback(appState),
           onMapIdle: _onMapIdle,
           onCameraIdle: _onCameraIdle,
           // onMapClick fires ONLY for taps that DON'T hit an interactive
@@ -2187,6 +2541,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             .firstOrNull;
         if (entry != null) _showTraceDetails(entry);
         break;
+      case 'deferred':
+      case 'history_deferred':
+        final markers = kind == 'deferred'
+            ? appState.deferredPingMarkers
+            : appState.historySessionMarkers ?? <PingEventMarker>[];
+        final marker =
+            markers.where((m) => _deferredMarkerId(m) == id).firstOrNull;
+        if (marker != null) _showDeferredPingDetails(marker);
+        break;
       case 'history_tx':
       case 'history_rx':
       case 'history_disc':
@@ -2206,6 +2569,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// parameter.
   void _onMapEmptyTap(math.Point<double> point, LatLng coordinates) {
     if (!mounted) return;
+    debugLog('[MAP] tap dispatch: empty '
+        'x=${point.x.toStringAsFixed(1)} y=${point.y.toStringAsFixed(1)} '
+        'spider=${_spiderCenter != null}');
     if (_spiderCenter != null) {
       _collapseSpider();
       return; // dismissing the spider shouldn't also open a cell summary
@@ -2340,9 +2706,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // hide the repeaters that didn't, and label each line with its distance.
     // Lines are theme-aware blue (web keys off the basemap; we key off the
     // Flutter theme). Read brightness before the async gap.
-    final fanColor = Theme.of(context).brightness == Brightness.dark
-        ? '#4da6ff'
-        : '#00008b';
+    final fanColor =
+        Theme.of(context).brightness == Brightness.dark ? '#4da6ff' : '#00008b';
     blobPointsFuture.then((pts) {
       if (!mounted || !_cellPopupActive) return;
       final eps = _capByFarthest(
@@ -2360,7 +2725,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           segments, cell.centerLat, cell.centerLon, isImperial);
       // Empty -> null restores all repeaters (never hide-all on an empty set).
       _coverageHeardRepeaterIds =
-          eps.isEmpty ? null : {for (final e in eps) e.repeaterId};
+          eps.isEmpty ? null : {for (final e in eps) rcCleanHex(e.repeaterId)};
       _syncRepeaterSymbols(appState);
       // Match ping focus: frame the cell + the repeaters that heard it (no-op
       // when nothing was heard — single point — leaving the north-up view).
@@ -2446,7 +2811,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ///  - individual repeater layer → look up the Repeater by id and open the
   ///    existing detail sheet
   ///
-  /// [id] is the GeoJSON Feature `id` (which we set to `repeater.id` for
+  /// [id] is the GeoJSON Feature `id` (the repeater's full public key for
   /// individual repeaters; MapLibre auto-generates one for cluster features).
   /// [annotation] is always null here since these layers aren't managed by
   /// the annotation manager.
@@ -2458,6 +2823,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     Annotation? annotation,
   ) {
     if (!mounted) return;
+    debugLog('[MAP] tap dispatch: layer=$layerId '
+        'x=${point.x.toStringAsFixed(1)} y=${point.y.toStringAsFixed(1)} '
+        'spider=${_spiderCenter != null}');
 
     // Spider spread marker: the user has picked one of the fanned-out repeaters
     // to inspect → collapse the spider and focus that repeater (focus mode + its
@@ -2480,7 +2848,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // start (~150ms before any noticeable motion). Passing a duration switches
     // the native code path to fly(to:withDuration:) which ramps in faster and
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
-    if (layerId == _repeaterClusterBubbleLayerId ||
+    if (layerId == _repeaterClusterHitLayerId ||
+        layerId == _repeaterClusterBubbleLayerId ||
+        layerId == _repeaterClusterDotsLayerId ||
         layerId == _repeaterClusterCountLayerId) {
       _handleClusterBubbleTap(point, coordinates);
       return;
@@ -2569,56 +2939,103 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       math.Point<double> point, LatLng coordinates) async {
     if (!mounted) return;
 
-    // Below max zoom: zoom in further so the user has a chance to separate
-    // the stack visually before we resort to the spread UI. _spiderCenter is
-    // always null at non-max zoom (the camera-change collapse fires when the
-    // user zooms out), so no collapse-handling is needed here.
-    if (!_isAtMaxZoom()) {
-      if (_canAnimateCamera &&
-          isValidLatLng(coordinates.latitude, coordinates.longitude)) {
-        final currentZoom =
-            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-        final newZoom = math.min(currentZoom + 2, _maxUserZoom);
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLngZoom(coordinates, newZoom),
-          duration: const Duration(milliseconds: 200),
-        );
-      }
-      return;
-    }
-
     // Read the tapped cluster's point_count from MapLibre. This is the
     // authoritative count of leaves Supercluster grouped into this bubble —
     // matching it ensures the spider expands exactly the markers represented
     // by the tapped bubble, not a chained connected component.
+    const layers = [
+      _repeaterClusterHitLayerId,
+      _repeaterClusterBubbleLayerId,
+      _repeaterClusterDotsLayerId,
+      _repeaterClusterCountLayerId,
+    ];
     int? pointCount;
+    var widened = false;
     try {
-      final features = await _mapController?.queryRenderedFeatures(
-        point,
-        const [
-          _repeaterClusterBubbleLayerId,
-          _repeaterClusterCountLayerId,
-        ],
-        null,
-      );
-      if (features != null) {
-        for (final f in features) {
-          final props = ((f as Map)['properties'] as Map?) ?? const {};
-          if (props['cluster'] == true) {
-            final pc = props['point_count'];
-            if (pc is num) {
-              pointCount = pc.toInt();
-              break;
-            }
-          }
-        }
+      pointCount = _clusterCountIn(
+          await _mapController?.queryRenderedFeatures(point, layers, null));
+      if (pointCount == null) {
+        // Losing the count here is not harmless: the caller then falls back to
+        // a BFS group, which can be WIDER than the cluster actually tapped and
+        // so answers "zoom" where the real group would have answered "spread".
+        // That is what made a tight group of three spread on some taps and
+        // zoom on others. Widen to a small box around the finger before
+        // giving up.
+        widened = true;
+        pointCount =
+            _clusterCountIn(await _mapController?.queryRenderedFeaturesInRect(
+          Rect.fromCenter(
+            center: Offset(point.x, point.y),
+            width: _clusterTapTolerancePx * 2,
+            height: _clusterTapTolerancePx * 2,
+          ),
+          layers,
+          null,
+        ));
       }
     } catch (e) {
       debugError('[MAP] cluster point_count query failed: $e');
     }
 
     if (!mounted) return;
+    _resolveClusterTap(coordinates, pointCount, widened: widened);
+  }
 
+  /// The `point_count` of the first clustered feature in [features], or null
+  /// when none of them is a cluster.
+  int? _clusterCountIn(List<dynamic>? features) {
+    if (features == null) return null;
+    for (final f in features) {
+      final props = ((f as Map)['properties'] as Map?) ?? const {};
+      if (props['cluster'] == true) {
+        final pc = props['point_count'];
+        if (pc is num) return pc.toInt();
+      }
+    }
+    return null;
+  }
+
+  /// Zooms in on [coordinates], far enough to be worth the tap.
+  ///
+  /// [target] is the zoom that would actually break the tapped cluster apart;
+  /// pass null when that is unknown and the old fixed two-level step is the
+  /// best available guess. Either way the result never zooms less than the old
+  /// step did, and never past the user's ceiling.
+  ///
+  /// Returns false when the camera is already as far in as it will go, so the
+  /// caller can spend the tap on something else instead of a move the user
+  /// cannot see. That dead tap is what made a stacked cluster feel broken:
+  /// every press at max zoom animated to the zoom it was already at.
+  bool _zoomInOnCluster(LatLng coordinates, {double? target}) {
+    if (!_canAnimateCamera ||
+        !isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+      return false;
+    }
+    final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+    final step = currentZoom + 2;
+    final newZoom = math.min(math.max(target ?? step, step), _maxUserZoom);
+    if (newZoom <= currentZoom + 0.01) return false;
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(coordinates, newZoom),
+      duration: const Duration(milliseconds: 200),
+    );
+    return true;
+  }
+
+  /// What a tap on a cluster does: zoom in, spread it out, or close the spread
+  /// that is already open. Shared by the direct tap path and the GPS-marker
+  /// fall-through so the two can never answer differently.
+  ///
+  /// **One press, one useful outcome.** The old rule was "zoom two levels, and
+  /// only spread once you hit max zoom", so a group took three or four presses
+  /// before anything useful happened and the presses at the end did nothing at
+  /// all. Now the group's own geography decides. If some reachable zoom would
+  /// pull it apart, the tap jumps STRAIGHT to that zoom rather than crawling
+  /// two levels at a time. If no zoom ever would, because the markers share a
+  /// rooftop, it spreads immediately at whatever zoom the user is on.
+  void _resolveClusterTap(LatLng coordinates, int? pointCount,
+      {bool widened = false}) {
+    if (!mounted) return;
     final appState = context.read<AppStateProvider>();
     // If we couldn't read point_count (race with style reload, etc.), fall
     // back to the BFS-based group — better to spiderfy something than nothing.
@@ -2626,21 +3043,63 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
         : _findSpiderGroup(coordinates, appState);
 
-    // Re-tap on the open spider's own group → collapse instead of churn.
+    // Re-tap on the open spider's own group → collapse instead of churn. This
+    // now has to run at every zoom, not just max: a spider can be open lower
+    // down since the group's spread, not the zoom, decides when to spread.
     if (_spiderCenter != null) {
-      final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
-      if (group.any((r) => spiderIds.contains(r.id))) {
+      final spiderIds = _spiderRepeaters.map(_repeaterIdentity).toSet();
+      if (group.any((r) => spiderIds.contains(_repeaterIdentity(r)))) {
+        debugLog('[MAP] cluster tap: count=${pointCount ?? 'unknown'}'
+            '${widened ? ' (widened)' : ''} group=${group.length} '
+            'zoom=${_mapController?.cameraPosition?.zoom.toStringAsFixed(2) ?? '?'} '
+            '-> collapse');
         _collapseSpider();
         return;
       }
       _collapseSpider();
     }
 
+    // The zoom that would actually pull this group apart, or null when no
+    // reachable zoom does. Jumping straight there is what turns a three-press
+    // zoom crawl into one press.
+    final expansionZoom =
+        group.length >= 2 ? _clusterExpansionZoom(group) : null;
+    final currentZoom = _mapController?.cameraPosition?.zoom;
+    void log(String action) => debugLog(
+        '[MAP] cluster tap: count=${pointCount ?? 'unknown'}'
+        '${widened ? ' (widened)' : ''} group=${group.length} '
+        'zoom=${currentZoom?.toStringAsFixed(2) ?? '?'} '
+        'expansion=${expansionZoom?.toStringAsFixed(0) ?? 'none'} -> $action');
+
+    if (expansionZoom != null) {
+      if (_zoomInOnCluster(coordinates, target: expansionZoom)) {
+        log('zoom');
+        return;
+      }
+    }
+
     if (group.length >= 2) {
       _spiderfy(coordinates, group);
+      log('spread');
+      return;
     }
-    // Already at max zoom with a single-marker group: nothing useful to
-    // zoom into and no stack to spread. Silent no-op.
+
+    // No group resolved, so there is nothing to spread. A zoom is still the
+    // most useful thing a tap can do, and it no-ops harmlessly at max zoom.
+    log(_zoomInOnCluster(coordinates) ? 'zoom (no group)' : 'nothing');
+  }
+
+  /// The zoom that would pull [group] apart into separate markers, or null
+  /// when no reachable zoom does and the tap should spread it instead.
+  /// Pure geometry, in `cluster_spread.dart`.
+  double? _clusterExpansionZoom(List<Repeater> group) {
+    final located = group.where((r) => r.hasLocation).toList();
+    return clusterExpansionZoom(
+      lats: [for (final r in located) r.lat],
+      lons: [for (final r in located) r.lon],
+      maxZoom: _maxUserZoom,
+      clusterRadiusPx: _clusterRadiusPx,
+    );
   }
 
   /// When a tap hits the GPS marker (which has no detail sheet), try to find
@@ -2661,7 +3120,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         point,
         const [
           _spiderSymbolLayerId,
+          _repeaterClusterHitLayerId,
           _repeaterClusterCountLayerId,
+          _repeaterClusterDotsLayerId,
           _repeaterClusterBubbleLayerId,
           _repeaterIndividualLayerId,
         ],
@@ -2676,45 +3137,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final properties = (feature['properties'] as Map?) ?? {};
 
       // Cluster (auto-tagged by MapLibre when cluster: true is set on source).
-      // Mirrors the cluster path in _handleFeatureTap, including the
-      // max-zoom gate on spiderfy. We already have the feature in hand here,
-      // so read `point_count` directly instead of re-querying.
       if (properties['cluster'] == true) {
-        if (!_isAtMaxZoom()) {
-          if (_canAnimateCamera &&
-              isValidLatLng(coordinates.latitude, coordinates.longitude)) {
-            final currentZoom =
-                _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-            final newZoom = math.min(currentZoom + 2, _maxUserZoom);
-            _mapController?.animateCamera(
-              CameraUpdate.newLatLngZoom(coordinates, newZoom),
-              duration: const Duration(milliseconds: 200),
-            );
-          }
-          return;
-        }
-        final appState = context.read<AppStateProvider>();
+        // We already have the feature in hand here, so read `point_count`
+        // directly instead of re-querying, then hand it to the same resolver
+        // the direct tap path uses.
         final pcRaw = properties['point_count'];
-        final pointCount = pcRaw is num ? pcRaw.toInt() : null;
-        final group = pointCount != null
-            ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
-            : _findSpiderGroup(coordinates, appState);
-        if (_spiderCenter != null) {
-          final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
-          if (group.any((r) => spiderIds.contains(r.id))) {
-            _collapseSpider();
-            return;
-          }
-          _collapseSpider();
-        }
-        if (group.length >= 2) {
-          _spiderfy(coordinates, group);
-        }
+        _resolveClusterTap(coordinates, pcRaw is num ? pcRaw.toInt() : null);
         return;
       }
 
       // Individual repeater (cluster or spider symbol). The feature `id`
-      // field is the repeater.id we set in our feature builders. Spider
+      // field is the full repeater key we set in our feature builders. Spider
       // symbols never need spiderfy expansion — they ARE the spread; just
       // open the detail sheet and leave the spider open.
       final repeaterId =
@@ -2752,24 +3185,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Open the repeater detail sheet for a given [repeaterId]. Looks up the
-  /// Repeater object from app state and recomputes the duplicate/hopOverride
-  /// flags. Used by both direct tap dispatch and the GPS fall-through path.
+  /// Repeater object from app state and recomputes its conflict status.
+  /// Used by both direct tap dispatch and the GPS fall-through path.
   void _showRepeaterDetailsById(String repeaterId, {bool isolate = true}) {
     if (!mounted) return;
     final appState = context.read<AppStateProvider>();
-    final repeater =
-        appState.repeaters.where((r) => r.id == repeaterId).firstOrNull;
+    final repeater = RepeaterLookup.fromRepeaters(appState.repeaters,
+            hopBytes: appState.effectiveHopBytes)
+        .resolveByHex(repeaterId);
     if (repeater == null) return;
 
-    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
-    final isDuplicate = duplicates.contains(repeater.id);
-    final hopOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    final isDuplicate =
+        appState.repeaterConflictHexIds.contains(_repeaterIdentity(repeater));
 
     _showRepeaterDetails(
       repeater,
       isDuplicate: isDuplicate,
-      regionHopBytesOverride: hopOverride,
       isolate: isolate,
     );
   }
@@ -2806,18 +3237,48 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _applyCoverageOverlayOpacity(restore);
   }
 
-  Future<void> _onStyleLoaded(AppStateProvider appState) async {
-    // Re-entrance guard. iOS plugin sometimes fires onStyleLoadedCallback
-    // multiple times during a single setStyle. The race causes "Layer not
-    // found" errors during the symbol manager's _rebuildLayers and
-    // double-registers images. Bail any nested call so the first invocation
-    // runs to completion uninterrupted.
+  void _handleStyleLoadedCallback(AppStateProvider appState) {
+    if (!mounted) return;
+    runAsyncCallbackSafely(
+      () => _onStyleLoaded(appState),
+      onError: (error, stackTrace) {
+        debugError('[MAP] Style restoration failed: $error', stackTrace);
+      },
+    );
+  }
+
+  Future<void> _onStyleLoaded(AppStateProvider appState) {
+    if (!mounted) return Future<void>.value();
+    if (_styleLoadRunner.isRunning) {
+      debugLog(
+          '[MAP] _onStyleLoaded re-entered while already running, scheduling one follow-up');
+    }
+    return _styleLoadRunner.run(() => _restoreStyle(appState));
+  }
+
+  bool _canContinueStyleRestore() =>
+      mounted && !_styleLoadRunner.isCancelled && _mapController != null;
+
+  Future<void> _restoreStyle(AppStateProvider appState) async {
+    // Defensive guard for any direct nested invocation. The callback boundary
+    // above coalesces normal plugin re-entry before reaching this method.
+    if (!_canContinueStyleRestore()) return;
     if (_styleLoadInProgress) {
       debugLog(
           '[MAP] _onStyleLoaded re-entered while already running, skipping');
       return;
     }
     _styleLoadInProgress = true;
+    final isStyleReload = _hasStyleLoadedOnce;
+    // This restore supersedes any deferred re-sync armed by the previous style
+    // load. Bumping here (as well as when the reload begins in _buildMap, which
+    // a programmatic style swap may not route through) makes that stale
+    // callback bail rather than push into a style this pass is still building.
+    _androidStyleResyncGen++;
+    // Whether the Android GL pipeline workaround at the end of this pass will
+    // arm a deferred re-sync. Read before the annotation sync below, which
+    // hands the data-version stamp over to the re-sync when it is true.
+    final androidResyncPending = !kIsWeb && Platform.isAndroid && isStyleReload;
     try {
       _styleLoaded = true;
       _isMapReady = true;
@@ -2863,6 +3324,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // Detailed-mode baked repeater chips are dropped by the native side on
       // style reload too — clear the cache so the next sync re-registers them.
       _registeredChipImages.clear();
+      _registeredDotImages.clear();
       // Mark cluster layers as not-ready until _setupRepeaterClusterLayers
       // creates them on the new style. This gates build()-driven post-frame
       // syncs from racing ahead of source creation.
@@ -2894,39 +3356,51 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // reduce visual clutter — but for wardriving we want every coverage
       // marker visible regardless of density. (Repeaters are now in their own
       // cluster-enabled GeoJSON layer with its own per-layer overlap settings.)
+      if (!_canContinueStyleRestore()) return;
       await _configureSymbolDecluttering();
+      if (!_canContinueStyleRestore()) return;
 
       // Pre-render and register all marker bitmaps for native annotations.
       // Style reloads (e.g., user switches dark→liberty) wipe registered images,
       // so we always re-register on every style load. Awaited so the cluster
       // layer (which references icon image names) sees them when it's created.
       _imagesRegistered = false;
+      if (!_canContinueStyleRestore()) return;
       await _registerMapImages(appState);
+      if (!_canContinueStyleRestore()) return;
 
       // Set up the repeater source + layers. Must run AFTER images are
       // registered, since the individual symbol layer's iconImage expression
       // looks up names registered by _registerMapImages. Clustering follows the
       // Grid Mode pref: Detailed (gsize 100) renders every repeater individually.
+      if (!_canContinueStyleRestore()) return;
       await _setupRepeaterClusterLayers(
           clustered: appState.preferences.coverageGridSize != 100);
+      if (!_canContinueStyleRestore()) return;
 
       // Re-add coverage overlay AFTER cluster layers exist so _addCoverageOverlay
       // can target the bottom repeater layer as its belowLayerId reference. This
       // keeps the insertion point consistent with the zoneCode watcher path —
       // both end up with raster at the bottom of the repeater stack, not above it.
+      if (!_canContinueStyleRestore()) return;
       await _refreshCoverageOverlay(appState);
+      if (!_canContinueStyleRestore()) return;
       _lastOverlayZoneCode = appState.zoneCode;
 
       // Regional boundary layer — style reload wipes custom sources/layers.
       // Reset the signature so the build()-driven watcher will repaint even
       // if the polygon list hasn't changed (it almost always hasn't).
       _lastBordersSignature = -1;
+      if (!_canContinueStyleRestore()) return;
       await _refreshRegionBorders(appState);
+      if (!_canContinueStyleRestore()) return;
 
       // GPS puck: dedicated top-most source+layer. Install AFTER coverage +
       // repeaters + borders so it sits above them all (always-on-top by layer
       // order). Idempotent; _syncGpsSymbol also ensures it before its first push.
+      if (!_canContinueStyleRestore()) return;
       await _ensureGpsPuckLayer();
+      if (!_canContinueStyleRestore()) return;
 
       // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
       // we assume tiles are failing to load (network down, server error, etc.)
@@ -2968,7 +3442,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         final stylePos = appState.currentPosition;
         if (stylePos != null &&
             isValidLatLng(stylePos.latitude, stylePos.longitude) &&
-            _canAnimateCamera) {
+            _canAnimateCamera &&
+            _canContinueStyleRestore()) {
           final center = LatLng(stylePos.latitude, stylePos.longitude);
           _mapController!.animateCamera(
             CameraUpdate.newLatLngZoom(center, _defaultZoom),
@@ -2983,27 +3458,185 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // cluster source/layers exist. This pushes the current app state into the
       // newly-created native annotations on first style load (and again whenever
       // the style is reloaded, since style reloads wipe everything).
-      if (mounted) {
+      if (_canContinueStyleRestore()) {
         await _syncAllAnnotations(appState);
+        if (!_canContinueStyleRestore()) return;
         // Update the data version to match what we just synced. Without this,
         // the build()-driven post-frame sync would fire AGAIN with the same
         // data because _lastMarkerDataVersion still holds the previous value
         // — that double-sync was racing the first sync's symbol refs and
         // throwing "you can only set existing annotations" errors twice.
-        _lastMarkerDataVersion = _computeMarkerDataVersion(appState);
-        // Same idea for the GPS-only sync gate: _syncAllAnnotations already
-        // ran _syncGpsSymbol, so capture the current GPS version to keep the
-        // next build from scheduling a redundant updateSymbol call.
-        _lastGpsSyncVersion = Object.hash(
-          appState.currentPosition?.latitude,
-          appState.currentPosition?.longitude,
-          _computedHeading,
-          appState.preferences.gpsMarkerStyle,
-        );
+        //
+        // On an Android style RELOAD the push above may have been swallowed by
+        // the GL commit (see the deferred re-sync below), so the stamp is left
+        // to the re-sync, once its own push has landed. Until then the old
+        // value stands and a build-driven post-frame sync is free to retry the
+        // pins, which is the point: stamping here for a dropped sync is what
+        // left the coverage pins missing until the next marker change.
+        if (!androidResyncPending) {
+          _lastMarkerDataVersion = _computeMarkerDataVersion(appState);
+        }
+        // The GPS-only sync gate needs no capture here: _syncAllAnnotations
+        // ran _syncGpsSymbol, which records the version itself when its push
+        // lands (and deliberately doesn't when it bails, so the build-driven
+        // sync retries).
         if (mounted) setState(() {});
+      }
+
+      // Android GL pipeline workaround: on style RELOADS (user cycling the
+      // basemap), the MapLibre Android SDK can silently drop layer data that
+      // is pushed immediately during onStyleLoaded. The native style object
+      // is valid and the method channel calls succeed, but the GL render
+      // thread has not committed the new style yet, so the data is accepted
+      // but never drawn. A short delay lets the GL pipeline finish, then
+      // re-pushing everything this pass wrote makes it all appear. This
+      // mirrors what a manual toggle-off-then-on does. Skipped on first load
+      // (no issue there) and on iOS/web. The generation guard ensures a rapid
+      // style cycle cancels the stale re-sync.
+      if (androidResyncPending && mounted && _canContinueStyleRestore()) {
+        final gen = ++_androidStyleResyncGen;
+        Future.delayed(const Duration(milliseconds: 250), () {
+          runAsyncCallbackSafely(
+            () => _runAndroidStyleResync(appState, gen),
+            onError: (error, stackTrace) => debugError(
+                '[MAP] Android deferred style re-sync failed: $error',
+                stackTrace),
+          );
+        });
       }
     } finally {
       _styleLoadInProgress = false;
+    }
+  }
+
+  /// Android-only: re-pushes everything the style-loaded pass wrote, a short
+  /// delay after it ran. See the arming site in [_restoreStyle] for why the
+  /// first push can be accepted natively yet never drawn.
+  ///
+  /// This mirrors the style-loaded pass push for push: coverage overlay,
+  /// region borders, then the full annotation sync (repeaters, coverage ping
+  /// symbols including deferred pins, GPS puck, focus lines, distance labels).
+  /// [gen] is the generation captured when the callback was armed; a newer
+  /// style load, or the start of the next restore, bumps the counter and this
+  /// run bails rather than pushing into a style it does not belong to.
+  Future<void> _runAndroidStyleResync(
+      AppStateProvider appState, int gen) async {
+    if (!_androidResyncStillValid(gen)) {
+      _abandonAndroidResync('superseded before it started');
+      return;
+    }
+    debugLog('[MAP] Android deferred style re-sync (gen=$gen)');
+
+    // Coverage overlay: source + fill layer + the tap cell-highlight layers.
+    try {
+      await _refreshCoverageOverlay(appState);
+    } catch (e) {
+      debugError('[MAP] Android re-sync: coverage overlay failed: $e');
+    }
+    if (!_androidResyncStillValid(gen)) {
+      _abandonAndroidResync('superseded after the coverage overlay');
+      return;
+    }
+
+    // Region borders. Reset the signature first so the build-driven watcher
+    // repaints them too if this push is the one that gets dropped.
+    try {
+      _lastBordersSignature = -1;
+      await _refreshRegionBorders(appState);
+    } catch (e) {
+      debugError('[MAP] Android re-sync: region borders failed: $e');
+    }
+    // Re-check immediately before the annotation leg, not only after the legs
+    // above: a style load that started while they ran makes every sub-sync of
+    // _syncAllAnnotations bail at its own _styleLoaded guard, and stamping the
+    // data version for that push would recreate the very bug this re-sync
+    // exists to fix.
+    if (!_androidResyncStillValid(gen)) {
+      _abandonAndroidResync('superseded before the annotation sync');
+      return;
+    }
+
+    // Repeaters, coverage ping symbols, GPS puck, focus lines, distance
+    // labels: the same set _syncAllAnnotations pushed during the style-loaded
+    // pass.
+    if (_syncInFlight) {
+      // A build-driven sync owns the symbol maps right now. Running a second
+      // pass alongside it would have each cleanup loop remove what the other
+      // just added, so let it finish and leave the data version unclaimed:
+      // the rebuild re-syncs once it is done.
+      _abandonAndroidResync('annotation sync already in flight');
+      return;
+    }
+    _syncInFlight = true;
+    try {
+      await _syncAllAnnotations(appState);
+      // The annotation manager mirrors every symbol into one GeoJSON source
+      // and only rewrites it on an add/update, so a sync that finds nothing
+      // changed (the usual case 250 ms after a style load) pushes nothing at
+      // all. Force the rewrite, or the coverage pins the swallowed push
+      // dropped would stay invisible.
+      await _repushCoverageSymbols();
+      // Claim the data version ONLY if this run is still the current one after
+      // its own awaits. A style load that landed during them means nothing was
+      // pushed, so -1 sends the next build back for another sync.
+      _lastMarkerDataVersion = _androidResyncStillValid(gen)
+          ? _computeMarkerDataVersion(appState)
+          : -1;
+    } catch (e) {
+      debugError('[MAP] Android re-sync: annotation sync failed: $e');
+      // Unstamped, so the next build retries the pins.
+      _lastMarkerDataVersion = -1;
+    } finally {
+      _syncInFlight = false;
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// Gives up on a deferred re-sync without claiming the marker data version.
+  ///
+  /// Leaving the previous value in place is NOT enough: the style-loaded pass
+  /// hands the stamp to this re-sync, so when nothing about the marker data
+  /// changed across the style load the old value still matches what build()
+  /// computes and the build-driven sync never fires. Resetting to -1 (and
+  /// asking for a rebuild, since the map only rebuilds when something notifies
+  /// it) is what gets the next build back into the sync at all.
+  ///
+  /// What that retry recovers is narrower than a full re-push. It rewrites the
+  /// repeater source and the GPS puck, and it repaints the region borders
+  /// because the borders signature was reset to -1 on the way in. The coverage
+  /// ping symbols are NOT re-pushed: nothing about them changed, so the
+  /// annotation manager takes its unchanged branch and skips them. Those pins
+  /// come back only from the concurrent sync that superseded this one, or from
+  /// the next real marker change.
+  void _abandonAndroidResync(String why) {
+    debugLog('[MAP] Android deferred style re-sync abandoned: $why');
+    _lastMarkerDataVersion = -1;
+    if (mounted) setState(() {});
+  }
+
+  /// True while the deferred re-sync armed at generation [gen] is still the
+  /// current one and the map can take pushes.
+  bool _androidResyncStillValid(int gen) =>
+      mounted &&
+      _mapController != null &&
+      _styleLoaded &&
+      _clusterLayersReady &&
+      gen == _androidStyleResyncGen;
+
+  /// Rewrites the annotation manager's whole symbol source.
+  ///
+  /// Updating a single symbol is enough: the symbol manager has no per-layer
+  /// selector, so its set path rewrites every feature at once. One native
+  /// round trip re-pushes the coverage pins and the distance labels together.
+  Future<void> _repushCoverageSymbols() async {
+    final controller = _mapController;
+    final symbol = _coverageSymbols.values.firstOrNull;
+    if (controller == null || symbol == null) return;
+    try {
+      // Empty options: nothing about the symbol changes, only the push.
+      await controller.updateSymbol(symbol, const SymbolOptions());
+    } catch (e) {
+      debugError('[MAP] Android re-sync: coverage symbol re-push failed: $e');
     }
   }
 
@@ -3027,7 +3660,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     if (_consecutiveTileLoadFailures > 0 && mounted) {
       if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
-        debugLog('[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');
+        debugLog(
+            '[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');
       }
       _consecutiveTileLoadFailures = 0;
       setState(() {});
@@ -3048,7 +3682,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Add MeshMapper coverage raster overlay as a MapLibre source+layer.
   /// Allocates fresh suffixed IDs each call to avoid native collisions.
-  Future<void> _addCoverageOverlay(AppStateProvider appState) async {
+  /// Gated entry point; see [_coverageGate].
+  Future<void> _addCoverageOverlay(AppStateProvider appState) =>
+      _coverageGate.run(() => _addCoverageOverlayLocked(appState));
+
+  Future<void> _addCoverageOverlayLocked(AppStateProvider appState) async {
     if (_mapController == null || !_showMeshMapperOverlay) {
       debugLog(
           '[MAP] Coverage overlay add skipped: controller=${_mapController != null}, showOverlay=$_showMeshMapperOverlay');
@@ -3067,6 +3705,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final prefs = appState.preferences;
     final zone = appState.zoneCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
+    final recentDays = appState.coverageOverlayDays;
+    // Display every recent result. Only the Smart Pinging lookup filters types.
+    final recentSuffix = recentDays == null ? '' : '&f_days=$recentDays';
+    // The preset filter (f_freq, f_bw, f_sf; never f_cr) so the overlay
+    // paints the preset the radio is on, or was last on. Values are digits
+    // and dots, so no encoding. Absent = the region's default layer.
+    final radioFilter = appState.radioFilterQuery;
+    final radioSuffix = radioFilter == null
+        ? ''
+        : '&f_freq=${radioFilter['f_freq']}&f_bw=${radioFilter['f_bw']}&f_sf=${radioFilter['f_sf']}';
+
+    // Replace, never stack: if an overlay is already up (double-triggered
+    // add, resume racing a rebuild), tear it down first or the old
+    // source+layer pair leaks untracked on the map.
+    if (_activeCoverageSourceId != null) {
+      await _removeCoverageOverlayLocked();
+    }
 
     final sourceId = _nextCoverageSourceId();
     final layerId = _coverageLayerIdFor(sourceId);
@@ -3091,7 +3746,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // happens HERE via match expressions, so colour-vision palettes apply
       // without any server param and a tile carries data, not pixels.
       final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize';
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize$radioSuffix$recentSuffix';
+      debugLog(
+          '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
       // minzoom 7 = the raster's old on-screen range (512px-convention vector
       // tiles sit one display-zoom lower than 256px raster tiles).
       await _mapController!.addSource(
@@ -3133,6 +3790,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _lastAppliedCoverageOpacity = opacity;
       _lastAppliedGridSize = gridSize;
       _lastAppliedCvd = prefs.colorVisionType;
+      _lastAppliedRadioKey = appState.radioFilterKey;
+      _lastAppliedRecentDays = recentDays;
       appState.reportVectorOverlayActive(true);
       debugLog(
           '[MAP] Coverage overlay added as $layerId (grid $gridSize, below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
@@ -3254,7 +3913,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Read the palette before any await so context isn't used across an async gap.
     final cvd = context.read<AppStateProvider>().preferences.colorVisionType;
     final colors = CoverageTilePalette.colorsForStatus(cvd, st);
-    if (!await _ensureCellHighlightLayer()) return;
+    if (!await _coverageGate.run(_ensureCellHighlightLayer)) return;
     try {
       // setLayerProperties serializes with skipNulls:false (resets omitted
       // fields to spec defaults), so resend all three fill props together.
@@ -3344,11 +4003,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Remove the active coverage overlay source and layer (if any) and clear
   /// the tracked IDs. Called by the mapTilesEnabled-toggle teardown and on
   /// style reload — it does NOT participate in the double-buffer swap path.
-  Future<void> _removeCoverageOverlay() async {
+  /// Gated entry point; see [_coverageGate].
+  Future<void> _removeCoverageOverlay() =>
+      _coverageGate.run(_removeCoverageOverlayLocked);
+
+  Future<void> _removeCoverageOverlayLocked() async {
     final layerId = _activeCoverageLayerId;
     final sourceId = _activeCoverageSourceId;
     _activeCoverageLayerId = null;
     _activeCoverageSourceId = null;
+    // No live layer means nothing is applied. Leaving this set would keep
+    // _onCoverageOpacityNotify calling into a guaranteed no-op on every notify
+    // while the overlay is off. _addCoverageOverlay sets it again.
+    _lastAppliedCoverageOpacity = null;
     if (layerId != null && sourceId != null) {
       await _removeCoverageLayerById(layerId, sourceId);
     }
@@ -3357,8 +4024,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Remove a specific coverage source+layer pair without touching the
   /// active-ID tracking.
-  Future<void> _removeCoverageLayerById(
-      String layerId, String sourceId) async {
+  Future<void> _removeCoverageLayerById(String layerId, String sourceId) async {
     if (_mapController == null) return;
     try {
       await _mapController!.removeLayer(layerId);
@@ -3383,9 +4049,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// GeoJSON FeatureCollection of the session patch: one rectangle per cell,
   /// corners computed from grid indices exactly like the server's tiles.
   Map<String, dynamic> _buildPatchGeoJson(AppStateProvider appState) {
-    final steps =
-        kCoverageGridSteps[appState.preferences.coverageGridSize] ??
-            kCoverageGridSteps[300]!;
+    final steps = kCoverageGridSteps[appState.preferences.coverageGridSize] ??
+        kCoverageGridSteps[300]!;
     final features = <Map<String, dynamic>>[];
     for (final cell in appState.coveragePatchCells.values) {
       final lat0 = cell.i * steps[0];
@@ -3435,9 +4100,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           'in',
           [
             'concat',
-            ['to-string', ['get', 'i']],
+            [
+              'to-string',
+              ['get', 'i']
+            ],
             '_',
-            ['to-string', ['get', 'j']],
+            [
+              'to-string',
+              ['get', 'j']
+            ],
           ],
           ['literal', keys],
         ],
@@ -3487,7 +4158,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Push the latest session patch into the map: update the GeoJSON source
   /// (flash-free, in-place) and extend the base-layer filter. Nothing else on
   /// the map changes — this is the live-update path for the user's own pings.
-  Future<void> _applyCoveragePatch(AppStateProvider appState) async {
+  /// Gated entry point; see [_coverageGate].
+  Future<void> _applyCoveragePatch(AppStateProvider appState) =>
+      _coverageGate.run(() => _applyCoveragePatchLocked(appState));
+
+  Future<void> _applyCoveragePatchLocked(AppStateProvider appState) async {
     if (_mapController == null) return;
     final baseLayerId = _activeCoverageLayerId;
     if (baseLayerId == null) {
@@ -3511,25 +4186,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// never as a live-refresh path (that's the session patch's job), so the
   /// brief remove/add gap is acceptable.
   Future<void> _refreshCoverageOverlay(AppStateProvider appState) async {
+    // Two gate entries, not one: another queued op landing between them (a
+    // patch apply, a toggle) still sees a consistent overlay either way.
     await _removeCoverageOverlay();
     await _addCoverageOverlay(appState);
   }
 
-  /// Returns the fill color for a repeater status keyword.
-  /// Mirrors the priority logic in [_getRepeaterMarkerColor].
-  Color _repeaterStatusColor(String status) {
-    switch (status) {
-      case 'dup':
-        return PingColors.repeaterDuplicate;
-      case 'dead':
-        return PingColors.repeaterDead;
-      case 'new':
-        return PingColors.repeaterNew;
-      case 'active':
-      default:
-        return PingColors.repeaterActive;
-    }
-  }
+  /// The ACCENT colour for a repeater status keyword: the left bar, the state
+  /// line, the cluster ring. Never a fill. See [RepeaterMarkerStyle].
+  ///
+  /// One registry, one lookup. A keyword with no entry draws in the active
+  /// colour and logs a single warning, because a silent wrong colour is worse
+  /// than a loud one.
+  Color _repeaterStatusColor(String status) =>
+      RepeaterMarkerStyle.colorForKey(status);
 
   /// Returns the color for a coverage marker (TX/RX/DISC/Trace × success/fail).
   Color _coverageStatusColor(String type, bool success) {
@@ -3538,6 +4208,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         return success ? PingColors.txSuccess : PingColors.txFail;
       case 'rx':
         return PingColors.rx;
+      case 'deferred':
+        return PingColors.deferred;
       case 'disc':
         return success ? PingColors.discSuccess : PingColors.discFail;
       case 'trace':
@@ -3547,25 +4219,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
-  /// Returns the borderRadius value for a repeater shape based on hop_bytes.
-  /// Mirrors the values in the original `_buildRepeaterMarkers` (lines ~2390).
-  double _repeaterBorderRadius(int hopBytes) {
-    if (hopBytes >= 3) return 8;
-    if (hopBytes == 2) return 6;
-    return 4;
-  }
-
   /// Pre-renders and registers all marker bitmaps that the native MapLibre
   /// symbols reference via `iconImage`. Called from [_onStyleLoaded] after the
   /// style is ready (so addImage can succeed). Idempotent — safe to call again
   /// if a style reload happens; addImage replaces existing entries by name.
   ///
   /// Generates:
-  ///   - 12 repeater shape bitmaps (4 status colors × 3 hop_byte radii) — fixed
-  ///     width 48px, the widest case (6-char hex IDs); shorter text is centered
-  ///     by MapLibre's textField rendering.
+  ///   - 15 repeater chip bodies (5 states × 3 hop_byte widths). Width follows
+  ///     the hop's hex length so the shared-glyph label always has room right
+  ///     of the state bar; a `new` chip is taller than the rest.
+  ///   - 5 cluster badge discs, one per dominant state.
   ///   - 8 coverage marker bitmaps for the user's currently-selected style.
   ///   - 6 GPS marker bitmaps (one per style).
+  ///
+  /// The cluster presence-dot strips are NOT registered here: which ones are
+  /// reachable depends on the states actually on screen, so
+  /// [_ensureRepeaterDotImages] bakes them from the live repeater set.
   ///
   /// Marker style preference changes are handled separately by
   /// [_reregisterCoverageImages] which only re-runs the coverage section.
@@ -3573,27 +4242,45 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_mapController == null) return;
 
     try {
-      // 1. Repeater shapes — 12 variants
-      const repeaterSize = Size(48, 28);
-      for (final status in _MapImages.repeaterStatuses) {
-        final color = _repeaterStatusColor(status);
+      // 1. Repeater chip bodies: 5 states × 3 hop widths.
+      for (final status in RepeaterMarkerStatus.values) {
+        final color = _repeaterStatusColor(status.wireKey);
+        final isNew = status == RepeaterMarkerStatus.fresh;
         for (final hopBytes in _MapImages.repeaterHopBytes) {
+          // The hex is hopBytes * 2 characters wide, which is what sizes the
+          // body. displayHexId can fall back to a SHORTER numeric id, never a
+          // longer one, so the label always fits.
+          final chip = RepeaterMarkerStyle.chipSize(hopBytes * 2, isNew: isNew);
           final painter = _RepeaterShapePainter(
-            fillColor: color,
-            borderRadius: _repeaterBorderRadius(hopBytes),
+            accent: color,
+            borderRadius: RepeaterMarkerStyle.chipCornerRadius,
+            isNew: isNew,
           );
-          final bytes = await _renderPainterToPng(painter, repeaterSize);
+          final bytes = await _renderPainterToPng(
+            painter,
+            Size(chip.width + repeaterChipGlowMargin * 2,
+                chip.height + repeaterChipGlowMargin * 2),
+            devicePixelRatio: RepeaterMarkerStyle.bakeDevicePixelRatio,
+          );
           await _mapController!.addImage(
-            _MapImages.repeater(status, hopBytes),
+            _MapImages.repeater(status.wireKey, hopBytes),
             bytes,
           );
         }
       }
 
-      // 2. Coverage markers — 8 variants for current style
+      // 2. Cluster badge discs: one per dominant state.
+      for (final status in RepeaterMarkerStatus.values) {
+        final bytes =
+            await _renderRepeaterBadgePng(_repeaterStatusColor(status.wireKey));
+        await _mapController!
+            .addImage(_MapImages.repeaterBadge(status.wireKey), bytes);
+      }
+
+      // 3. Coverage markers: 8 variants for current style
       await _registerCoverageImages(appState.preferences.markerStyle);
 
-      // 3. GPS marker variants — 6 styles
+      // 4. GPS marker variants: 7 styles
       const gpsSize = Size(48, 48);
       final gpsPainters = <String, CustomPainter>{
         'arrow': const _ArrowPainter(),
@@ -3601,6 +4288,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         'bike': const _BikeMarkerPainter(),
         'boat': const _BoatMarkerPainter(),
         'walk': const _WalkMarkerPainter(),
+        'dog': const _DogMarkerPainter(),
         'chomper': const _ChomperMarkerPainter(),
       };
       for (final entry in gpsPainters.entries) {
@@ -3610,7 +4298,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       _imagesRegistered = true;
       debugLog(
-          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater + 8 coverage + ${gpsPainters.length} GPS marker images');
+          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater chip + ${_MapImages.repeaterStatuses.length} cluster badge + 8 coverage + ${gpsPainters.length} GPS marker images');
       // NOTE: do NOT trigger _syncAllAnnotations here. The repeater cluster
       // source/layers haven't been created yet — _onStyleLoaded calls
       // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
@@ -3632,7 +4320,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final type in _MapImages.coverageTypes) {
       for (final success in [true, false]) {
         final painter = _CoverageMarkerPainter(
-          style: styleName,
+          style: type == 'deferred' ? 'outline' : styleName,
           color: _coverageStatusColor(type, success),
         );
         final bytes = await _renderPainterToPng(painter, coverageSize);
@@ -3647,12 +4335,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Returns the status keyword used as the iconImage suffix for a repeater.
   /// Mirrors the priority logic in [_getRepeaterMarkerColor]: duplicate > dead
-  /// > new > active.
+  /// > new > backbone > active.
+  ///
+  /// Backbone sits just above active and never stacks with anything: it
+  /// REPLACES the active colour, and a stale or ambiguous repeater keeps its
+  /// own even when the server marks it. `Repeater.isBackbone` already folds
+  /// the active requirement in.
   String _repeaterStatusKey(Repeater repeater, bool isDuplicate) {
-    if (isDuplicate) return 'dup';
-    if (repeater.isDead) return 'dead';
-    if (repeater.isNew) return 'new';
-    return 'active';
+    if (isDuplicate) return RepeaterMarkerStatus.excluded.wireKey;
+    if (repeater.isDead) return RepeaterMarkerStatus.stale.wireKey;
+    if (repeater.isNew) return RepeaterMarkerStatus.fresh.wireKey;
+    if (repeater.isBackbone) return RepeaterMarkerStatus.backbone.wireKey;
+    return RepeaterMarkerStatus.active.wireKey;
   }
 
   /// Ensures every baked repeater-chip image referenced by [featureCollection]
@@ -3680,13 +4374,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final parts = name.split('_');
       if (parts.length != 4) continue;
       final status = parts[1];
-      final hop = int.tryParse(parts[2]) ?? 1;
       final hex = parts[3];
       try {
         final bytes = await _renderRepeaterChipPng(
           hex,
           _repeaterStatusColor(status),
-          _repeaterBorderRadius(hop),
+          RepeaterMarkerStyle.chipCornerRadius,
+          isNew: status == RepeaterMarkerStatus.fresh.wireKey,
         );
         await _mapController!.addImage(name, bytes);
         _registeredChipImages.add(name);
@@ -3698,6 +4392,68 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (baked > 0) {
       debugLog('[MAP] Baked $baked new repeater chip image(s); '
           '${_registeredChipImages.length} total registered');
+    }
+  }
+
+  /// The distinct repeater states carried by [featureCollection].
+  ///
+  /// Read back off the pushed collection rather than recomputed from app
+  /// state, so the bitmaps registered can never name a different set from the
+  /// one the layer will ask for.
+  Set<RepeaterMarkerStatus> _statusesInCollection(
+      Map<String, dynamic> featureCollection) {
+    final present = <RepeaterMarkerStatus>{};
+    final features =
+        (featureCollection['features'] as List?) ?? const <dynamic>[];
+    for (final f in features) {
+      final props = (f as Map)['properties'] as Map?;
+      final key = props?[RepeaterMarkerStyle.statusProperty];
+      if (key is! String) continue;
+      final status = RepeaterMarkerStyle.statusForKey(key);
+      if (status != null) present.add(status);
+    }
+    return present;
+  }
+
+  /// Ensures a presence-dot strip exists for every combination of states the
+  /// cluster badges can actually show, given the states [present] on screen.
+  ///
+  /// The badge layer's `step` expression names all 32 masks, but only subsets
+  /// of what is visible are reachable: a zone showing active, new and stale
+  /// needs 8 strips, not 32. Mask 0 is always baked as the expression's
+  /// fallback, though a cluster never has zero points.
+  ///
+  /// Deduped by image name in [_registeredDotImages], cleared on style reload
+  /// alongside the chip cache.
+  Future<void> _ensureRepeaterDotImages(
+      Set<RepeaterMarkerStatus> present) async {
+    if (_mapController == null) return;
+    final presentMask = present.fold<int>(
+      0,
+      (mask, status) =>
+          mask | (1 << RepeaterMarkerStatus.values.indexOf(status)),
+    );
+    var baked = 0;
+    for (var mask = 0; mask < RepeaterMarkerStyle.presenceMaskCount; mask++) {
+      // Only masks that are subsets of what is on screen can ever be selected.
+      if (mask & ~presentMask != 0) continue;
+      final name = _MapImages.repeaterDots(mask);
+      if (_registeredDotImages.contains(name)) continue;
+      try {
+        final bytes = await _renderRepeaterDotsPng([
+          for (final status in RepeaterMarkerStyle.statusesInMask(mask))
+            _repeaterStatusColor(status.wireKey),
+        ]);
+        await _mapController!.addImage(name, bytes);
+        _registeredDotImages.add(name);
+        baked++;
+      } catch (e) {
+        debugError('[MAP] render/addImage(cluster dots $name) failed: $e');
+      }
+    }
+    if (baked > 0) {
+      debugLog('[MAP] Baked $baked new cluster presence-dot strip(s); '
+          '${_registeredDotImages.length} total registered');
     }
   }
 
@@ -3722,9 +4478,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Map<String, dynamic> _buildRepeaterFeatureCollection(
       AppStateProvider appState) {
     final visible = _mapVisibleRepeaters(appState);
-    final duplicates = _getDuplicateRepeaterIds(visible);
-    final hopOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    final conflicts = appState.repeaterConflictHexIds;
     // Detailed (gsize 100) is un-clustered, so each feature references a baked
     // chip image (hex baked in). Simplified reuses the 12 shared shape images
     // + a text-field hex label. See _setupRepeaterClusterLayers.
@@ -3735,43 +4489,45 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // features so the spread markers from `_spiderSourceId` render in their
     // place. Cluster aggregation is not affected — the cluster bubble keeps
     // its full point_count.
-    final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+    final spiderIds = _spiderRepeaters.map(_repeaterIdentity).toSet();
 
     final features = <Map<String, dynamic>>[];
     for (final repeater in visible) {
+      final identity = _repeaterIdentity(repeater);
       // Repeater isolation: while a repeater is focused/selected, hide every
       // other repeater entirely (skip the feature, so they also drop out of
       // cluster counts) — same approach as focus mode below. Restored on close
       // by _clearRepeaterIsolation.
-      if (_isolatedRepeaterId != null && repeater.id != _isolatedRepeaterId) {
+      if (_isolatedRepeaterId != null && identity != _isolatedRepeaterId) {
         continue;
       }
       // Feature A (tile fan-out): when a tapped cell's heard-repeater set is
       // active and no single repeater is isolated, hide every repeater that did
       // NOT hear the cell's pings (the web fades-but-keeps; we hide, matching
       // focus/isolation). Cleared by _restoreFadedRepeaters. The set holds
-      // lowercased ids (from RepeaterLookup), so compare lowercased.
+      // cleaned full keys from RepeaterLookup.
       if (_coverageHeardRepeaterIds != null &&
           _isolatedRepeaterId == null &&
-          !_coverageHeardRepeaterIds!.contains(repeater.id.toLowerCase())) {
+          !_coverageHeardRepeaterIds!.contains(identity)) {
         continue;
       }
-      final isDuplicate = duplicates.contains(repeater.id);
+      final isDuplicate = conflicts.contains(identity);
       final statusKey = _repeaterStatusKey(repeater, isDuplicate);
       final isConnected = focusActive &&
-          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+          _focusedRepeaters
+              .any((r) => _repeaterIdentity(r.repeater) == identity);
       // In focus mode, hide repeaters not involved in the focused ping entirely
       // (skip the feature) rather than dimming — cleaner focus view and prevents
       // them from contributing to clusters.
       if (focusActive && !isConnected) continue;
-      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      final effectiveBytes = repeater.advertBytes;
       // Clamp to the 1/2/3 hop_byte image variants we registered
       final shapeBytes = effectiveBytes >= 3
           ? 3
           : effectiveBytes == 2
               ? 2
               : 1;
-      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final hex = repeater.displayHexId();
       // Detailed: per-(status,hop,hex) baked chip (hex baked in); Simplified:
       // shared shape image + a text-field hex label. _ensureRepeaterChipImages
       // registers the chip lazily before the source is pushed.
@@ -3782,15 +4538,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       features.add({
         'type': 'Feature',
-        'id': repeater.id,
+        'id': identity,
         'properties': {
-          'repeaterId': repeater.id,
+          'repeaterId': identity,
           'iconImage': iconImage,
           'color': colorHex,
           'hex': hex,
+          // The cluster source sums one running count per state off this, so
+          // a badge can name its dominant state and the states present in it.
+          RepeaterMarkerStyle.statusProperty: statusKey,
           'isDuplicate': isDuplicate,
-          if (hopOverride != null) 'hopOverride': hopOverride,
-          if (spiderIds.contains(repeater.id)) 'inSpider': true,
+          if (spiderIds.contains(identity)) 'inSpider': true,
         },
         'geometry': {
           'type': 'Point',
@@ -3828,7 +4586,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final layerId in [
       _spiderSymbolLayerId,
       _spiderLineLayerId,
+      _repeaterClusterHitLayerId,
       _repeaterClusterCountLayerId,
+      _repeaterClusterDotsLayerId,
       _repeaterClusterBubbleLayerId,
       _repeaterIndividualLayerId,
     ]) {
@@ -3845,30 +4605,54 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     // Shared symbol styling for the individual layer AND the spider symbol
     // layer (the spider comment requires they look identical). Selected once by
-    // mode: Simplified keeps the shared-glyph text-field hex; Detailed bakes the
-    // hex into the chip image (no text-field, no iconColor — colour is baked in)
-    // so overlapping un-clustered chips can't have a label detach. iconSize 1.0
-    // matches the distance-label baked-icon convention (DPR-3 PNG, centre
-    // anchor); the Simplified 48×28 shape keeps its existing 1.4 scale.
+    // mode: Simplified draws the chip BODY as a shared image and lets MapLibre
+    // place the hex as a shared-glyph label; Detailed bakes the hex into the
+    // chip image (no text-field) so overlapping un-clustered chips can't have a
+    // label detach onto a neighbour's box.
+    //
+    // No iconColor: the chip is neutral by design and the state rides its edge,
+    // so there is nothing left to tint. Both modes render at the same
+    // iconScale, so a Grid Mode switch no longer changes marker size.
+    //
+    // The Simplified label is nudged right by half the state bar, because it is
+    // centred in the space RIGHT of the bar rather than in the whole chip.
+    // text-offset is in ems, so that is barWidth / 2 over the font size. The
+    // halo is the body colour, not black: it only exists to keep a glyph
+    // legible if it overhangs the body, and a black one would smear the chip.
+    const labelNudgeEm =
+        RepeaterMarkerStyle.barWidth / 2 / RepeaterMarkerStyle.chipFontSize;
+    final labelInk = _colorToHex(
+        RepeaterMarkerStyle.labelInkFor(RepeaterMarkerStyle.bodyColor));
     final SymbolLayerProperties repeaterSymbolProps = clustered
-        ? const SymbolLayerProperties(
-            iconImage: ['get', 'iconImage'],
-            iconColor: ['get', 'color'],
-            iconSize: 1.4,
+        ? SymbolLayerProperties(
+            iconImage: const ['get', 'iconImage'],
+            iconSize: RepeaterMarkerStyle.iconScale,
             iconAllowOverlap: true,
             iconIgnorePlacement: true,
-            textField: ['get', 'hex'],
-            textColor: '#FFFFFF',
-            textHaloColor: '#000000',
-            textHaloWidth: 1.5,
-            textSize: 13,
+            textField: const ['get', 'hex'],
+            textColor: labelInk,
+            textHaloColor: _colorToHex(RepeaterMarkerStyle.bodyColor),
+            textHaloWidth: 1,
+            // A newly discovered repeater gets the taller chip and the larger
+            // label. Data-driven, so one layer still covers every state.
+            textSize: [
+              'case',
+              [
+                '==',
+                ['get', RepeaterMarkerStyle.statusProperty],
+                RepeaterMarkerStatus.fresh.wireKey
+              ],
+              RepeaterMarkerStyle.chipFontSizeNew,
+              RepeaterMarkerStyle.chipFontSize,
+            ],
+            textOffset: const [labelNudgeEm, 0],
             textAllowOverlap: true,
             textIgnorePlacement: true,
             textFont: _defaultFontStack,
           )
         : const SymbolLayerProperties(
             iconImage: ['get', 'iconImage'],
-            iconSize: 1.0,
+            iconSize: RepeaterMarkerStyle.iconScale,
             iconAllowOverlap: true,
             iconIgnorePlacement: true,
           );
@@ -3891,7 +4675,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           },
           // Simplified clusters; Detailed shows every repeater individually.
           cluster: clustered,
-          clusterRadius: 50,
+          clusterRadius: _clusterRadiusPx,
           // Cluster at every reachable zoom (max user zoom is 17). Stacked
           // markers — those within `clusterRadius` pixels at the current
           // zoom — stay as a cluster bubble + count instead of degenerating
@@ -3901,6 +4685,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // zooms still separate into individuals naturally on zoom. Inert
           // when cluster is false.
           clusterMaxZoom: 17,
+          // One running count per state, summed natively as points merge. The
+          // badge reads them for its ring (which state DOMINATES) and its dots
+          // (which states are PRESENT). Clustering happens inside MapLibre, so
+          // there is no Dart-side view of a cluster's members to derive this
+          // from. Unimplemented on iOS and absent on Android before the
+          // MapLibre upgrade, which is what this badge waited on.
+          clusterProperties: RepeaterMarkerStyle.clusterProperties(),
         ),
       );
 
@@ -3932,45 +4723,61 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         belowLayerId: belowLayer,
       );
 
-      // Layer 2: cluster bubble (circle, sized by point_count).
-      // The 'step' expression makes the bubble grow as more repeaters merge:
-      //   - default radius 18px (clusters of 2-9)
-      //   - 22px for clusters of 10+
-      //   - 26px for clusters of 50+
-      await _mapController!.addCircleLayer(
+      // Layer 2: the cluster badge disc, picked by the cluster's DOMINANT
+      // state. A fixed radius, unlike the old bubble that grew with the count:
+      // the count is already written across it, so growth said nothing extra.
+      //
+      // Layers 2-4 are added in bottom-to-top order: each goes directly below
+      // `belowLayer`, so a later one lands above its predecessor. Disc, then
+      // dots, then count.
+      await _mapController!.addSymbolLayer(
         _repeaterSourceId,
         _repeaterClusterBubbleLayerId,
-        CircleLayerProperties(
-          circleColor: _colorToHex(PingColors.repeaterActive),
-          circleRadius: const [
-            'step',
-            ['get', 'point_count'],
-            18,
-            10,
-            22,
-            50,
-            26,
-          ],
-          circleStrokeColor: '#FFFFFF',
-          circleStrokeWidth: 2,
-          circleOpacity: 0.9,
+        SymbolLayerProperties(
+          iconImage: RepeaterMarkerStyle.dominantStatusExpression(
+              (status) => _MapImages.repeaterBadge(status.wireKey)),
+          iconSize: RepeaterMarkerStyle.iconScale,
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
         ),
         filter: ['has', 'point_count'],
         belowLayerId: belowLayer,
       );
 
-      // Layer 3: cluster count text (uses MapLibre's built-in
+      // Layer 3: the presence dots, one per state PRESENT, picked by a bitmask
+      // of the states in the cluster. icon-offset is multiplied by icon-size,
+      // so the row lands on the badge at the same scale as the badge itself.
+      await _mapController!.addSymbolLayer(
+        _repeaterSourceId,
+        _repeaterClusterDotsLayerId,
+        SymbolLayerProperties(
+          iconImage: RepeaterMarkerStyle.presenceMaskImageExpression(
+              (mask) => _MapImages.repeaterDots(mask)),
+          iconSize: RepeaterMarkerStyle.iconScale,
+          iconOffset: const [0, RepeaterMarkerStyle.dotRowCenterY],
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+        ),
+        filter: ['has', 'point_count'],
+        belowLayerId: belowLayer,
+      );
+
+      // Layer 4: cluster count text (uses MapLibre's built-in
       // 'point_count_abbreviated' property — automatically formatted as
-      // "1.2k" for large counts).
+      // "1.2k" for large counts). Sits above the disc's centre, leaving the
+      // dot row its own band underneath. Ink derived from the body, like every
+      // other label on these markers.
       await _mapController!.addSymbolLayer(
         _repeaterSourceId,
         _repeaterClusterCountLayerId,
-        const SymbolLayerProperties(
-          textField: ['get', 'point_count_abbreviated'],
-          textColor: '#FFFFFF',
-          textSize: 14,
-          textHaloColor: '#000000',
-          textHaloWidth: 1,
+        SymbolLayerProperties(
+          textField: const ['get', 'point_count_abbreviated'],
+          textColor: labelInk,
+          textSize: RepeaterMarkerStyle.countFontSize,
+          textOffset: const [
+            0,
+            RepeaterMarkerStyle.countCenterY / RepeaterMarkerStyle.countFontSize
+          ],
           textAllowOverlap: true,
           textIgnorePlacement: true,
           textFont: _defaultFontStack,
@@ -3979,7 +4786,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         belowLayerId: belowLayer,
       );
 
-      // Spider shadow source + layers — non-clustered. Carries spread Point
+      // Device experiment: a circle hit target avoids symbol placement in the
+      // badge's touch path. Its radius is half the existing image canvas (24
+      // logical pixels), with no change to the visible badge or merge radius.
+      // Keep it above the badge, but below spider and annotation symbols.
+      await _mapController!.addCircleLayer(
+        _repeaterSourceId,
+        _repeaterClusterHitLayerId,
+        const CircleLayerProperties(
+          circleRadius:
+              RepeaterMarkerStyle.badgeCanvas * RepeaterMarkerStyle.iconScale / 2,
+          circleOpacity: 0,
+          circleStrokeWidth: 0,
+          circlePitchAlignment: 'viewport',
+          circlePitchScale: 'viewport',
+        ),
+        filter: ['has', 'point_count'],
+        belowLayerId: belowLayer,
+      );
+
+      // Spider shadow source + layers, non-clustered. Carries spread Point
       // features (one per spiderfied repeater) and LineString features for
       // leader lines from the cluster centre to each spread position.
       // Cluster on this source MUST stay false; we want every Point to render
@@ -4074,14 +4900,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // shape images). Driven off the FeatureCollection, so it can't drift.
       if (appState.preferences.coverageGridSize == 100) {
         await _ensureRepeaterChipImages(geojson);
+      } else {
+        // Simplified clusters, so the badges need a presence-dot strip for
+        // every combination of the states actually on screen. Read off the
+        // same collection for the same reason.
+        await _ensureRepeaterDotImages(_statusesInCollection(geojson));
       }
       await _mapController!.setGeoJsonSource(_repeaterSourceId, geojson);
     } catch (e) {
       debugError('[MAP] Failed to update repeater source: $e');
     }
     // Also push the spider source. Empty FeatureCollection if no spider open.
-    final currentZoom =
-        _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+    final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _syncSpiderSymbols(appState, currentZoom);
@@ -4094,30 +4924,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // ---------------------------------------------------------------------------
 
   /// Web-Mercator metres-per-pixel at the given latitude and zoom.
-  double _metersPerPxAtZoom(double latDeg, num zoom) {
-    return 156543.03392 *
-        math.cos(latDeg * math.pi / 180) /
-        math.pow(2, zoom);
-  }
+  double _metersPerPxAtZoom(double latDeg, num zoom) =>
+      metersPerPixelAtZoom(latDeg, zoom);
 
   /// Great-circle distance between two LatLngs in metres (haversine).
   /// Used for the spider candidate / connectivity tests — accurate at any
   /// latitude, including the poles.
-  double _haversineMeters(LatLng a, LatLng b) {
-    const earthRadiusM = 6378137.0;
-    final lat1 = a.latitude * math.pi / 180;
-    final lat2 = b.latitude * math.pi / 180;
-    final dLat = (b.latitude - a.latitude) * math.pi / 180;
-    final dLon = (b.longitude - a.longitude) * math.pi / 180;
-    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(lat1) *
-            math.cos(lat2) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    return 2 *
-        earthRadiusM *
-        math.asin(math.min(1.0, math.sqrt(h)));
-  }
+  double _haversineMeters(LatLng a, LatLng b) =>
+      haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude);
 
   /// MapLibre Native (Android SDK 12.3.1 / iOS 6.19.1, both bound by
   /// maplibre_gl 0.25.0) blinks symbol-layer labels for one frame when an
@@ -4136,6 +4950,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Subtracted by [_zoomEpsilon] to dodge the integer-zoom label-blink
   /// bug described above.
   static const double _maxUserZoom = 17.0 - _zoomEpsilon;
+
+  /// How far a tap may land from a cluster badge and still count as hitting
+  /// it. The native tap dispatcher is more forgiving than an exact-point
+  /// feature query, so a tap can route to the cluster handler and then find
+  /// nothing under that one pixel.
+  static const double _clusterTapTolerancePx = 22.0;
 
   /// True when the camera is at (or floating-point close to) the user's
   /// hard zoom cap. Spider expansion is gated on this — at any lower zoom
@@ -4163,8 +4983,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// any repeater is within the broad search disc; caller should treat a
   /// result of length < 2 as "no spiderfy needed".
   List<Repeater> _findSpiderGroup(LatLng anchor, AppStateProvider appState) {
-    final mPerPxMaxZoom =
-        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final mPerPxMaxZoom = _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
     final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
 
     // Broad initial radius: 10× the stick threshold so we don't miss an
@@ -4192,17 +5011,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
 
     // Connected component (single-link clustering at stick threshold).
-    final visited = <String>{seed.id};
+    final visited = <String>{_repeaterIdentity(seed)};
     final queue = <Repeater>[seed];
     final result = <Repeater>[seed];
     while (queue.isNotEmpty) {
       final cur = queue.removeAt(0);
       final curPos = LatLng(cur.lat, cur.lon);
       for (final r in candidates) {
-        if (visited.contains(r.id)) continue;
-        if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <=
-            stickThresholdM) {
-          visited.add(r.id);
+        final identity = _repeaterIdentity(r);
+        if (visited.contains(identity)) continue;
+        if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <= stickThresholdM) {
+          visited.add(identity);
           result.add(r);
           queue.add(r);
         }
@@ -4227,8 +5046,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // cluster diameter at maxZoom is ~2× the cluster radius (centroid
     // drift); pointCount × stickThreshold is a comfortable upper bound for
     // any plausible cluster size.
-    final mPerPxMaxZoom =
-        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final mPerPxMaxZoom = _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
     final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
     final broadRadiusM = stickThresholdM * math.max(10, pointCount);
     final candidates = <MapEntry<Repeater, double>>[];
@@ -4245,8 +5063,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Layout the [n] spread positions around [center]. Uses a single ring up to
   /// 8 markers, two concentric rings up to 20, and a Fermat / golden-angle
   /// spiral past 20.
-  List<LatLng> _computeSpiderRing(
-      LatLng center, int n, double currentZoom) {
+  List<LatLng> _computeSpiderRing(LatLng center, int n, double currentZoom) {
     final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
     final lat0 = center.latitude;
     final lon0 = center.longitude;
@@ -4286,9 +5103,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ));
       }
       for (var i = 0; i < outerCount; i++) {
-        final angle = -math.pi / 2 +
-            math.pi / outerCount +
-            2 * math.pi * i / outerCount;
+        final angle =
+            -math.pi / 2 + math.pi / outerCount + 2 * math.pi * i / outerCount;
         positions.add(offset(
           _spiderOuterRadiusPx * math.cos(angle),
           _spiderOuterRadiusPx * math.sin(angle),
@@ -4326,9 +5142,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
     final cosLat = math.cos(center.latitude * math.pi / 180);
 
-    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
-    final hopOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    final conflicts = appState.repeaterConflictHexIds;
     // Match the individual layer: Detailed (gsize 100) bakes the hex into the
     // chip image (the spider layer reuses the same no-text-field props, so a
     // generic shape would render as an empty box); Simplified uses the shared
@@ -4340,15 +5154,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final repeater = _spiderRepeaters[i];
       final pos = positions[i];
 
-      final isDuplicate = duplicates.contains(repeater.id);
+      final identity = _repeaterIdentity(repeater);
+      final isDuplicate = conflicts.contains(identity);
       final statusKey = _repeaterStatusKey(repeater, isDuplicate);
-      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      final effectiveBytes = repeater.advertBytes;
       final shapeBytes = effectiveBytes >= 3
           ? 3
           : effectiveBytes == 2
               ? 2
               : 1;
-      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final hex = repeater.displayHexId();
       final iconImage = detailed
           ? _MapImages.repeaterChip(statusKey, shapeBytes, hex)
           : _MapImages.repeater(statusKey, shapeBytes);
@@ -4356,14 +5171,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       features.add({
         'type': 'Feature',
-        'id': repeater.id,
+        'id': identity,
         'properties': {
-          'repeaterId': repeater.id,
+          'repeaterId': identity,
           'iconImage': iconImage,
           'color': colorHex,
           'hex': hex,
+          RepeaterMarkerStyle.statusProperty: statusKey,
           'isDuplicate': isDuplicate,
-          if (hopOverride != null) 'hopOverride': hopOverride,
         },
         'geometry': {
           'type': 'Point',
@@ -4374,8 +5189,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // Leader line — shortened by `_leaderLineEndShortenPx` at the marker
       // end so it doesn't punch through the icon / label halo. Compute the
       // shortening in screen-pixel space, then convert back to lat/lon.
-      final dxM =
-          (pos.longitude - center.longitude) * 111320 * cosLat;
+      final dxM = (pos.longitude - center.longitude) * 111320 * cosLat;
       final dyM = (pos.latitude - center.latitude) * 111320;
       final dxPx = dxM / mPerPx;
       final dyPx = dyM / mPerPx;
@@ -4384,11 +5198,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final scale = (lenPx - _leaderLineEndShortenPx) / lenPx;
       final endLon =
           center.longitude + (pos.longitude - center.longitude) * scale;
-      final endLat =
-          center.latitude + (pos.latitude - center.latitude) * scale;
+      final endLat = center.latitude + (pos.latitude - center.latitude) * scale;
       features.add({
         'type': 'Feature',
-        'properties': {'repeaterId': repeater.id},
+        'properties': {'repeaterId': identity},
         'geometry': {
           'type': 'LineString',
           'coordinates': [
@@ -4408,8 +5221,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       AppStateProvider appState, double currentZoom) async {
     if (_mapController == null || !_clusterLayersReady) return;
     try {
-      final geojson =
-          _buildSpiderFeatureCollection(appState, currentZoom);
+      final geojson = _buildSpiderFeatureCollection(appState, currentZoom);
       // Detailed mode references baked per-chip images. The main collection
       // usually registers them first, but a spidered repeater that the main
       // builder filtered out (focus / isolation / heard-repeater fade) would
@@ -4481,6 +5293,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   int _zIndexFor(String key) =>
       _coverageZIndex.putIfAbsent(key, () => ++_coverageZCounter);
 
+  // Object identity preserves separate deferrals even at identical fixes/times.
+  final _deferredMarkerIds = Expando<int>('deferred marker');
+  int _deferredMarkerSequence = 0;
+
+  int _deferredMarkerId(PingEventMarker marker) =>
+      _deferredMarkerIds[marker] ??= ++_deferredMarkerSequence;
+
   /// Diff-syncs native coverage symbols (TX/RX/DISC/Trace) against app state.
   /// One symbol per ping, image varies by type/success state, opacity reflects
   /// focus mode (faded if focus active and this isn't the focused ping).
@@ -4515,8 +5334,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       required bool success,
       required int idForMetadata,
       String? iconImageOverride,
+      String? keyOverride,
     }) async {
-      final key = _coverageKey(type, ts, lat, lon);
+      final key = keyOverride ?? _coverageKey(type, ts, lat, lon);
       final isFocused = _isFocusedPing(lat, lon, ts);
       // In focus mode, hide every coverage marker except the focused ping.
       // Skipping wantedKeys lets the cleanup loop remove them entirely so the
@@ -4574,16 +5394,28 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // When viewing a history session, show only those markers
     if (appState.viewingHistorySession &&
         appState.historySessionMarkers != null) {
+      // The live branch below hides deferred pins when the preference is off,
+      // so a history session answers the same preference. Toggling it re-syncs
+      // (the marker data version reads it), and the cleanup loop at the end
+      // takes the now-unwanted pins off the map.
+      final showDeferred = appState.preferences.showDeferredMarkers;
       for (final marker in appState.historySessionMarkers!) {
         if (marker.latitude == null || marker.longitude == null) continue;
+        final isDeferred = marker.type == PingEventType.deferred;
+        if (isDeferred && !showDeferred) continue;
         final mapping = _historyMarkerType(marker.type);
         await syncOne(
           type: 'history_${mapping.type}',
+          keyOverride: isDeferred
+              ? 'history_deferred_${_deferredMarkerId(marker)}'
+              : null,
           lat: marker.latitude!,
           lon: marker.longitude!,
           ts: marker.timestamp,
           success: mapping.success,
-          idForMetadata: marker.timestamp.millisecondsSinceEpoch,
+          idForMetadata: isDeferred
+              ? _deferredMarkerId(marker)
+              : marker.timestamp.millisecondsSinceEpoch,
           iconImageOverride: _MapImages.coverage(mapping.type, mapping.success),
         );
       }
@@ -4631,6 +5463,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           idForMetadata: entry.timestamp.millisecondsSinceEpoch,
           iconImageOverride:
               renderAsTxFail ? _MapImages.coverage('tx', false) : null,
+        );
+      }
+
+      final deferredMarkersToShow = appState.preferences.showDeferredMarkers
+          ? appState.deferredPingMarkers
+          : const <PingEventMarker>[];
+      for (final marker in deferredMarkersToShow) {
+        final id = _deferredMarkerId(marker);
+        await syncOne(
+          type: 'deferred',
+          keyOverride: 'deferred_$id',
+          lat: marker.latitude!,
+          lon: marker.longitude!,
+          ts: marker.timestamp,
+          success: true,
+          idForMetadata: id,
         );
       }
 
@@ -4720,6 +5568,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       try {
         await _mapController!
             .setGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+        _recordGpsSyncVersion(appState, null);
       } catch (e) {
         debugError('[MAP] clear gps puck failed: $e');
       }
@@ -4738,9 +5587,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _buildGpsPuckFeatureCollection(
             pos.latitude, pos.longitude, style, iconRotate),
       );
+      _recordGpsSyncVersion(appState, pos);
     } catch (e) {
       debugError('[MAP] update gps puck failed: $e');
     }
+  }
+
+  /// Mark the puck as in sync with [pos] (null = cleared). Only called once a
+  /// push has actually landed; a bailed or failed sync leaves the version
+  /// unrecorded so the next provider notify retries it (#482).
+  void _recordGpsSyncVersion(AppStateProvider appState, Position? pos) {
+    _lastGpsSyncVersion = Object.hash(
+      pos?.latitude,
+      pos?.longitude,
+      _computedHeading,
+      appState.preferences.gpsMarkerStyle,
+    );
   }
 
   /// One-Point FeatureCollection for the GPS puck source. `iconImage` and
@@ -4772,7 +5634,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// order, with no symbol-sort-key contention. enableInteraction:false so taps
   /// pass through to the repeaters/clusters underneath. Mirrors
   /// [_ensureCoverageLinesLayer].
-  Future<bool> _ensureGpsPuckLayer() async {
+  /// Gated entry point; see [_coverageGate]. Skips the gate entirely once
+  /// installed so a slow coverage mutation cannot stall the per-tick GPS sync.
+  Future<bool> _ensureGpsPuckLayer() => _gpsPuckLayerInstalled
+      ? Future.value(true)
+      : _coverageGate.run(_ensureGpsPuckLayerLocked);
+
+  Future<bool> _ensureGpsPuckLayerLocked() async {
     if (_gpsPuckLayerInstalled) return true;
     if (_mapController == null) return false;
     try {
@@ -4782,20 +5650,40 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       try {
         await _mapController!.removeSource(_gpsPuckSourceId);
       } catch (_) {}
-      await _mapController!
-          .addGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
-      await _mapController!.addSymbolLayer(
-        _gpsPuckSourceId,
-        _gpsPuckLayerId,
-        const SymbolLayerProperties(
-          iconImage: ['get', 'iconImage'],
-          iconRotate: ['get', 'iconRotate'],
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-        ),
-        // No belowLayerId => topmost, above all coverage pings and repeaters.
-        enableInteraction: false,
-      );
+      // "Already exists" on either add means a previous install's native
+      // object survived a silently-failed teardown. Adopt it PER OBJECT: the
+      // layer's paint properties are constant data-driven expressions, so an
+      // existing object is identical to the one the add would have created,
+      // and the caller's setGeoJsonSource repositions it. Reporting failure
+      // here left the installed-flag false for the life of the map session
+      // while the stale layer kept rendering the last pushed position (#482).
+      // The adopt must not cover both adds at once: removeLayer succeeding
+      // while removeSource fails would otherwise adopt the surviving source
+      // and never re-add the layer, leaving no arrow at all.
+      try {
+        await _mapController!
+            .addGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+      } catch (e) {
+        if (!mapStyleObjectAlreadyExists(e)) rethrow;
+        debugWarn('[MAP] gps-puck source already present, adopting it: $e');
+      }
+      try {
+        await _mapController!.addSymbolLayer(
+          _gpsPuckSourceId,
+          _gpsPuckLayerId,
+          const SymbolLayerProperties(
+            iconImage: ['get', 'iconImage'],
+            iconRotate: ['get', 'iconRotate'],
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+          ),
+          // No belowLayerId => topmost, above all coverage pings and repeaters.
+          enableInteraction: false,
+        );
+      } catch (e) {
+        if (!mapStyleObjectAlreadyExists(e)) rethrow;
+        debugWarn('[MAP] gps-puck layer already present, adopting it: $e');
+      }
       _gpsPuckLayerInstalled = true;
       return true;
     } catch (e) {
@@ -5147,8 +6035,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Draw the selected repeater's coverage [cells] as status-coloured fills
   /// (Feature B). [latStep]/[lonStep] size each cell's ring. Empty list clears.
-  Future<void> _updateCoverageCells(List<RepeaterCoverageCell> cells, String cvd,
-      double latStep, double lonStep) async {
+  Future<void> _updateCoverageCells(List<RepeaterCoverageCell> cells,
+      String cvd, double latStep, double lonStep) async {
     if (_mapController == null || !_styleLoaded) return;
     if (cells.isEmpty) {
       await _clearCoverageCells();
@@ -5344,7 +6232,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ),
     ];
     // Skinnier than the tile fan-out — a repeater draws many lines at once.
-    await _updateCoverageLines(segments, repeater.lat, repeater.lon, width: 1.5);
+    await _updateCoverageLines(segments, repeater.lat, repeater.lon,
+        width: 1.5);
     // Dim the base coverage tiles so the repeater's coloured cells + lines pop
     // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in
     // _clearRepeaterIsolation. Skip while ping focus already hid the overlay.
@@ -5525,7 +6414,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final wantedKeys = <String>{};
 
     for (final r in _focusedRepeaters) {
-      final key = r.repeater.id;
+      final key = _repeaterIdentity(r.repeater);
       wantedKeys.add(key);
       final midLat = (ping.latitude + r.repeater.lat) / 2;
       final midLon = (ping.longitude + r.repeater.lon) / 2;
@@ -5555,8 +6444,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           debugError('[MAP] render/addImage(distance label) failed: $e');
         }
       }
-      imageSize ??= _registeredDistanceLabelImageSizes[imageName] ??
-          const Size(60, 18);
+      imageSize ??=
+          _registeredDistanceLabelImageSizes[imageName] ?? const Size(60, 18);
       _distanceLabelImageSize[key] = imageSize;
       _distanceLabelRepeaterPos[key] = LatLng(r.repeater.lat, r.repeater.lon);
 
@@ -5620,7 +6509,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Deterministic order: iterate focused repeaters in the list order we got
     // them in (SNR-ranked upstream), so the "primary" label wins t=0.5.
     final orderedIds = _focusedRepeaters
-        .map((r) => r.repeater.id)
+        .map((r) => _repeaterIdentity(r.repeater))
         .where(_distanceLabelSymbols.containsKey)
         .toList();
     if (orderedIds.isEmpty) return;
@@ -5775,6 +6664,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         PingEventType.traceSuccess => (type: 'trace', success: true),
         PingEventType.traceFail => (type: 'trace', success: false),
         PingEventType.txMultiHopOnly => (type: 'rx', success: true),
+        PingEventType.deferred => (type: 'deferred', success: true),
       };
 
   /// Compute a version hash of all data that affects the marker list.
@@ -5794,16 +6684,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final e in appState.discLogEntries) {
       discNodeTotal += e.discoveredNodes.length;
     }
+    final deferredMarkers = appState.deferredPingMarkers;
     int traceSuccessTotal = 0;
     for (final t in appState.traceLogEntries) {
       if (t.success) traceSuccessTotal++;
     }
 
-    return Object.hash(
+    return Object.hashAll([
       appState.txPings.length,
       appState.rxPings.length,
       appState.discLogEntries.length,
       appState.traceLogEntries.length,
+      deferredMarkers.length,
+      deferredMarkers.lastOrNull,
       appState.repeaters.length,
       appState.discDropEnabled,
       appState.enforceHopBytes,
@@ -5816,9 +6709,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       txEchoTotal,
       discNodeTotal,
       traceSuccessTotal,
+      appState.preferences.showDeferredMarkers,
       appState.viewingHistorySession,
       appState.historySessionMarkers?.length ?? 0,
-    );
+    ]);
   }
 
   /// Color for the overlay ping-type dot
@@ -5832,16 +6726,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Build a single overlay table row with colored dot, repeater ID, and SNR
-  TableRow _overlayRow(String repeaterId, double snr, Color dotColor) {
+  TableRow _overlayRow(String repeaterId, double snr, Color dotColor,
+      {bool isLarge = false}) {
+    final dotSize = isLarge ? 9.0 : 6.0;
+    final fontSize = isLarge ? 17.0 : 11.0;
+    final rowVerticalPadding = isLarge ? 1.5 : 1.0;
     return TableRow(
       children: [
         TableCell(
           verticalAlignment: TableCellVerticalAlignment.middle,
           child: Padding(
-            padding: const EdgeInsets.only(right: 4),
+            padding: EdgeInsets.only(right: isLarge ? 6 : 4),
             child: Container(
-              width: 6,
-              height: 6,
+              width: dotSize,
+              height: dotSize,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: dotColor,
@@ -5850,11 +6748,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
+          padding: EdgeInsets.symmetric(vertical: rowVerticalPadding),
           child: Text(
             repeaterId,
-            style: const TextStyle(
-              fontSize: 11,
+            style: TextStyle(
+              fontSize: fontSize,
               fontWeight: FontWeight.w600,
               fontFamily: 'monospace',
               color: Colors.white,
@@ -5863,12 +6761,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ),
         const SizedBox(),
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
+          padding: EdgeInsets.symmetric(vertical: rowVerticalPadding),
           child: Text(
             snr.toStringAsFixed(1),
             textAlign: TextAlign.right,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: fontSize,
               fontWeight: FontWeight.w600,
               fontFamily: 'monospace',
               color: _snrColor(snr),
@@ -5879,27 +6777,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// GPS info overlay (top-left corner)
   /// Top heard repeaters overlay (bottom-right of map)
   Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
     final topRepeaters = appState.topRepeatersBySnr;
     final rxSlot = appState.rxOverlaySlot;
     final isEmpty = topRepeaters.isEmpty && rxSlot == null;
+    final isLarge = appState.preferences.largerTopRepeaters;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: isLarge ? 15 : 10,
+        vertical: isLarge ? 9 : 6,
+      ),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(isLarge ? 12 : 8),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Top Heard',
             style: TextStyle(
-              fontSize: 9,
+              fontSize: isLarge ? 14 : 9,
               fontWeight: FontWeight.w500,
               color: Colors.white54,
               letterSpacing: 0.5,
@@ -5907,10 +6808,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 2),
           if (isEmpty)
-            const Text(
+            Text(
               '---',
               style: TextStyle(
-                fontSize: 11,
+                fontSize: isLarge ? 17 : 11,
                 fontFamily: 'monospace',
                 color: Colors.white38,
               ),
@@ -5918,18 +6819,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           if (!isEmpty)
             Table(
               defaultColumnWidth: const IntrinsicColumnWidth(),
-              columnWidths: const {
-                0: IntrinsicColumnWidth(), // dot
-                1: IntrinsicColumnWidth(), // ID
-                2: FixedColumnWidth(8), // spacer
-                3: IntrinsicColumnWidth(), // SNR
+              columnWidths: {
+                0: const IntrinsicColumnWidth(), // dot
+                1: const IntrinsicColumnWidth(), // ID
+                2: FixedColumnWidth(isLarge ? 12 : 8), // spacer
+                3: const IntrinsicColumnWidth(), // SNR
               },
               children: [
                 for (final r in topRepeaters)
-                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type)),
+                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type),
+                      isLarge: isLarge),
                 if (rxSlot != null)
                   _overlayRow(rxSlot.repeaterId, rxSlot.snr,
-                      _overlayTypeColor(OverlayPingType.rx)),
+                      _overlayTypeColor(OverlayPingType.rx),
+                      isLarge: isLarge),
               ],
             ),
         ],
@@ -5939,69 +6842,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// SNR color (delegates to active palette)
   static Color _snrColor(double snr) => PingColors.snrColor(snr);
-
-  Widget _buildGpsInfoOverlay(AppStateProvider appState) {
-    final position = appState.currentPosition;
-    final hasGps = position != null;
-    final distanceFromLastPing = appState.distanceFromLastPing;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // GPS Status
-          Icon(
-            hasGps ? Icons.gps_fixed : Icons.gps_off,
-            size: 14,
-            color: hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            hasGps
-                ? formatMeters(position.accuracy,
-                    isImperial: appState.preferences.isImperial)
-                : 'No GPS',
-            style: TextStyle(
-              fontSize: 11,
-              fontFamily: 'monospace',
-              color:
-                  hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
-            ),
-          ),
-          // Distance since last TX ping (like wardrive.js)
-          if (hasGps && distanceFromLastPing != null) ...[
-            const SizedBox(width: 12),
-            const Icon(
-              Icons.straighten,
-              size: 12,
-              color: Colors.white70,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              formatMeters(distanceFromLastPing,
-                  isImperial: appState.preferences.isImperial),
-              style: const TextStyle(
-                fontSize: 11,
-                fontFamily: 'monospace',
-                color: Colors.white70,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Color _getAccuracyColor(double accuracy) {
-    if (accuracy <= 10) return PingColors.signalGood;
-    if (accuracy <= 30) return PingColors.signalMedium;
-    return PingColors.signalBad;
-  }
 
   /// Map controls. Single vertical column in portrait; in landscape the taller
   /// set is split into two columns so the lower icons don't run off the short
@@ -6051,8 +6891,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _buildControlButton(
         icon: _autoFollow ? Icons.my_location : Icons.location_searching,
         tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
-        onPressed:
-            appState.currentPosition != null ? _centerOnPosition : null,
+        onPressed: appState.currentPosition != null ? _centerOnPosition : null,
         isActive: _autoFollow,
       ),
       // Always North toggle
@@ -6314,6 +7153,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Show map legend popup explaining marker colors and types
   void _showLegendPopup() {
+    final recentDays = context.read<AppStateProvider>().coverageOverlayDays;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -6476,6 +7316,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                 description:
                                     'Location where a trace got no response',
                               ),
+                              const Divider(height: 1),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.deferred,
+                                label: 'Deferred',
+                                outlined: true,
+                                description:
+                                    'Ping held because this square already has recent coverage',
+                              ),
                             ],
                           ),
                         ),
@@ -6491,6 +7340,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                 Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
+                        if (recentDays != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'Showing all coverage results from the last '
+                              '$recentDays ${recentDays == 1 ? 'day' : 'days'}.',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
                         const SizedBox(height: 8),
                         Container(
                           decoration: BoxDecoration(
@@ -6576,6 +7434,83 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                 description:
                                     'No repeats heard AND no successful route',
                               ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+
+                        // Repeaters section
+                        Text(
+                          'Repeaters',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'The state is on the marker edge, so the coverage '
+                            'underneath stays readable.',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.active,
+                                label: 'Active',
+                                description: 'Heard recently',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.fresh,
+                                label: 'New',
+                                description: 'Added in the last few days',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.stale,
+                                label: 'Stale',
+                                description:
+                                    'Not heard for a while in this region',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.excluded,
+                                label: 'Overlap',
+                                description:
+                                    'Its ID matches another repeater at this '
+                                    'ID length',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.backbone,
+                                label: 'Backbone',
+                                description:
+                                    "Carries a large share of this region's "
+                                    'traffic',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterGroupLegendItem(context),
                             ],
                           ),
                         ),
@@ -6811,11 +7746,118 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Build a legend item row with colored circle, label, and description
+  /// The hairline rule the legend puts between rows.
+  Widget _legendDivider(BuildContext context) => Divider(
+        height: 1,
+        color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+      );
+
+  /// A miniature of the real marker: neutral body, state on the edge. Drawn
+  /// rather than reduced to a colour dot, because the whole point of the
+  /// design is WHERE the colour sits.
+  Widget _repeaterChipSwatch(Color accent) => Container(
+        width: 30,
+        height: 18,
+        alignment: Alignment.centerLeft,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: RepeaterMarkerStyle.bodyColor,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: accent, width: 1.5),
+        ),
+        child: Container(width: 5, color: accent),
+      );
+
+  /// One repeater-state row in the legend.
+  Widget _buildRepeaterLegendItem({
+    required BuildContext context,
+    required RepeaterMarkerStatus status,
+    required String label,
+    required String description,
+  }) =>
+      _legendRow(
+        context: context,
+        swatch: _repeaterChipSwatch(RepeaterMarkerStyle.colorFor(status)),
+        label: label,
+        description: description,
+      );
+
+  /// The group-marker row. Its ring and dots answer two different questions,
+  /// so the description has to say both.
+  Widget _buildRepeaterGroupLegendItem(BuildContext context) => _legendRow(
+        context: context,
+        swatch: SizedBox(
+          width: 30,
+          height: 18,
+          child: Center(
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: RepeaterMarkerStyle.bodyColor,
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: RepeaterMarkerStyle.colorFor(
+                        RepeaterMarkerStatus.active),
+                    width: 2),
+              ),
+            ),
+          ),
+        ),
+        label: 'Group',
+        description: 'Several repeaters too close to separate. The ring is '
+            'the most common state among them, and there is one dot for each '
+            'state inside.',
+      );
+
+  /// Shared row layout for the legend: swatch, fixed-width label, description.
+  Widget _legendRow({
+    required BuildContext context,
+    required Widget swatch,
+    required String label,
+    required String description,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          swatch,
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 64,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLegendItem({
     required BuildContext context,
     required Color color,
     required String label,
     required String description,
+    bool outlined = false,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     return Padding(
@@ -6827,15 +7869,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             width: 16,
             height: 16,
             decoration: BoxDecoration(
-              color: color,
+              color: outlined ? Colors.transparent : color,
               shape: BoxShape.circle,
-              border: Border.all(color: colorScheme.surface, width: 1.5),
+              border: Border.all(
+                  color: outlined ? color : colorScheme.surface,
+                  width: outlined ? 2.5 : 1.5),
             ),
           ),
           const SizedBox(width: 12),
           // Label
           SizedBox(
-            width: 48,
+            width: 64,
             child: Text(
               label,
               style: TextStyle(
@@ -7137,157 +8181,159 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     final iconReserve = lacksLocation ? 18.0 : 0.0;
                     final nodeColWidth = chipWidth + iconReserve;
                     return Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: nodeColWidth,
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'TX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data row
-                        Builder(builder: (context) {
-                          final localSnr = entry.localSnr ?? 0;
-                          final localRssi = entry.localRssi ?? 0;
-                          final remoteSnr = entry.remoteSnr ?? 0;
-
-                          final rxSnrColor = PingColors.snrColor(localSnr);
-                          final rssiColor = PingColors.rssiColor(localRssi);
-                          final txSnrColor =
-                              PingColors.snrColor(remoteSnr.toDouble());
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(
-                                context, entry.targetRepeaterId, fromLatLng: (
-                              lat: entry.latitude,
-                              lon: entry.longitude
-                            )),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Repeater ID + optional no-location icon,
-                                  // pinned to the node column width so the
-                                  // SNR/RSSI/TX columns stay aligned.
-                                  SizedBox(
-                                    width: nodeColWidth,
-                                    child: Row(
-                                      children: [
-                                        RepeaterIdChip(
-                                            repeaterId: entry.targetRepeaterId,
-                                            fontSize: 13,
-                                            width: chipWidth),
-                                        if (lacksLocation)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                left: 4),
-                                            child: _noLocationIndicator(),
-                                          ),
-                                      ],
+                      decoration: BoxDecoration(
+                        color:
+                            Theme.of(context).colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outline
+                                .withValues(alpha: 0.5)),
+                      ),
+                      child: Column(
+                        children: [
+                          // Header row
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: nodeColWidth,
+                                  child: Text(
+                                    'Node',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: localSnr.toStringAsFixed(1),
-                                        color: rxSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RX RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: '$localRssi',
-                                        color: rssiColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX RSSI',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // TX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: remoteSnr.toStringAsFixed(1),
-                                        color: txSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'TX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          );
-                        }),
-                      ],
-                    ),
-                  );
+                          ),
+                          Divider(
+                              height: 1, color: Theme.of(context).dividerColor),
+                          // Data row
+                          Builder(builder: (context) {
+                            final localSnr = entry.localSnr ?? 0;
+                            final localRssi = entry.localRssi ?? 0;
+                            final remoteSnr = entry.remoteSnr ?? 0;
+
+                            final rxSnrColor = PingColors.snrColor(localSnr);
+                            final rssiColor = PingColors.rssiColor(localRssi);
+                            final txSnrColor =
+                                PingColors.snrColor(remoteSnr.toDouble());
+
+                            return InkWell(
+                              onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                  context, entry.targetRepeaterId, fromLatLng: (
+                                lat: entry.latitude,
+                                lon: entry.longitude
+                              )),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                child: Row(
+                                  children: [
+                                    // Repeater ID + optional no-location icon,
+                                    // pinned to the node column width so the
+                                    // SNR/RSSI/TX columns stay aligned.
+                                    SizedBox(
+                                      width: nodeColWidth,
+                                      child: Row(
+                                        children: [
+                                          RepeaterIdChip(
+                                              repeaterId:
+                                                  entry.targetRepeaterId,
+                                              fontSize: 13,
+                                              width: chipWidth),
+                                          if (lacksLocation)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                  left: 4),
+                                              child: _noLocationIndicator(),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    // RX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: localSnr.toStringAsFixed(1),
+                                          color: rxSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // RX RSSI
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: '$localRssi',
+                                          color: rssiColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // TX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: remoteSnr.toStringAsFixed(1),
+                                          color: txSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    );
                   }),
                 ],
               ],
@@ -7319,6 +8365,45 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Dead repeater marker color (delegates to active palette)
   static Color get _repeaterDeadColor => PingColors.repeaterDead;
 
+  /// Backbone repeater marker color (delegates to active palette). Gold, and
+  /// deliberately LIGHT: the same hue any darker reads as brown.
+  static Color get _repeaterBackboneColor => PingColors.repeaterBackbone;
+
+  /// The backbone share as a short suffix, or empty when the server did not
+  /// send one. A share that rounds to zero reads as "<1%" rather than "0%",
+  /// which would look like the repeater carries nothing.
+  /// The antenna row: the antenna and how high it is mounted read as one fact,
+  /// so they share a row rather than taking one each. Either half can be
+  /// missing, and the height follows the imperial preference like every other
+  /// distance in this sheet. Null when the administrator gave neither.
+  static String? _antennaLine(Repeater repeater, bool isImperial) {
+    final antenna = repeater.antenna;
+    final height = repeater.heightMeters;
+    final atHeight = height == null
+        ? null
+        : formatCoverageDistance(height, isImperial: isImperial);
+    if (antenna != null && atHeight != null) return '$antenna @ $atHeight';
+    if (antenna != null) return antenna;
+    if (atHeight != null) return 'Antenna at $atHeight';
+    return null;
+  }
+
+  /// The power row: transmit power and how the site is fed, one fact per half
+  /// and either can be missing. Null when the administrator gave neither.
+  static String? _powerLine(Repeater repeater) {
+    final parts = [repeater.displayPower, repeater.displayPowerSource]
+        .whereType<String>()
+        .toList();
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  static String _backboneShareSuffix(Repeater repeater) {
+    final share = repeater.backboneShare;
+    if (share == null || !share.isFinite || share <= 0) return '';
+    final percent = (share * 100).round();
+    return percent < 1 ? ' · <1%' : ' · $percent%';
+  }
+
   /// Get set of duplicate repeater IDs
   /// Resolve heard repeater hex IDs to Repeater objects with GPS coordinates.
   /// Marks matches as ambiguous when a single hex ID matches multiple repeaters.
@@ -7333,12 +8418,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (int i = 0; i < hexIds.length; i++) {
       final fullHex = i < fullHexIds.length ? fullHexIds[i] : null;
       final snr = i < snrValues.length ? snrValues[i] : null;
-      final matchKey = (fullHex != null && fullHex.length >= 8)
-          ? fullHex.substring(0, 8)
-          : hexIds[i];
+      final matchKey =
+          rcCleanHex(fullHex?.isNotEmpty == true ? fullHex : hexIds[i]);
+      if (matchKey.isEmpty) continue;
       final matches = allRepeaters
-          .where(
-              (r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+          .where((r) => _repeaterIdentity(r).startsWith(matchKey))
           .toList();
       final ambiguous = matches.length > 1;
       resolved.addAll(matches.map((r) => _ResolvedRepeater(r, snr, ambiguous)));
@@ -7346,18 +8430,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return resolved;
   }
 
-  /// Look up the first matching [Repeater] by hex-ID prefix (case-insensitive).
+  /// Look up a [Repeater] by an exact full key or an unambiguous hex prefix.
   /// Used by focus bottom-sheet rows to decide whether to surface the
   /// `location_off` indicator. Returns null when no match is found — callers
   /// treat that as "no location" too, since we have no coordinates.
   Repeater? _lookupRepeaterByHexId(String hexId) {
     if (hexId.isEmpty) return null;
-    final all = context.read<AppStateProvider>().repeaters;
-    final key = hexId.toLowerCase();
-    for (final r in all) {
-      if (r.hexId.toLowerCase().startsWith(key)) return r;
-    }
-    return null;
+    final appState = context.read<AppStateProvider>();
+    return RepeaterLookup.fromRepeaters(appState.repeaters,
+            hopBytes: appState.effectiveHopBytes)
+        .resolveByHex(hexId);
   }
 
   /// True when we should show a "no location" hint for the given hex ID,
@@ -7648,8 +8730,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Row-2 stats for the cell pill: Max Dist · Avg SNR · Avg Noise · Total Pings.
-  Widget _cellPillStats(
-      BuildContext context, Future<GridSummary?> summaryFuture, bool isImperial) {
+  Widget _cellPillStats(BuildContext context,
+      Future<GridSummary?> summaryFuture, bool isImperial) {
     return FutureBuilder<GridSummary?>(
       future: summaryFuture,
       builder: (context, snap) {
@@ -7658,10 +8740,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         final dist = loading
             ? '…'
             : (s?.maxDistMeters != null
-                ? formatCoverageDistance(s!.maxDistMeters!, isImperial: isImperial)
+                ? formatCoverageDistance(s!.maxDistMeters!,
+                    isImperial: isImperial)
                 : 'N/A');
-        final noise =
-            loading ? '…' : (s?.avgNoise != null ? '${s!.avgNoise} dBm' : 'N/A');
+        final noise = loading
+            ? '…'
+            : (s?.avgNoise != null ? '${s!.avgNoise} dBm' : 'N/A');
         final total = loading ? '…' : '${s?.total ?? 0}';
         return Wrap(
           spacing: 14,
@@ -7731,25 +8815,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Row-2 stats for the repeater pill: Max Range · Hop Bytes · Clock Sync ·
   /// Last Heard. (Online/offline status is the coloured tower in the title.)
   /// Max Range comes from the lazy [statsFuture].
-  Widget _repeaterPillStats(
-      BuildContext context,
-      Repeater repeater,
-      Future<RepeaterStats?> statsFuture,
-      String? clockSkew,
-      bool isImperial) {
+  Widget _repeaterPillStats(BuildContext context, Repeater repeater,
+      Future<RepeaterStats?> statsFuture, String? clockSkew, bool isImperial) {
     final clockOk = clockSkew == null;
-    final lastHeard = repeater.lastHeard > 0 ? daysAgo(repeater.lastHeard) : 'N/A';
+    final lastHeard =
+        repeater.lastHeard > 0 ? daysAgo(repeater.lastHeard) : 'N/A';
     return FutureBuilder<RepeaterStats?>(
       future: statsFuture,
       builder: (context, snap) {
         final loading = snap.connectionState != ConnectionState.done;
         final stats = snap.data;
-        final range = loading
-            ? '…'
-            : (stats?.maxRangeMeters != null
-                ? formatCoverageDistance(stats!.maxRangeMeters!,
-                    isImperial: isImperial)
-                : 'N/A');
+        // '?' rather than 'N/A' when the fetch could not be answered: 'N/A'
+        // means we asked and there is nothing. Tapping the pill opens the sheet,
+        // which explains it properly.
+        final String range;
+        if (loading) {
+          range = '…';
+        } else if (stats == null) {
+          range = '?';
+        } else if (stats.maxRangeMeters != null) {
+          range = formatCoverageDistance(stats.maxRangeMeters!,
+              isImperial: isImperial);
+        } else {
+          range = 'N/A';
+        }
         return Wrap(
           spacing: 14,
           runSpacing: 6,
@@ -7820,8 +8909,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
 
     final theme = Theme.of(context);
-    final timeStr =
-        _focusedPingTimestamp != null ? _formatTime(_focusedPingTimestamp!) : '';
+    final timeStr = _focusedPingTimestamp != null
+        ? _formatTime(_focusedPingTimestamp!)
+        : '';
 
     return GestureDetector(
       // Swallow body taps (no accidental expand / no fall-through to the map).
@@ -7947,8 +9037,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             iconColor: PingColors.txSuccess));
         if (source.localSnr != null) chips.add(snrChip(source.localSnr!));
         if (source.remoteSnr != null) {
-          chips.add(_pillStat(
-              Icons.arrow_upward, 'TX ${source.remoteSnr!.toStringAsFixed(1)}'));
+          chips.add(_pillStat(Icons.arrow_upward,
+              'TX ${source.remoteSnr!.toStringAsFixed(1)}'));
         }
         if (source.localRssi != null) chips.add(rssiChip(source.localRssi!));
       }
@@ -7958,6 +9048,160 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return Wrap(spacing: 14, runSpacing: 6, children: chips);
   }
 
+  /// Show deferred (Smart Pinging) marker details. Same bottom-sheet shape as
+  /// the TX/RX/DISC/Trace sheets, minus the minimize control: a deferred ping
+  /// heard nothing, so there is no focus mode to fall back to.
+  void _showDeferredPingDetails(PingEventMarker marker) {
+    final lat = marker.latitude;
+    final lon = marker.longitude;
+
+    showModalBottomSheet(
+      context: context,
+      useSafeArea: true,
+      // Transparent barrier so the map stays fully bright, matching the other
+      // marker sheets.
+      barrierColor: Colors.transparent,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => Container(
+        padding: EdgeInsets.fromLTRB(
+            20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header with icon badge
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: PingColors.deferred.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: PingColors.deferred.withValues(alpha: 0.4)),
+                  ),
+                  child: Icon(Icons.circle_outlined,
+                      color: PingColors.deferred, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Deferred',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      Text(
+                        _formatTime(marker.timestamp),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Location chip
+            if (lat != null && lon != null) ...[
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.location_on,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontFamily: 'monospace',
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // Why the ping was held
+            Text(
+              'Smart Pinging',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outline
+                        .withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.pause_circle_outline,
+                      size: 16, color: PingColors.deferred),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Ping held because this square already has recent '
+                      'coverage. It goes out at the first fix in a square '
+                      'with nothing recent.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.4,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showHistoryMarkerAsLive(PingEventMarker marker) {
     if (marker.latitude == null || marker.longitude == null) return;
     final lat = marker.latitude!;
@@ -7965,6 +9209,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final repeaters = marker.repeaters ?? [];
 
     switch (marker.type) {
+      case PingEventType.deferred:
+        _showDeferredPingDetails(marker);
       case PingEventType.txSuccess:
       case PingEventType.txFail:
       case PingEventType.txMultiHopOnly:
@@ -8027,14 +9273,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
-  Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {
-    final idCounts = <String, int>{};
-    for (final repeater in repeaters) {
-      idCounts[repeater.id] = (idCounts[repeater.id] ?? 0) + 1;
-    }
-    return idCounts.entries.where((e) => e.value > 1).map((e) => e.key).toSet();
-  }
-
   /// Repeaters eligible for map rendering — excludes anything not heard in
   /// the past 30 days so long-stale entries don't appear, contribute to
   /// clusters, or get pulled into spider expansions. All map-rendering
@@ -8043,17 +9281,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   List<Repeater> _mapVisibleRepeaters(AppStateProvider appState) =>
       appState.repeaters.where((r) => r.isHeardRecently).toList();
 
-  /// Get marker color for a repeater based on status priority:
-  /// 1. Duplicate → Red (always takes priority)
-  /// 2. Dead → Grey (not heard in 24 hours)
-  /// 3. New → Orange (created in past 7 days)
-  /// 4. Active → Magenta (default healthy state)
-  Color _getRepeaterMarkerColor(Repeater repeater, bool isDuplicate) {
-    if (isDuplicate) return _repeaterDuplicateColor;
-    if (repeater.isDead) return _repeaterDeadColor;
-    if (repeater.isNew) return _repeaterNewColor;
-    return _repeaterMarkerColor; // Active (default)
-  }
+  /// The accent colour for a repeater, by the one status priority chain in
+  /// [_repeaterStatusKey]: duplicate > dead > new > backbone > active.
+  ///
+  /// Deliberately not a second copy of that chain. The two drifting apart
+  /// would show a marker in one colour and its detail sheet in another.
+  Color _getRepeaterMarkerColor(Repeater repeater, bool isDuplicate) =>
+      _repeaterStatusColor(_repeaterStatusKey(repeater, isDuplicate));
 
   /// Compute node column width based on hop byte count.
   /// [extraPadding] adds space for additional content (e.g. nodeTypeLabel in DISC popup).
@@ -8066,7 +9300,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       case 2:
         return 70 + extraPadding;
       case 3:
-        return 80 + extraPadding;
+        // 3-byte (6-char) hex needs extra room or the last digit clips (#383)
+        return 88 + extraPadding;
       default:
         return 60 + extraPadding;
     }
@@ -8080,10 +9315,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final ambiguous = resolved.where((r) => r.ambiguous).toList();
     if (ambiguous.isEmpty) return;
 
-    final appState = context.read<AppStateProvider>();
-    final regionOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
-
     showDialog(
       context: context,
       builder: (dialogContext) => Dialog(
@@ -8091,8 +9322,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(
-            color:
-                Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
           ),
         ),
         child: ConstrainedBox(
@@ -8135,7 +9365,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       r.repeater,
                       refLat: fromLatLng?.lat,
                       refLon: fromLatLng?.lon,
-                      regionHopBytesOverride: regionOverride,
                     )),
               ],
             ),
@@ -8291,8 +9520,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 const SizedBox(height: 16),
 
                 // Split repeaters into direct and multi-hop
-                ..._buildTxRepeaterSections(context, ping, heardRepeaters,
-                    resolved, hasAmbiguous),
+                ..._buildTxRepeaterSections(
+                    context, ping, heardRepeaters, resolved, hasAmbiguous),
               ],
             ),
           ),
@@ -8401,8 +9630,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ],
       ));
       widgets.add(const SizedBox(height: 12));
-      widgets.add(_buildMultiHopRepeaterTable(
-          context, ping, multiHopRepeaters));
+      widgets
+          .add(_buildMultiHopRepeaterTable(context, ping, multiHopRepeaters));
     }
 
     return widgets;
@@ -8421,16 +9650,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-            color: Theme.of(context)
-                .colorScheme
-                .outline
-                .withValues(alpha: 0.5)),
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
       ),
       child: Column(
         children: [
           Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
                 SizedBox(
@@ -8439,9 +9665,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant)),
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant)),
                 ),
                 Expanded(
                     child: Text('SNR',
@@ -8479,8 +9704,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   context, repeater.repeaterId,
                   fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: [
                     SizedBox(
@@ -8510,9 +9735,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     Expanded(
                       child: Center(
                         child: _buildStatChip(
-                          value: repeater.rssi != null
-                              ? '${repeater.rssi}'
-                              : '-',
+                          value:
+                              repeater.rssi != null ? '${repeater.rssi}' : '-',
                           color: rssiColor,
                         ),
                       ),
@@ -8540,17 +9764,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-            color: Theme.of(context)
-                .colorScheme
-                .outline
-                .withValues(alpha: 0.5)),
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
                 SizedBox(
@@ -8559,9 +9780,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant)),
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant)),
                 ),
                 Expanded(
                     child: Text('SNR',
@@ -8602,8 +9822,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       context, repeater.repeaterId,
                       fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
                         SizedBox(
@@ -8625,8 +9845,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         Expanded(
                           child: Center(
                             child: _buildStatChip(
-                              value:
-                                  repeater.snr?.toStringAsFixed(1) ?? '-',
+                              value: repeater.snr?.toStringAsFixed(1) ?? '-',
                               color: snrColor,
                             ),
                           ),
@@ -8647,8 +9866,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 ),
                 if (repeater.pathHops != null && repeater.pathHops!.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(
-                        left: 12, right: 12, bottom: 8),
+                    padding:
+                        const EdgeInsets.only(left: 12, right: 12, bottom: 8),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -8725,8 +9944,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   decoration: BoxDecoration(
                     color: PingColors.rx.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: PingColors.rx.withValues(alpha: 0.4)),
+                    border:
+                        Border.all(color: PingColors.rx.withValues(alpha: 0.4)),
                   ),
                   child: Icon(Icons.arrow_downward,
                       color: PingColors.rx, size: 24),
@@ -8824,119 +10043,121 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               final iconReserve = lacksLocation ? 18.0 : 0.0;
               final nodeColWidth = chipWidth + iconReserve;
               return Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .outline
-                        .withValues(alpha: 0.5)),
-              ),
-              child: Column(
-                children: [
-                  // Header row
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: nodeColWidth,
-                          child: Text(
-                            'Node',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            'SNR',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            'RSSI',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Divider(height: 1, color: Theme.of(context).dividerColor),
-                  // Data row
-                  InkWell(
-                    onTap: () => RepeaterIdChip.showRepeaterPopup(
-                        context, ping.repeaterId,
-                        fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
-                    child: Padding(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: Column(
+                  children: [
+                    // Header row
+                    Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                          horizontal: 12, vertical: 10),
                       child: Row(
                         children: [
-                          // Repeater ID + optional no-location icon, pinned
-                          // to the node column width so SNR/RSSI stay aligned.
                           SizedBox(
                             width: nodeColWidth,
-                            child: Row(
-                              children: [
-                                RepeaterIdChip(
-                                    repeaterId: ping.repeaterId,
-                                    fontSize: 13,
-                                    width: chipWidth),
-                                if (lacksLocation)
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 4),
-                                    child: _noLocationIndicator(),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          // SNR
-                          Expanded(
-                            child: Center(
-                              child: _buildStatChip(
-                                value: ping.snr.toStringAsFixed(1),
-                                color: snrColor,
+                            child: Text(
+                              'Node',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               ),
                             ),
                           ),
-                          // RSSI
                           Expanded(
-                            child: Center(
-                              child: _buildStatChip(
-                                value: '${ping.rssi}',
-                                color: rssiColor,
+                            child: Text(
+                              'SNR',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'RSSI',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                  ),
-                ],
-              ),
-            );
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
+                    // Data row
+                    InkWell(
+                      onTap: () => RepeaterIdChip.showRepeaterPopup(
+                          context, ping.repeaterId, fromLatLng: (
+                        lat: ping.latitude,
+                        lon: ping.longitude
+                      )),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        child: Row(
+                          children: [
+                            // Repeater ID + optional no-location icon, pinned
+                            // to the node column width so SNR/RSSI stay aligned.
+                            SizedBox(
+                              width: nodeColWidth,
+                              child: Row(
+                                children: [
+                                  RepeaterIdChip(
+                                      repeaterId: ping.repeaterId,
+                                      fontSize: 13,
+                                      width: chipWidth),
+                                  if (lacksLocation)
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 4),
+                                      child: _noLocationIndicator(),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            // SNR
+                            Expanded(
+                              child: Center(
+                                child: _buildStatChip(
+                                  value: ping.snr.toStringAsFixed(1),
+                                  color: snrColor,
+                                ),
+                              ),
+                            ),
+                            // RSSI
+                            Expanded(
+                              child: Center(
+                                child: _buildStatChip(
+                                  value: '${ping.rssi}',
+                                  color: rssiColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
             }),
 
             // Path section (origin → ... → us). Skipped when the path is
@@ -8954,8 +10175,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 12),
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(8),
@@ -8995,9 +10216,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final resolved = entry.discoveredNodes.isNotEmpty
           ? _resolveRepeatersByHexIds(
               entry.discoveredNodes.map((n) => n.repeaterId).toList(),
-              fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
-              snrValues:
-                  entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
+              fullHexIds:
+                  entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
+              snrValues: entry.discoveredNodes
+                  .map((n) => n.localSnr as double?)
+                  .toList(),
             )
           : const <_ResolvedRepeater>[];
       _activatePingFocus(
@@ -9148,166 +10371,169 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         .any((n) => _hexIdLacksLocation(n.repeaterId));
                     final nodeExtra = 20.0 + (anyLacksLocation ? 18.0 : 0.0);
                     return Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width:
-                                    _nodeColumnWidth(extraPadding: nodeExtra),
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'TX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...entry.discoveredNodes.map((node) {
-                          final rxSnrColor = PingColors.snrColor(node.localSnr);
-                          final rssiColor =
-                              PingColors.rssiColor(node.localRssi);
-                          final txSnrColor =
-                              PingColors.snrColor(node.remoteSnr.toDouble());
-                          final lacksLocation =
-                              _hexIdLacksLocation(node.repeaterId);
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(
-                                context, node.repeaterId,
-                                fullHexId: node.pubkeyHex,
-                                fromLatLng: (
-                                  lat: entry.latitude,
-                                  lon: entry.longitude
-                                )),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Node ID with type (+ optional no-loc icon)
-                                  SizedBox(
-                                    width:
-                                        _nodeColumnWidth(extraPadding: nodeExtra),
-                                    child: Row(
-                                      children: [
-                                        RepeaterIdChip(
-                                            repeaterId: node.repeaterId,
-                                            fontSize: 13),
-                                        Text(
-                                          node.nodeTypeLabel,
-                                          style: TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w500,
-                                            color: _discMarkerColor,
-                                          ),
-                                        ),
-                                        if (lacksLocation)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                left: 4),
-                                            child: _noLocationIndicator(),
-                                          ),
-                                      ],
+                      decoration: BoxDecoration(
+                        color:
+                            Theme.of(context).colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outline
+                                .withValues(alpha: 0.5)),
+                      ),
+                      child: Column(
+                        children: [
+                          // Header row
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width:
+                                      _nodeColumnWidth(extraPadding: nodeExtra),
+                                  child: Text(
+                                    'Node',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: node.localSnr.toStringAsFixed(1),
-                                        color: rxSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: '${node.localRssi}',
-                                        color: rssiColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX RSSI',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // TX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value:
-                                            node.remoteSnr.toStringAsFixed(1),
-                                        color: txSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'TX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          );
-                        }),
-                      ],
-                    ),
-                  );
+                          ),
+                          Divider(
+                              height: 1, color: Theme.of(context).dividerColor),
+                          // Data rows
+                          ...entry.discoveredNodes.map((node) {
+                            final rxSnrColor =
+                                PingColors.snrColor(node.localSnr);
+                            final rssiColor =
+                                PingColors.rssiColor(node.localRssi);
+                            final txSnrColor =
+                                PingColors.snrColor(node.remoteSnr.toDouble());
+                            final lacksLocation =
+                                _hexIdLacksLocation(node.repeaterId);
+
+                            return InkWell(
+                              onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                  context, node.repeaterId,
+                                  fullHexId: node.pubkeyHex,
+                                  fromLatLng: (
+                                    lat: entry.latitude,
+                                    lon: entry.longitude
+                                  )),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                child: Row(
+                                  children: [
+                                    // Node ID with type (+ optional no-loc icon)
+                                    SizedBox(
+                                      width: _nodeColumnWidth(
+                                          extraPadding: nodeExtra),
+                                      child: Row(
+                                        children: [
+                                          RepeaterIdChip(
+                                              repeaterId: node.repeaterId,
+                                              fontSize: 13),
+                                          Text(
+                                            node.nodeTypeLabel,
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w500,
+                                              color: _discMarkerColor,
+                                            ),
+                                          ),
+                                          if (lacksLocation)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                  left: 4),
+                                              child: _noLocationIndicator(),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    // RX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value:
+                                              node.localSnr.toStringAsFixed(1),
+                                          color: rxSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // RSSI
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: '${node.localRssi}',
+                                          color: rssiColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // TX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value:
+                                              node.remoteSnr.toStringAsFixed(1),
+                                          color: txSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    );
                   }),
                 ],
               ],
@@ -9324,33 +10550,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     });
   }
 
-  /// Build a status chip for the repeater popup
-  Widget _buildRepeaterStatusChip(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          color: color,
-        ),
-      ),
-    );
-  }
-
   /// Show repeater details. Opens minimized as a stats pill by default; tapping
   /// the pill re-enters with [expand] true to show the full detail sheet, and
   /// the sheet's minimize re-enters with [expand] false. [cachedStats] carries
   /// the lazily-fetched stats across those toggles so they aren't re-fetched.
   void _showRepeaterDetails(Repeater repeater,
       {bool isDuplicate = false,
-      int? regionHopBytesOverride,
       bool isolate = true,
       bool expand = false,
       Future<RepeaterStats?>? cachedStats}) {
@@ -9362,12 +10567,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // by _clearRepeaterIsolation on sheet/pill close or empty-map tap.
     final wasCell = _cellPopupActive;
     final prevRepeater = _isolatedRepeaterId;
-    if (isolate) _isolatedRepeaterId = repeater.id;
+    final repeaterIdentity = _repeaterIdentity(repeater);
+    if (isolate) _isolatedRepeaterId = repeaterIdentity;
     _clearMinimizedInfoPopup(); // drop the prior pill widget only
     if (wasCell) {
       // Switching from a tile view: tear down its footprint/dim/fade/lines.
       _clearCellHighlight();
-    } else if (prevRepeater != null && prevRepeater != repeater.id) {
+    } else if (prevRepeater != null && prevRepeater != repeaterIdentity) {
       // Switching repeater->repeater: tear down the old cells/lines/dim WITHOUT
       // clearing the (now new) _isolatedRepeaterId via _clearRepeaterIsolation.
       _clearCoverageLines();
@@ -9392,22 +10598,33 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
     // Determine status label and color (web labels, generateRepeaterPopup).
+    // The label is a row inside the details card, where every row is already
+    // about this repeater, so it drops the redundant noun the web chip carried
+    // ('New Repeater' -> 'New') and reads as a fact like the rows around it.
+    // The duplicate case says it once: it used to draw a 'Duplicate' chip and
+    // an 'Ambiguous' chip side by side, both in the same colour.
     String statusLabel;
     Color statusColor;
-    if (repeater.enabled == 2) {
-      statusLabel = 'Ambiguous';
+    if (isDuplicate) {
+      statusLabel = 'Ambiguous ID';
       statusColor = _repeaterDuplicateColor;
     } else if (repeater.enabled == 0) {
       statusLabel = 'Disabled';
       statusColor = _repeaterDeadColor;
     } else if (repeater.isNew) {
-      statusLabel = 'New Repeater';
+      statusLabel = 'New';
       statusColor = _repeaterNewColor;
+    } else if (repeater.isBackbone) {
+      // The server's verdict, never worked out here: it ranks a whole region's
+      // repeaters by their share of its traffic, which this app never sees.
+      // The share rides along on the label when the server sent one.
+      statusLabel = 'Backbone${_backboneShareSuffix(repeater)}';
+      statusColor = _repeaterBackboneColor;
     } else if (repeater.isActive) {
-      statusLabel = 'Repeater Online';
+      statusLabel = 'Online';
       statusColor = _repeaterMarkerColor;
     } else {
-      statusLabel = 'Stale Repeater';
+      statusLabel = 'Stale';
       statusColor = _repeaterDeadColor;
     }
 
@@ -9421,8 +10638,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final gridSize = appState.preferences.coverageGridSize;
     final Future<RepeaterStats?> statsFuture = cachedStats ??
         appState
-            .fetchRepeaterCoveragePoints(prefix: repeater.id)
+            .fetchRepeaterCoveragePoints(
+                prefix: repeaterIdentity.substring(
+                    0, math.min(40, repeaterIdentity.length)))
             .then<RepeaterStats?>((pts) {
+          // null means the points could not be fetched at all. Keep it null so
+          // the sheet can say so, rather than aggregating an empty list into a
+          // zeroed RepeaterStats that reads as "this repeater heard nothing"
+          // (MeshMapper_Server#109). An EMPTY list still aggregates normally:
+          // that is a real answer.
+          if (pts == null) {
+            debugWarn('[COVERAGE] repeater ${repeater.id} coverage '
+                'unavailable, not rendering it as zero coverage');
+            return null;
+          }
           final res =
               RepeaterStats.fromCoverageWithPoints(pts, repeater, lookup);
           // Feature B: draw this repeater's coverage cells + status-coloured
@@ -9431,11 +10660,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // this repeater is still the isolated selection — guards a fast
           // repeater switch during the network fetch — and has a known location.
           if (mounted &&
-              _isolatedRepeaterId == repeater.id &&
+              _isolatedRepeaterId == repeaterIdentity &&
               repeater.hasLocation) {
             _drawRepeaterCoverage(repeater, res.matched, cvd, gridSize)
                 .then((cells) {
-              if (!mounted || _isolatedRepeaterId != repeater.id) return;
+              if (!mounted || _isolatedRepeaterId != repeaterIdentity) return;
               // Match ping focus: frame the repeater + its whole coverage
               // footprint (no-op when it heard nothing — single point).
               _fitCameraToPoints([
@@ -9450,11 +10679,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           return null;
         });
 
-    final fingerprintShort =
-        repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
-    final fingerprintFull = repeater.hexId.length >= 8
-        ? repeater.hexId.substring(0, 8).toUpperCase()
-        : repeater.hexId.toUpperCase();
+    final fingerprintShort = repeater.displayHexId();
     final clockSkew = humanizeClockSkew(repeater.timeOffset);
 
     // Open minimized by default — a compact stats pill; tap it to expand to the
@@ -9468,7 +10693,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           _clearMinimizedInfoPopup();
           _showRepeaterDetails(repeater,
               isDuplicate: isDuplicate,
-              regionHopBytesOverride: regionHopBytesOverride,
               isolate: false,
               expand: true,
               cachedStats: statsFuture);
@@ -9484,6 +10708,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
+      // Scroll-controlled so the sheet can grow to its whole content (the
+      // default sheet caps at ~9/16 of the screen and cut the card off);
+      // the constraint keeps a sliver of map visible above it.
+      isScrollControlled: true,
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92),
       // Transparent barrier so the map stays bright (like focus mode).
       barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -9493,232 +10723,371 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       builder: (context) => Container(
         padding: EdgeInsets.fromLTRB(
             20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-        // Scrollable so the content can't overflow on shorter screens — this
-        // (non-scroll-controlled) bottom sheet caps height to ~9/16 of the
-        // screen, and the detail card is occasionally taller than that.
+        // Still scrollable for the rare card taller than the 92% cap.
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Header with icon badge (containing ID) and name
+              // Header: the repeater's own map chip, then its name. The chip is
+              // drawn by the map's painter at a larger size, so this header and
+              // the marker the user just tapped are the same object. It used to
+              // be a white-bordered pill filled solid with the state colour,
+              // which is the treatment the marker redesign deliberately moved
+              // away from, so the two no longer matched.
               Row(
-              children: [
-                // Icon badge with hex ID (mirrors map marker)
-                Builder(builder: (context) {
-                  final displayId = repeater.displayHexId(
-                      overrideHopBytes: regionHopBytesOverride);
-                  final isLongId = displayId.length > 2;
-                  return Container(
-                    constraints: const BoxConstraints(minWidth: 44),
-                    height: 44,
-                    padding: isLongId
-                        ? const EdgeInsets.symmetric(horizontal: 8)
-                        : EdgeInsets.zero,
-                    decoration: BoxDecoration(
-                      color: iconColor,
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                    alignment: Alignment.center,
+                children: [
+                  _RepeaterChip(
+                    hex: repeater.displayHexId(),
+                    accent: iconColor,
+                    bodyRadius: RepeaterMarkerStyle.chipCornerRadius,
+                    isNew: repeater.isNew,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
                     child: Text(
-                      displayId,
-                      style: TextStyle(
-                        fontSize: isLongId ? 13 : 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                        fontFamily: 'monospace',
+                      repeater.name,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                    onPressed: () => Navigator.pop(context, 'minimized'),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    tooltip: 'Minimize',
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              // Manage: opens the admin sheet for this repeater. Disabled with
+              // the reason when the key is short or the app cannot manage now.
+              Builder(builder: (context) {
+                final block = appState.repeaterAdminBlockReason;
+                final hasKey = isFullPublicKey(repeater.hexId);
+                final hint = !hasKey ? 'Full key unknown' : block;
+                return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      FilledButton.tonalIcon(
+                        icon: const Icon(Icons.admin_panel_settings_outlined,
+                            size: 18),
+                        label: const Text('Manage'),
+                        onPressed: hint == null
+                            ? () {
+                                Navigator.pop(context);
+                                showRepeaterAdminSheet(this.context,
+                                    RepeaterTarget.fromRepeater(repeater));
+                              }
+                            : null,
+                      ),
+                      if (hint != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(hint,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant)),
+                        ),
+                    ]);
+              }),
+              const SizedBox(height: 14),
+
+              // Details card. Its contents scroll inside a fixed cap rather
+              // than growing the whole sheet: a repeater carrying the full set
+              // of admin-entered site details pushed the sheet from about 58%
+              // of the screen to 81%, which buried the map and scrolled the
+              // close button away with everything else. Capping here keeps the
+              // header, the Manage button and the totals row on screen at all
+              // times, and a card shorter than the cap is untouched, which is
+              // most of them.
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height *
+                          _repeaterCardMaxHeightFraction),
+                  child: Scrollbar(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
+                    // Status. This used to be a chip floating on its own row
+                    // between the Manage button and this card, the only
+                    // left-aligned element in a column of full-width blocks.
+                    // It is a fact about the repeater like every other row
+                    // here, so it reads as one, tinted by the status colour
+                    // the way the clock-skew row below is. The tower icon
+                    // matches the minimized pill's status tower.
+                    _repRow(
+                      context,
+                      Icons.cell_tower,
+                      Text(
+                        'Status: $statusLabel',
+                        style: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                      color: statusColor,
+                    ),
+                    // Location
+                    _repRow(
+                      context,
+                      Icons.location_on,
+                      Text(
+                        '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
+                        style: const TextStyle(
+                            fontSize: 13, fontFamily: 'monospace'),
                       ),
                     ),
-                  );
-                }),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    repeater.name,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-                  onPressed: () => Navigator.pop(context, 'minimized'),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  tooltip: 'Minimize',
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 20),
-                  onPressed: () => Navigator.pop(context),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // Status chips row
-            Row(
-              children: [
-                if (isDuplicate) ...[
-                  _buildRepeaterStatusChip(
-                      'Duplicate', _repeaterDuplicateColor),
-                  const SizedBox(width: 8),
-                ],
-                _buildRepeaterStatusChip(statusLabel, statusColor),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // Details card
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .outline
-                        .withValues(alpha: 0.5)),
-              ),
-              child: Column(
-                children: [
-                  // Location
-                  _repRow(
-                    context,
-                    Icons.location_on,
-                    Text(
-                      '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
-                      style: const TextStyle(
-                          fontSize: 13, fontFamily: 'monospace'),
-                    ),
-                  ),
-                  // Fingerprint (id / hex)
-                  _repRow(
-                    context,
-                    Icons.fingerprint,
-                    Text.rich(TextSpan(children: [
-                      TextSpan(
-                        text: fingerprintShort,
+                    // Fingerprint (id / hex)
+                    _repRow(
+                      context,
+                      Icons.fingerprint,
+                      Text(
+                        fingerprintShort,
                         style: const TextStyle(
                             fontSize: 13,
                             fontFamily: 'monospace',
                             fontWeight: FontWeight.w600),
                       ),
-                      TextSpan(
-                        text: '  ($fingerprintFull)',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ])),
-                  ),
-                  // Hop bytes
-                  _repRow(
-                    context,
-                    Icons.swap_horiz,
-                    Text(
-                      'Hop Bytes: ${repeater.hopBytes} byte${repeater.hopBytes == 1 ? '' : 's'}',
-                      style: const TextStyle(fontSize: 13),
                     ),
-                  ),
-                  // Last heard (schedule)
-                  if (repeater.lastHeard > 0)
+                    // Hop bytes
                     _repRow(
                       context,
-                      Icons.schedule,
-                      Text(formatDateWithAgo(repeater.lastHeard),
-                          style: const TextStyle(fontSize: 13)),
-                    ),
-                  // Clock-skew warning — single compact row, e.g. "Clock is
-                  // 1.2 days ahead" (was two rows / a long sentence).
-                  if (clockSkew != null)
-                    _repRow(
-                      context,
-                      Icons.warning_amber_rounded,
-                      Text('Clock is $clockSkew',
-                          style: const TextStyle(fontSize: 13)),
-                      color: Colors.red.shade400,
-                    ),
-                  // First heard
-                  if (repeater.createdAt != null)
-                    _repRow(
-                      context,
-                      Icons.event,
+                      Icons.swap_horiz,
                       Text(
-                          'First Heard: ${formatDateWithAgo(repeater.createdAt)}',
-                          style: const TextStyle(fontSize: 13)),
+                        'Hop Bytes: ${repeater.hopBytes} byte${repeater.hopBytes == 1 ? '' : 's'}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
                     ),
-                  // Max range (lazy)
-                  FutureBuilder<RepeaterStats?>(
-                    future: statsFuture,
-                    builder: (context, snap) {
-                      final loading =
-                          snap.connectionState != ConnectionState.done;
-                      final stats = snap.data;
-                      final range = loading
-                          ? '…'
-                          : (stats?.maxRangeMeters != null
-                              ? formatCoverageDistance(stats!.maxRangeMeters!,
-                                  isImperial: isImperial)
-                              : 'N/A');
-                      return _repRow(
+                    // Last heard (schedule)
+                    if (repeater.lastHeard > 0)
+                      _repRow(
                         context,
-                        Icons.open_in_full,
-                        Text('Max Range: $range',
+                        Icons.schedule,
+                        Text(formatDateWithAgo(repeater.lastHeard),
                             style: const TextStyle(fontSize: 13)),
-                      );
-                    },
+                      ),
+                    // Clock-skew warning — single compact row, e.g. "Clock is
+                    // 1.2 days ahead" (was two rows / a long sentence).
+                    if (clockSkew != null)
+                      _repRow(
+                        context,
+                        Icons.warning_amber_rounded,
+                        Text('Clock is $clockSkew',
+                            style: const TextStyle(fontSize: 13)),
+                        color: Colors.red.shade400,
+                      ),
+                    // First heard
+                    if (repeater.createdAt != null)
+                      _repRow(
+                        context,
+                        Icons.event,
+                        Text(
+                            'First Heard: ${formatDateWithAgo(repeater.createdAt)}',
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    // Max range (lazy)
+                    FutureBuilder<RepeaterStats?>(
+                      future: statsFuture,
+                      builder: (context, snap) {
+                        final loading =
+                            snap.connectionState != ConnectionState.done;
+                        final stats = snap.data;
+                        // Three states: still loading, could not load, and
+                        // loaded (where a null range means nothing was heard).
+                        final String range;
+                        if (loading) {
+                          range = '…';
+                        } else if (stats == null) {
+                          range = 'Unavailable';
+                        } else if (stats.maxRangeMeters != null) {
+                          range = formatCoverageDistance(stats.maxRangeMeters!,
+                              isImperial: isImperial);
+                        } else {
+                          range = 'N/A';
+                        }
+                        return _repRow(
+                          context,
+                          Icons.open_in_full,
+                          Text('Max Range: $range',
+                              style: const TextStyle(fontSize: 13)),
+                        );
+                      },
+                    ),
+                    // The site details an administrator filled in. Each row is
+                    // absent unless the server sent that field, which is the
+                    // usual case: only a few dozen repeaters in a zone carry
+                    // any of them, and an older server sends none.
+                    if (repeater.hardware != null)
+                      _repRow(
+                        context,
+                        Icons.memory,
+                        Text(repeater.hardware!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (_antennaLine(repeater, isImperial) != null)
+                      _repRow(
+                        context,
+                        Icons.settings_input_antenna,
+                        Text(_antennaLine(repeater, isImperial)!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (_powerLine(repeater) != null)
+                      _repRow(
+                        context,
+                        Icons.bolt,
+                        Text(_powerLine(repeater)!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (repeater.displayPreset != null)
+                      _repRow(
+                        context,
+                        Icons.radio,
+                        Text(repeater.displayPreset!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    // Administrators (repeater administrators feature)
+                    _repRow(
+                      context,
+                      Icons.admin_panel_settings_outlined,
+                      Text(
+                        appState.isRepeaterClaimed(repeater.hexId)
+                            ? 'You administer this repeater'
+                                '${repeater.admins.isNotEmpty ? ' (${repeater.admins.join(', ')})' : ''}'
+                            : repeater.admins.isEmpty
+                                ? 'No administrators listed'
+                                : 'Administrators: ${repeater.admins.join(', ')}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                    // The administrator's own description of the site. Last in
+                    // the card because it is the only row that runs to a
+                    // paragraph; the server caps it, so it is not truncated.
+                    if (repeater.siteNotes != null)
+                      _repRow(
+                        context,
+                        Icons.notes,
+                        Text(repeater.siteNotes!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                        ],
+                      ),
+                    ),
                   ),
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
-            // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
-            FutureBuilder<RepeaterStats?>(
-              future: statsFuture,
-              builder: (context, snap) {
-                final loading = snap.connectionState != ConnectionState.done;
-                final stats = snap.data;
-                String v(int? n) => loading ? '…' : '${n ?? 0}';
-                return Row(
-                  children: [
-                    _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
-                        const Color(0xFF1E7E34)),
-                    _repeaterStatCell(
-                        context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
-                    _repeaterStatCell(
-                        context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
-                    _repeaterStatCell(context, 'DISC', v(stats?.disc),
-                        const Color(0xFF17A2B8)),
-                    _repeaterStatCell(context, 'DEAD', v(stats?.dead),
-                        const Color(0xFF6C757D)),
-                  ],
-                );
-              },
-            ),
-          ],
-        ),
+              const SizedBox(height: 14),
+              // A repeater's neighbours are shown only in the Manage sheet, at
+              // the moment they are fetched off the radio for upload. This
+              // sheet used to echo the server's own `proven_neighbours` back
+              // here as well, which was both unwanted and dead: the parser
+              // read `hex`/`prefix` and the server has always sent `key`, so
+              // every row failed to parse and the section never rendered.
+              // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
+              FutureBuilder<RepeaterStats?>(
+                future: statsFuture,
+                builder: (context, snap) {
+                  final loading = snap.connectionState != ConnectionState.done;
+                  final stats = snap.data;
+                  // Done with no stats means the fetch could not be answered.
+                  // Never fall through to the zero row here: that is the bug.
+                  if (!loading && stats == null) {
+                    // With no zone (Offline Mode, or not connected) there is
+                    // nothing to retry against: fetchRepeaterCoveragePoints
+                    // answers null without making a request, so a Retry button
+                    // would just loop on the same answer. Say why instead.
+                    final hasZone = (appState.zoneCode ?? '').isNotEmpty;
+                    // Pop with our own token: the result handler treats every
+                    // other value, a bare pop included, as a real close and
+                    // tears the selection down.
+                    return _coverageUnavailableRow(
+                      context,
+                      onRetry: hasZone
+                          ? () => Navigator.of(context).pop('retry')
+                          : null,
+                      message: hasZone
+                          ? "Couldn't load coverage"
+                          : 'Connect to load coverage',
+                    );
+                  }
+                  String v(int? n) => loading ? '…' : '${n ?? 0}';
+                  final nothingRecorded = !loading && stats!.totalMatched == 0;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
+                              const Color(0xFF1E7E34)),
+                          _repeaterStatCell(context, 'TX', v(stats?.tx),
+                              const Color(0xFFFD7E14)),
+                          _repeaterStatCell(context, 'RX', v(stats?.rx),
+                              const Color(0xFF6F42C1)),
+                          _repeaterStatCell(context, 'DISC', v(stats?.disc),
+                              const Color(0xFF17A2B8)),
+                          _repeaterStatCell(context, 'DEAD', v(stats?.dead),
+                              const Color(0xFF6C757D)),
+                        ],
+                      ),
+                      if (nothingRecorded) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'No coverage recorded yet',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
     ).then((result) {
       if (!mounted) return;
-      if (result == 'minimized') {
+      if (result == 'retry') {
+        // Re-open expanded with NO cachedStats, which re-runs the fetch. The
+        // selection stays isolated throughout, same as the minimize path.
+        debugLog('[COVERAGE] retrying coverage fetch for ${repeater.id}');
+        _showRepeaterDetails(repeater,
+            isDuplicate: isDuplicate, isolate: false, expand: true);
+      } else if (result == 'minimized') {
         // Collapse back to the stats pill. The selection (and its coverage
         // cells/lines + tile dim) persists throughout pill<->sheet; it's torn
         // down only on a real close. Reuse the already-fetched stats so the pill
         // doesn't re-fetch (and doesn't redraw the coverage).
         _showRepeaterDetails(repeater,
             isDuplicate: isDuplicate,
-            regionHopBytesOverride: regionHopBytesOverride,
             isolate: false,
             expand: false,
             cachedStats: statsFuture);
@@ -9758,6 +11127,49 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// One cell of the repeater's BIDIR/TX/RX/DISC/DEAD totals row.
+  /// Shown in place of the BIDIR/TX/RX/DISC/DEAD row when the coverage fetch
+  /// could not be answered at all. Distinct from a repeater that was looked up
+  /// successfully and simply has no coverage, which keeps the zero row plus a
+  /// "no coverage recorded yet" caption (MeshMapper_Server#109).
+  ///
+  /// [onRetry] re-enters the sheet with no cached future. The stats future is
+  /// cached per selection and handed to both the pill and the sheet, so
+  /// toggling between them would otherwise just re-render the same failure.
+  /// A null [onRetry] means there is nothing to retry against, so the row
+  /// states the reason rather than offering a button that cannot work.
+  Widget _coverageUnavailableRow(
+    BuildContext context, {
+    required VoidCallback? onRetry,
+    required String message,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.cloud_off, size: 16, color: scheme.onSurfaceVariant),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            message,
+            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+          ),
+        ),
+        if (onRetry != null) ...[
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: onRetry,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Retry'),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _repeaterStatCell(
       BuildContext context, String label, String value, Color color) {
     return Expanded(
@@ -10150,6 +11562,113 @@ class _ChomperMarkerPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
+/// Paints a dog silhouette (side profile, facing right) for GPS position marker
+class _DogMarkerPainter extends CustomPainter {
+  const _DogMarkerPainter();
+
+  static const _blue = Color(0xFF2196F3);
+  static const _darkBlue = Color(0xFF1565C0);
+
+  /// Body, neck, head and muzzle as one closed silhouette around [cx],[cy].
+  ui.Path _bodyPath(double cx, double cy) {
+    return ui.Path()
+      ..moveTo(cx - 12, cy - 3) // rump
+      ..quadraticBezierTo(cx - 7, cy - 5.5, cx - 2, cy - 5) // back
+      ..quadraticBezierTo(cx + 1, cy - 5, cx + 2.5, cy - 7) // withers
+      ..lineTo(cx + 3.5, cy - 9.5) // nape
+      ..quadraticBezierTo(cx + 4, cy - 11.5, cx + 6.5, cy - 11) // skull
+      ..quadraticBezierTo(cx + 8.5, cy - 10.5, cx + 8.5, cy - 8.5) // stop
+      ..lineTo(cx + 11.5, cy - 7.5) // muzzle
+      ..quadraticBezierTo(cx + 12.5, cy - 7, cx + 12, cy - 5.5) // nose
+      ..lineTo(cx + 8, cy - 5) // under the muzzle
+      ..quadraticBezierTo(cx + 6.5, cy - 4.5, cx + 6, cy - 2.5) // throat
+      ..quadraticBezierTo(cx + 5.5, cy, cx + 4, cy + 1.5) // chest
+      ..quadraticBezierTo(cx - 2, cy + 3.5, cx - 8, cy + 1.5) // belly
+      ..quadraticBezierTo(cx - 12.5, cy + 0.5, cx - 12, cy - 3) // haunch
+      ..close();
+  }
+
+  /// Tail, sweeping up and back off the rump.
+  ui.Path _tailPath(double cx, double cy) {
+    return ui.Path()
+      ..moveTo(cx - 11.5, cy - 3)
+      ..quadraticBezierTo(cx - 14, cy - 6, cx - 12.5, cy - 10);
+  }
+
+  /// Floppy ear, hanging down over the cheek.
+  ui.Path _earPath(double cx, double cy) {
+    return ui.Path()
+      ..moveTo(cx + 3.2, cy - 9.5)
+      ..quadraticBezierTo(cx + 2.2, cy - 6.5, cx + 3.5, cy - 4.5)
+      ..quadraticBezierTo(cx + 5.5, cy - 4, cx + 6, cy - 6)
+      ..quadraticBezierTo(cx + 6, cy - 8.5, cx + 5, cy - 10)
+      ..close();
+  }
+
+  /// Near pair drawn a little ahead of the far pair, for depth.
+  static const _legs = <(double, double, double, double)>[
+    (4, 0, 4.5, 8), // front near
+    (1.5, 0, 1, 7.5), // front far
+    (-8, 0, -9, 8), // hind near
+    (-5.5, 0, -6, 7.5), // hind far
+  ];
+
+  void _drawLegs(Canvas canvas, double cx, double cy, Paint paint) {
+    for (final (x1, y1, x2, y2) in _legs) {
+      canvas.drawLine(
+          Offset(cx + x1, cy + y1), Offset(cx + x2, cy + y2), paint);
+    }
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    final body = _bodyPath(cx, cy);
+    final tail = _tailPath(cx, cy);
+
+    // Every white outline goes down before any blue, so the halo around one
+    // limb never paints over the blue of the one beside it.
+    final legOutline = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+    final bodyOutline = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    _drawLegs(canvas, cx, cy, legOutline);
+    canvas.drawPath(tail, legOutline);
+    canvas.drawPath(body, bodyOutline);
+
+    final legPaint = Paint()
+      ..color = _blue
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..strokeCap = StrokeCap.round;
+
+    _drawLegs(canvas, cx, cy, legPaint);
+    canvas.drawPath(tail, legPaint);
+    canvas.drawPath(body, Paint()..color = _blue);
+
+    // Ear and nose read as darker shading on top of the body, the way the car
+    // marker's windshield does — no white outline, so nothing separates limbs.
+    canvas.drawPath(_earPath(cx, cy), Paint()..color = _darkBlue);
+    canvas.drawCircle(
+        Offset(cx + 11.3, cy - 6.3), 0.9, Paint()..color = _darkBlue);
+    canvas.drawCircle(
+        Offset(cx + 7, cy - 8.5), 1, Paint()..color = Colors.white);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 /// Paints a teardrop/pin marker for coverage dots
 class _PinMarkerPainter extends CustomPainter {
   final Color color;
@@ -10252,60 +11771,45 @@ class _DiamondMarkerPainter extends CustomPainter {
 /// and drop shadow). Used at startup to generate bitmap variants for native
 /// MapLibre symbols. The text (hex ID) is rendered separately by the symbol's
 /// `textField` property at runtime — this painter only draws the box itself.
+/// Draws the Simplified-mode chip BODY (no label). MapLibre places the hex on
+/// top as a shared-glyph text label, so this bitmap is shared by every
+/// repeater at the same (state, hop) and the atlas stays small.
+///
+/// Detailed mode bakes the label in instead (see [_renderRepeaterChipPng])
+/// because its markers are un-clustered and a shared-glyph label can detach
+/// onto an overlapping neighbour's box.
 class _RepeaterShapePainter extends CustomPainter {
-  final Color fillColor;
+  final Color accent;
   final double borderRadius;
+  final bool isNew;
 
   const _RepeaterShapePainter({
-    required this.fillColor,
+    required this.accent,
     required this.borderRadius,
+    required this.isNew,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Inset the box by the shadow blur amount so the shadow has room to draw
-    const shadowBlur = 4.0;
-    final boxRect = Rect.fromLTWH(
-      shadowBlur,
-      shadowBlur,
-      size.width - 2 * shadowBlur,
-      size.height - 2 * shadowBlur,
-    );
-
-    // Drop shadow (positioned 2px below the box)
-    final shadowPaint = Paint()
-      ..color = Colors.black26
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        boxRect.shift(const Offset(0, 2)),
-        Radius.circular(borderRadius),
+    paintRepeaterChip(
+      canvas,
+      Rect.fromLTWH(
+        repeaterChipGlowMargin,
+        repeaterChipGlowMargin,
+        size.width - repeaterChipGlowMargin * 2,
+        size.height - repeaterChipGlowMargin * 2,
       ),
-      shadowPaint,
-    );
-
-    // Filled colored box
-    final fillPaint = Paint()..color = fillColor;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(boxRect, Radius.circular(borderRadius)),
-      fillPaint,
-    );
-
-    // White border (2px wide, drawn inside the box edge)
-    final borderPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
-    final innerRect = boxRect.deflate(1);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(innerRect, Radius.circular(borderRadius - 1)),
-      borderPaint,
+      accent,
+      borderRadius,
+      isNew: isNew,
     );
   }
 
   @override
   bool shouldRepaint(covariant _RepeaterShapePainter old) =>
-      old.fillColor != fillColor || old.borderRadius != borderRadius;
+      old.accent != accent ||
+      old.borderRadius != borderRadius ||
+      old.isNew != isNew;
 }
 
 /// Paints a coverage ping marker (TX/RX/DISC/Trace) in one of the four user
@@ -10333,6 +11837,24 @@ class _CoverageMarkerPainter extends CustomPainter {
         break;
       case 'diamond':
         _DiamondMarkerPainter(color).paint(canvas, innerSize);
+        break;
+      case 'outline':
+        final center = Offset(innerSize.width / 2, innerSize.height / 2);
+        // A dark outer edge keeps the hollow ring visible on pale map styles.
+        canvas.drawCircle(
+            center,
+            9,
+            Paint()
+              ..color = Colors.black87
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 5);
+        canvas.drawCircle(
+            center,
+            9,
+            Paint()
+              ..color = color
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3);
         break;
       case 'circle':
         _paintCircle(canvas, innerSize, borderAlpha: 1.0, borderWidth: 2.0);

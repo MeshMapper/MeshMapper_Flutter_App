@@ -130,10 +130,29 @@ class SourcePropertyConverter {
             return MLNRasterDEMSource(identifier: identifier, configurationURL: url)
         }
         if let tiles = properties["tiles"] as? [String] {
+            var options = interpretTileOptions(properties: properties)
+            if let encoding = properties["encoding"] as? String {
+                // MLNDEMEncoding only knows mapbox and terrarium; the spec's
+                // "custom" encoding is web-only and is rejected before it gets
+                // here. Refusing anything else lets addSource report an
+                // invalidSourceType failure, rather than decoding the tiles as
+                // mapbox and drawing a plausible map from wrong elevations.
+                // The encoding is caller input, so it goes through the %@
+                // argument instead of into the NSLog format string.
+                switch encoding {
+                case "terrarium":
+                    options[.demEncoding] = NSNumber(value: MLNDEMEncoding.terrarium.rawValue)
+                case "mapbox":
+                    options[.demEncoding] = NSNumber(value: MLNDEMEncoding.mapbox.rawValue)
+                default:
+                    NSLog("%@", "maplibre_gl: unsupported raster-dem encoding '\(encoding)'")
+                    return nil
+                }
+            }
             return MLNRasterDEMSource(
                 identifier: identifier,
                 tileURLTemplates: tiles,
-                options: interpretTileOptions(properties: properties)
+                options: options
             )
         }
         return nil
@@ -162,8 +181,36 @@ class SourcePropertyConverter {
         if let clusterMaxZoom = properties["clusterMaxZoom"] as? Double {
             options[.maximumZoomLevelForClustering] = clusterMaxZoom
         }
+        if let clusterMinPoints = properties["clusterMinPoints"] as? Double {
+            options[.clusterMinPoints] = clusterMinPoints
+        }
 
-        // TODO: clusterProperties not implemneted for IOS
+        if let clusterProperties = properties["clusterProperties"] as? [String: Any] {
+            var clusterPropertiesDict = [String: [NSExpression]]()
+            for (propertyName, value) in clusterProperties {
+                if let expressions = value as? [Any], expressions.count >= 2 {
+                    let operatorValue = expressions[0]
+                    let mapExpressionValue = expressions[1]
+
+                    // The operator can be either:
+                    // 1. A simple string like "+" — expand to ["+", ["accumulated"], ["get", propertyName]]
+                    // 2. A full reduce expression array like ["+", ["accumulated"], ["get", "sum"]]
+                    let operatorJSON: Any
+                    if let op = operatorValue as? String {
+                        operatorJSON = [op, ["accumulated"], ["get", propertyName]]
+                    } else {
+                        operatorJSON = operatorValue
+                    }
+
+                    let operatorExpr = NSExpression(mglJSONObject: operatorJSON)
+                    let mapExpr = NSExpression(mglJSONObject: mapExpressionValue)
+                    clusterPropertiesDict[propertyName] = [operatorExpr, mapExpr]
+                }
+            }
+            if !clusterPropertiesDict.isEmpty {
+                options[.clusterProperties] = clusterPropertiesDict
+            }
+        }
 
         if let lineMetrics = properties["lineMetrics"] as? Bool {
             options[.lineDistanceMetrics] = lineMetrics

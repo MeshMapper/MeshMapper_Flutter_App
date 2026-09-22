@@ -32,12 +32,14 @@ Every ping object contains a `type` field that determines which additional field
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | `string` | Ping type: `"TX"`, `"RX"`, `"DISC"`, or `"TRACE"` |
+| `type` | `string` | Ping type: `"TX"`, `"RX"`, `"DISC"`, `"TRACE"`, or `"DEFER"`. A `DEFER` carries only the common `lat`, `lon`, `timestamp`, `contact`, `iata` and `radio_freq` fields plus `held` (see below); it has no `external_antenna`, `noisefloor`, `altitude` or `power`. |
 | `lat` | `number` | Latitude (WGS84, decimal degrees) |
 | `lon` | `number` | Longitude (WGS84, decimal degrees) |
 | `timestamp` | `integer` | Unix timestamp in seconds |
 | `external_antenna` | `boolean` | Whether an external antenna is connected to the device |
 | `noisefloor` | `integer\|null` | Ambient noise floor in dBm (e.g., -103). Null if unavailable. |
+| `altitude` | `integer\|absent` | Altitude of the fix in whole meters (e.g., `123`). Absent when the phone did not know its altitude. iOS reports height above mean sea level. Android usually reports height above the WGS84 ellipsoid, but Android 14 and later substitutes mean sea level when the fix carries it, so one device can report either. The two references can differ by up to about 100 m. |
+| `radio_freq` | `string\|absent` | The radio configuration the item was recorded under, as `freqMHz,bwKHz,SF,CR` (e.g. `"910.525,62.5,7,5"`). Absent when the radio did not report its parameters. Present on every type, `DEFER` included. |
 | `power` | `string\|null` | Radio TX power formatted as `"X.Xw"` (e.g., `"0.3w"`, `"1.0w"`, `"2.0w"`). Null if unavailable. |
 | `contact` | `string\|absent` | First 8 hex chars of the wardriver's MeshCore device public key (e.g., `"D873B1F2"`). Only present when the user enables "Include Contact Key" in settings. Useful for cross-referencing with MQTT observer data. |
 | `iata` | `string\|absent` | MeshMapper zone code (e.g., `"RDU"`, `"MSP"`, `"YOW"`). Present when the wardriver is in a zone. |
@@ -58,6 +60,8 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "lat": 45.26974,
   "lon": -75.77746,
   "noisefloor": -103,
+  "altitude": 84,
+  "radio_freq": "910.525,62.5,7,5",
   "heard_repeats": "4e(12.25),77(8.50)",
   "timestamp": 1768762843,
   "external_antenna": false,
@@ -75,6 +79,8 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "lat": 45.27001,
   "lon": -75.77802,
   "noisefloor": -101,
+  "altitude": 86,
+  "radio_freq": "910.525,62.5,7,5",
   "heard_repeats": "None",
   "timestamp": 1768762873,
   "external_antenna": false,
@@ -192,6 +198,105 @@ A targeted zero-hop trace to a specific repeater.
 }
 ```
 
+### DEFER (type: "DEFER")
+
+A square where the app's smart pinging held a TX ping or a discovery request because MeshMapper already had recent coverage there. The app reports it so MeshMapper can credit the square; you receive it because it may help a mapper keeping its own coverage.
+
+**A deferral is unverified.** MeshMapper checks each one against its own coverage data and silently discards any it cannot confirm, but the batch answer does not say which items were kept, and the app forwards the whole batch after the upload succeeds. Treat a `DEFER` as "the app believed this square was covered", not as a confirmed observation.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `held` | `string` | Which kind of ping was held: `"tx"` (a channel ping) or `"disc"` (a discovery request). |
+
+The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not present on a `DEFER`. A `DEFER` carries `lat`, `lon`, `timestamp`, `contact`, `iata`, `held` and `radio_freq`. At most one `DEFER` is sent per 300 m square per MeshMapper session.
+
+**Example:**
+
+```json
+{
+  "type": "DEFER",
+  "lat": 45.26974,
+  "lon": -75.77746,
+  "timestamp": 1757400000,
+  "contact": "D873B1F2",
+  "iata": "YOW",
+  "radio_freq": "910.525,62.5,7,5",
+  "held": "tx"
+}
+```
+
+## Batch Examples
+
+A batch is whatever the app uploaded to MeshMapper in that round, so one request can mix every type above. `DEFER` items only appear from app version 1.4.0 onward, and only while the user has Smart Pinging on (the default) in Active, Passive or Hybrid mode, so your endpoint must accept batches both with and without them. Dispatch on `type` and ignore any value you do not handle rather than rejecting the batch: a `4xx` is shown to the user as an error.
+
+**Batch without a DEFER** (a TX ping and a passive RX observation):
+
+```json
+{
+  "data": [
+    {
+      "type": "TX",
+      "lat": 45.26974,
+      "lon": -75.77746,
+      "noisefloor": -103,
+      "altitude": 84,
+      "radio_freq": "910.525,62.5,7,5",
+      "heard_repeats": "4e(12.25),77(8.50)",
+      "timestamp": 1768762843,
+      "external_antenna": false,
+      "power": "0.3w",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    },
+    {
+      "type": "RX",
+      "lat": 45.26950,
+      "lon": -75.77700,
+      "noisefloor": -105,
+      "heard_repeats": "4e(12.00)",
+      "timestamp": 1768762900,
+      "external_antenna": false,
+      "power": "0.3w",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    }
+  ]
+}
+```
+
+**Batch with a DEFER** (the next TX ping was held because the square already had recent coverage, while passive RX logging carried on):
+
+```json
+{
+  "data": [
+    {
+      "type": "DEFER",
+      "lat": 45.27210,
+      "lon": -75.78120,
+      "timestamp": 1768762933,
+      "contact": "D873B1F2",
+      "iata": "YOW",
+      "radio_freq": "910.525,62.5,7,5",
+      "held": "tx"
+    },
+    {
+      "type": "RX",
+      "lat": 45.27222,
+      "lon": -75.78140,
+      "noisefloor": -104,
+      "heard_repeats": "77(9.75)",
+      "timestamp": 1768762941,
+      "external_antenna": false,
+      "power": "0.3w",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    }
+  ]
+}
+```
+
+Note that the `DEFER` has no `noisefloor`, `altitude`, `external_antenna` or `power`, while the `RX` beside it does.
+
 ## Expected Response
 
 Your endpoint should return any `2xx` HTTP status code on success. The response body is ignored by MeshMapper.
@@ -241,3 +346,10 @@ The user copies this link, opens MeshMapper Settings > API Endpoints, and taps "
 - **Batch size**: 1-50 ping objects per request (typically 1-10).
 - **Session duration**: Wardriving sessions commonly last 30 minutes to several hours.
 - **Concurrent users**: Plan for multiple users if distributing your endpoint URL. Each user sends independently.
+
+## Why `meshmapper://` links are paste-only
+
+The `meshmapper://custom-api?...` format is deliberately **not** registered as
+an OS URL scheme. Tapping one does nothing; it has to be copied and imported
+from Settings. The app registers `meshmapper-auth://callback` instead (portal
+sign-in) precisely so that claiming a scheme never hijacks these config links.

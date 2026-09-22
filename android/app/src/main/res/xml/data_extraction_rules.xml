@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 31+ equivalent of backup_rules.xml. See that file for the why. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="MeshMapperSecure.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="MeshMapperSecure.xml" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The portal token lives in EncryptedSharedPreferences, wrapped by a
+     hardware Keystore key that never leaves the device. A restored backup
+     brings the ciphertext without the key, so the first read throws
+     BadPaddingException. Excluding the file makes a restored install simply
+     signed-out instead of broken. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="MeshMapperSecure.xml" />
+</full-backup-content>

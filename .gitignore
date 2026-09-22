@@ -79,6 +79,24 @@ meshmapper-debug-*.txt
 # Test/debug output
 drive_route_map*.html
 
-# Claude Code
-.claude/
-CLAUDE.md
+# Build metadata written by Build.sh (machine-specific)
+.last_build
+
+# Local TestFlight "What to Test" scratch text picked up by set_whats_new.sh
+WhatToTest.txt
+
+# Local AI assistant configuration and working documents
+/.claude/
+/CLAUDE.md
+/.agents/
+/.codex/
+/.ai/
+/.worktrees/
+/AGENTS.md
+/HANDOFF*.md
+/PLAN[-_]*.md
+/SPEC[-_]*.md
+/docs/superpowers/
+
+# SwiftPM build products for the watch wire-rule tests
+ios/WatchLogicTests/.build/

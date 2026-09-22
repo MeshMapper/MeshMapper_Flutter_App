@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+
+import '../utils/constants.dart';
 
 /// Service for writing debug logs to files on the device.
 ///
@@ -23,6 +26,43 @@ class DebugFileLogger {
   /// Returns whether file logging is currently enabled
   static bool get isEnabled => _enabled;
 
+  /// The app build and the device this log came from, resolved once per launch
+  /// and written at the top of every log file. A report that blames the app is
+  /// often an OEM battery manager or an OS version quirk instead, and the
+  /// model plus OS version is the only way to tell that from the log alone.
+  /// Deliberately identity-free: no serial, no fingerprint, no device name.
+  static String? _environmentLine;
+
+  static Future<String> _environmentHeader() async {
+    final cached = _environmentLine;
+    if (cached != null) return cached;
+
+    final parts = <String>['App ${AppConstants.appVersion}'];
+    try {
+      final info = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final a = await info.androidInfo;
+        parts.add('Android ${a.version.release} (SDK ${a.version.sdkInt})');
+        parts.add('${a.manufacturer} ${a.model}');
+      } else if (Platform.isIOS) {
+        final i = await info.iosInfo;
+        parts.add('iOS ${i.systemVersion}');
+        parts.add('${i.modelName} (${i.utsname.machine})');
+      } else {
+        parts.add(Platform.operatingSystem);
+        parts.add(Platform.operatingSystemVersion);
+      }
+    } catch (e) {
+      // The header is diagnostics: a plugin that cannot answer must never stop
+      // the log from being written.
+      parts.add('${Platform.operatingSystem} (device info unavailable: $e)');
+    }
+
+    final line = '=== ${parts.join(' | ')} ===';
+    _environmentLine = line;
+    return line;
+  }
+
   /// Enable debug file logging and create a new log file
   ///
   /// Creates a new file with format: meshmapper-debug-{unix_timestamp}.txt
@@ -31,6 +71,11 @@ class DebugFileLogger {
     if (_enabled) return;
 
     try {
+      // Resolved before the sink exists: an await between opening it and
+      // writing the header would let a concurrent debugLog land above the
+      // header.
+      final environment = await _environmentHeader();
+
       final dir = await getApplicationDocumentsDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final filename = 'meshmapper-debug-$timestamp.txt';
@@ -42,7 +87,8 @@ class DebugFileLogger {
 
       // Write header to file
       final now = DateTime.now().toIso8601String();
-      sink.writeln('=== MeshMapper Debug Log Started: $now ===\n');
+      sink.writeln('=== MeshMapper Debug Log Started: $now ===');
+      sink.writeln('$environment\n');
 
       // Flush any logs that were captured before the sink was ready
       _flushPendingLogs();
@@ -88,6 +134,55 @@ class DebugFileLogger {
     }
   }
 
+  /// Credential shapes stripped from every line written to a log FILE.
+  static final RegExp _bearerPattern =
+      RegExp(r'Bearer\s+[A-Za-z0-9._~+/=-]{8,}');
+  static final RegExp _tokenFieldPattern =
+      RegExp(r'"token"\s*:\s*"[0-9a-zA-Z._~+/=-]{8,}"');
+  static final RegExp _codeParamPattern = RegExp(
+      r'\b(code|code_verifier|code_challenge|token)=[A-Za-z0-9._~%+/=-]{20,}');
+
+  /// The loose shapes the two patterns above miss: an UNQUOTED value, a `:`
+  /// separator, or a header name. `Map.toString()` renders a decoded body as
+  /// `{ok: true, token: fff…}` — no quotes, no `=` — and that is exactly what
+  /// `debug_submit_service.dart` writes on a failed upload. Case-insensitive so
+  /// the `X-MM-App-Token:` header is covered too. The 20-char floor keeps
+  /// `token: abc` and `code=7` intact.
+  static final RegExp _looseTokenPattern = RegExp(
+      r'''(\btoken['"]?\s*[:=]\s*)['"]?[A-Za-z0-9._~%+/=-]{20,}''',
+      caseSensitive: false);
+
+  /// Repeater admin passwords. The app never logs one on purpose; this is
+  /// the belt-and-braces rule for any `password=…`, `password: …` or
+  /// `"password":"…"` shape that reaches a log FILE.
+  static final RegExp _passwordPattern = RegExp(
+      r'''(\bpassword['"]?\s*[:=]\s*)['"]?[^\s,}'"]+['"]?''',
+      caseSensitive: false);
+
+  /// Strip credential shapes out of a log line.
+  ///
+  /// Log files are uploaded verbatim with bug reports and debug logging stays
+  /// on in release builds, so this is the last line of defence behind
+  /// "never log a secret". Public so it can be unit-tested.
+  static String scrubSecrets(String message) {
+    var out = message.replaceAll(_bearerPattern, 'Bearer <redacted>');
+    // Quoted JSON first, so the canonical `"token":"<redacted>"` shape is
+    // preserved rather than being half-eaten by the loose pattern.
+    out = out.replaceAll(_tokenFieldPattern, '"token":"<redacted>"');
+    out = out.replaceAllMapped(
+        _codeParamPattern, (match) => '${match.group(1)}=<redacted>');
+    out = out.replaceAllMapped(
+        _looseTokenPattern, (match) => '${match.group(1)}<redacted>');
+    out = out.replaceAllMapped(_passwordPattern, (match) {
+      final head = match.group(1)!;
+      final whole = match.group(0)!;
+      // Keep a JSON value quoted so the line still parses by eye.
+      final quoted = whole.endsWith('"') && whole[head.length] == '"';
+      return quoted ? '$head"<redacted>"' : '$head<redacted>';
+    });
+    return out;
+  }
+
   /// Write a log entry to the current file
   ///
   /// Called by debug_logger_stub.dart for each log message
@@ -99,7 +194,7 @@ class DebugFileLogger {
     if (!_enabled) return;
 
     final timestamp = DateTime.now().toIso8601String();
-    final line = '[$timestamp] $level: $message';
+    final line = '[$timestamp] $level: ${scrubSecrets(message)}';
 
     if (_logSink == null) {
       // Buffer logs until sink is ready (race condition during initialization)
@@ -214,6 +309,10 @@ class DebugFileLogger {
     if (!_enabled) return;
 
     try {
+      // A submission usually carries rotated files too, and the one worth
+      // reading is rarely the first, so every file repeats the header.
+      final environment = await _environmentHeader();
+
       // Close current log file
       _flushTimer?.cancel();
       _flushTimer = null;
@@ -241,6 +340,7 @@ class DebugFileLogger {
       // Write header to new file
       final nowStr = DateTime.now().toIso8601String();
       newSink.writeln('=== MeshMapper Debug Log Started: $nowStr ===');
+      newSink.writeln(environment);
       newSink.writeln('=== (Previous log rotated for upload) ===\n');
 
       // Restart flush timer
