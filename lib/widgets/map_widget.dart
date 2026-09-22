@@ -4241,6 +4241,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Future<void> _registerMapImages(AppStateProvider appState) async {
     if (_mapController == null) return;
 
+    var stage = 'starting';
     try {
       // 1. Repeater chip bodies: 5 states × 3 hop widths.
       for (final status in RepeaterMarkerStatus.values) {
@@ -4256,12 +4257,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             borderRadius: RepeaterMarkerStyle.chipCornerRadius,
             isNew: isNew,
           );
+          stage = 'rendering ${_MapImages.repeater(status.wireKey, hopBytes)}';
           final bytes = await _renderPainterToPng(
             painter,
             Size(chip.width + repeaterChipGlowMargin * 2,
                 chip.height + repeaterChipGlowMargin * 2),
             devicePixelRatio: RepeaterMarkerStyle.bakeDevicePixelRatio,
           );
+          stage = 'adding ${_MapImages.repeater(status.wireKey, hopBytes)}';
           await _mapController!.addImage(
             _MapImages.repeater(status.wireKey, hopBytes),
             bytes,
@@ -4271,13 +4274,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // 2. Cluster badge discs: one per dominant state.
       for (final status in RepeaterMarkerStatus.values) {
+        stage = 'rendering ${_MapImages.repeaterBadge(status.wireKey)}';
         final bytes =
             await _renderRepeaterBadgePng(_repeaterStatusColor(status.wireKey));
+        stage = 'adding ${_MapImages.repeaterBadge(status.wireKey)}';
         await _mapController!
             .addImage(_MapImages.repeaterBadge(status.wireKey), bytes);
       }
 
       // 3. Coverage markers: 8 variants for current style
+      stage = 'registering coverage images (${appState.preferences.markerStyle})';
       await _registerCoverageImages(appState.preferences.markerStyle);
 
       // 4. GPS marker variants: 7 styles
@@ -4292,7 +4298,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         'chomper': const _ChomperMarkerPainter(),
       };
       for (final entry in gpsPainters.entries) {
+        stage = 'rendering ${_MapImages.gps(entry.key)}';
         final bytes = await _renderPainterToPng(entry.value, gpsSize);
+        stage = 'adding ${_MapImages.gps(entry.key)}';
         await _mapController!.addImage(_MapImages.gps(entry.key), bytes);
       }
 
@@ -4304,7 +4312,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
       // once everything is in place.
     } catch (e) {
-      debugError('[MAP] Failed to register marker images: $e');
+      debugError('[MAP] Failed to register marker images while $stage: $e');
     }
   }
 

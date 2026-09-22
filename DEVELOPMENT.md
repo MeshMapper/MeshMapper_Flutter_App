@@ -8,7 +8,7 @@ MeshMapper Flutter App is a cross-platform wardriving application for MeshCore m
 
 **Purpose**: Connect to MeshCore devices via Bluetooth Low Energy, send GPS-tagged pings to the `#wardriving` channel, track repeater echoes, and post coverage data to the MeshMapper API for community mesh mapping.
 
-**Tech Stack**: Flutter 3.2.0+, Dart 3.2.0+, Hive for local storage, Provider for state management
+**Tech Stack**: Flutter 3.47.5 (Dart 3.13.4), Hive for local storage, Provider for state management
 
 ## Common Commands
 
@@ -93,6 +93,22 @@ updated by adding the developer-portal capability.
 - Mobile: Debug logging enabled in debug builds via `kDebugMode`; disabled in release builds
 
 ## Architecture
+
+### Renderer Compatibility and Production Diagnostics
+
+The 1.4.1 beta uses Flutter 3.47.5, including its Vulkan image-allocation
+recovery for exhausted compression resources. Impeller and automatic backend
+selection remain enabled. The app retains the 1.4.0 rendering behavior, without
+the diagnostic probes, native log capture, forced OpenGLES or marker retries.
+
+Debug log headers include the Flutter version and engine revision supplied by
+the build tool, and Android's OS build ID and security patch. No device serial
+or fingerprint is collected. Marker registration failures name the image and
+whether rendering or registration failed, with coverage registration reported
+as a group. These are lightweight diagnostics, not additional rendering work.
+
+Use Flutter 3.47.5 for release builds, matching the version pinned in CI. A
+successful build and tests do not replace confirmation on the affected Pixel.
 
 ### First-Run Quick Guide
 

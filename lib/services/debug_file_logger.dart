@@ -38,12 +38,18 @@ class DebugFileLogger {
     if (cached != null) return cached;
 
     final parts = <String>['App ${AppConstants.appVersion}'];
+    const flutterVersion = String.fromEnvironment('FLUTTER_VERSION');
+    const engineRevision = String.fromEnvironment('FLUTTER_ENGINE_REVISION');
+    if (flutterVersion.isNotEmpty) parts.add('Flutter $flutterVersion');
+    if (engineRevision.isNotEmpty) parts.add('Engine $engineRevision');
     try {
       final info = DeviceInfoPlugin();
       if (Platform.isAndroid) {
         final a = await info.androidInfo;
         parts.add('Android ${a.version.release} (SDK ${a.version.sdkInt})');
         parts.add('${a.manufacturer} ${a.model}');
+        parts
+            .add('OS build ${a.id}, security patch ${a.version.securityPatch}');
       } else if (Platform.isIOS) {
         final i = await info.iosInfo;
         parts.add('iOS ${i.systemVersion}');
