@@ -84,6 +84,20 @@ bool _connectionWasAlreadyClosed(Object error) =>
     error is http.ClientException &&
     error.message.contains('Connection closed before full header was received');
 
+/// A failed repeater read, distinct from a successful empty list.
+/// Contains no response body, request headers or credentials.
+class RepeaterFetchException implements Exception {
+  final int? statusCode;
+  const RepeaterFetchException([this.statusCode]);
+
+  bool get isAuthenticationFailure => statusCode == 401 || statusCode == 403;
+
+  @override
+  String toString() => isAuthenticationFailure
+      ? 'Repeater authentication failed (HTTP $statusCode)'
+      : 'Repeater request failed${statusCode == null ? '' : ' (HTTP $statusCode)'}';
+}
+
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
 ///
@@ -128,6 +142,11 @@ class ApiService {
 
   /// Longest hold a `Retry-After` header can impose on the wardrive door.
   static const Duration maxWardriveRetryAfter = Duration(hours: 1);
+
+  // Repeater reads have their own per-host hold, independent of wardriving.
+  // A preset change must not bypass the host's Retry-After.
+  final Map<String, ({DateTime until, RepeaterFetchException failure})>
+      _repeaterReadHolds = {};
 
   final http.Client _client;
   final NetworkStateSource _networkState;
@@ -2050,18 +2069,24 @@ class ApiService {
   }
 
   /// Fetch repeaters for a zone from the MeshMapper API
-  /// Returns a list of enabled repeaters for the given IATA zone code
+  /// Uses the build-time App key even before a session exists. Throws on
+  /// failure so callers can preserve a still-valid list. Failed reads are
+  /// held per host for a minute, or the server's Retry-After on a 429.
   Future<List<Repeater>> fetchRepeaters(String iata) async {
     final stopwatch = Stopwatch()..start();
     const endpoint = '/get_repeaters.php';
+    final host = '${iata.toLowerCase()}.meshmapper.net';
+    final hold = _repeaterReadHolds[host];
+    if (hold != null && _now().isBefore(hold.until)) throw hold.failure;
+    _repeaterReadHolds.remove(host);
     try {
       final filter = _radioFilterParams();
-      final url = Uri.https('${iata.toLowerCase()}.meshmapper.net', endpoint,
-          filter.isEmpty ? null : filter);
+      final url = Uri.https(host, endpoint, filter.isEmpty ? null : filter);
 
       final response = await _send(
         'GET $endpoint',
-        () => _client.get(url).timeout(const Duration(seconds: 15)),
+        () => _client.get(url, headers: const {'X-API-Key': apiKey}).timeout(
+            const Duration(seconds: 15)),
       );
 
       stopwatch.stop();
@@ -2074,7 +2099,15 @@ class ApiService {
           statusCode: response.statusCode,
           response: 'error',
         );
-        return [];
+        final failure = RepeaterFetchException(response.statusCode);
+        final until = _now().add(response.statusCode == 429
+            ? parseRetryAfter(response.headers['retry-after'])
+            : const Duration(minutes: 1));
+        final existing = _repeaterReadHolds[host];
+        if (existing == null || until.isAfter(existing.until)) {
+          _repeaterReadHolds[host] = (until: until, failure: failure);
+        }
+        throw failure;
       }
 
       final List<dynamic> jsonList =
@@ -2104,8 +2137,16 @@ class ApiService {
       return repeaters;
     } catch (e) {
       stopwatch.stop();
-      debugError('[API] GET $endpoint failed: $e');
-      return [];
+      final failure =
+          e is RepeaterFetchException ? e : const RepeaterFetchException();
+      _repeaterReadHolds.putIfAbsent(
+          host,
+          () => (
+                until: _now().add(const Duration(minutes: 1)),
+                failure: failure,
+              ));
+      debugError('[API] GET $endpoint failed: $failure');
+      throw failure;
     }
   }
 

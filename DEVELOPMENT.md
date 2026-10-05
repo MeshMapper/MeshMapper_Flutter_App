@@ -2498,7 +2498,29 @@ Offline Mode follows the same post-connect decisions without the auth step.
 - **POST /wardrive-api.php/auth**: Acquire/release session (geo-auth)
 - **POST /wardrive-api.php/devices**: Refresh supported devices or report an unknown identity (App key)
 - **POST /wardrive-api.php/wardrive**: Submit wardrive data + heartbeat
-- Auth: API key in JSON body (`key` field), NOT query string
+- Wardrive auth: API key in JSON body (`key` field), NOT query string
+- **GET https://<iata>.meshmapper.net/get_repeaters.php**: Region or group repeater list.
+  Starting with app 1.4.1, every request sends the existing App key in `X-API-Key`,
+  including the first GPS zone check before connection. No portal login, session,
+  regional Coverage key or enforcement-switch query is involved. The URL,
+  `f_freq`/`f_bw`/`f_sf` filters, 15 second timeout and enabled-row parsing remain.
+  Non-200 and transport/response failures throw `RepeaterFetchException`;
+  401/403 explicitly identify authentication failure. Failed reads hold that host
+  for 60 seconds, or the parsed `Retry-After` on 429 (75 second fallback, one hour
+  cap), independently of wardrive backoff. There is no anonymous fallback or
+  scheduled retry; later normal loads/refreshes can try again after the hold.
+  The provider preserves a loaded list on refresh failure only while its zone
+  and preset remain current, clears incompatible lists with a map notification,
+  and drops in-flight results after either context changes. Both loading paths
+  use the immutable `RepeaterListState` cache decisions, with all replacements
+  and notifications owned by `AppStateProvider`. Overlapping failed requests
+  retain the longest per-host backoff. Initial failures use
+  the existing tagged load-error logging and remain eligible for a later check.
+  Server header support and App-key quota isolation must be verified before
+  rollout (MeshMapper/MeshMapper_Server#431). Server support ships with repeater
+  enforcement OFF, followed by app 1.4.1 and authenticated integration checks.
+  The operator enables the separate repeater enforcement switch only after the
+  release and forced update. Other read API enforcement is independent.
 
 ### Maintenance Mode Response
 

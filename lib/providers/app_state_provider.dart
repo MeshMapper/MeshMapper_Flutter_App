@@ -30,6 +30,7 @@ import '../services/api_queue_service.dart';
 import '../utils/coverage_refresh.dart';
 import '../utils/mvt_cells.dart';
 import '../services/api_service.dart';
+import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
 import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
@@ -720,15 +721,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _anonymousReconnectEnabling = true;
 
   // Repeater markers state
-  List<Repeater> _repeaters = [];
+  RepeaterListState _repeaterListState = const RepeaterListState();
+  List<Repeater> get _repeaters => _repeaterListState.repeaters;
   Set<String> _repeaterConflictHexIds = const {};
   int _siriRepeaterCatalogRevision = 0;
-  bool _repeatersLoaded = false;
-  String? _repeatersLoadedForIata;
+  bool get _repeatersLoaded => _repeaterListState.loadedAt != null;
+  String? get _repeatersLoadedForIata => _repeaterListState.zone;
+  final Set<(String, String?)> _repeaterLoadsInFlight = {};
 
   /// When the repeater list last loaded (scope discovery refreshes a list
   /// older than an hour at connect).
-  DateTime? _repeatersLoadedAt;
+  DateTime? get _repeatersLoadedAt => _repeaterListState.loadedAt;
 
   /// True while a scope-discovery repeater list refresh (connect-time,
   /// mode-start or periodic) is in flight, so only one runs at a time.
@@ -4999,9 +5002,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[MAP] Radio preset changed for repeaters '
           '(${priorRepeaterFilterKey ?? 'none'} -> ${radioFilterKey ?? 'none'}); '
           'reloading repeater list for zone ${zone ?? 'unknown'}');
-      _repeatersLoaded = false;
-      _repeatersLoadedAt = null;
-      _repeatersLoadedForIata = null;
+      _invalidateRepeatersForContext();
       if (zone != null && zone.isNotEmpty) {
         _fetchRepeatersForZone(
             zone); // fire-and-forget, matches the zone-check path
@@ -9973,6 +9974,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             !_isInZoneGracePeriod &&
             !_isZoneTransferInProgress) {
           _currentZone = newZone;
+          _invalidateRepeatersForContext();
           _nearestZone = null;
           _syncRecentCoverage();
           await _handleZoneTransfer(newZoneCode, newZoneName);
@@ -9980,6 +9982,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         _currentZone = newZone;
+        _invalidateRepeatersForContext();
         _nearestZone = null;
         // The lookup is keyed on the zone, so re-sync whenever it moves.
         _syncRecentCoverage();
@@ -10013,12 +10016,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[GEOFENCE] Outside zone. Nearest: $nearestName (${distanceKm}km away)');
 
         // Clear repeaters when exiting zone
-        _repeaters = [];
-        _repeaterConflictHexIds = const {};
-        _siriRepeaterCatalogRevision++;
-        _repeatersLoaded = false;
-        _repeatersLoadedAt = null;
-        _repeatersLoadedForIata = null;
+        _invalidateRepeatersForContext();
       }
     } catch (e) {
       debugError('[GEOFENCE] Zone status check error: $e');
@@ -10647,9 +10645,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // 17. Fetch repeaters for the new zone
-      _repeatersLoaded = false;
-      _repeatersLoadedAt = null;
-      _repeatersLoadedForIata = null;
+      _invalidateRepeatersForContext();
       await _fetchRepeatersForZone(newZoneCode);
 
       // Fetch updated boundary polygons for the new zone
@@ -10733,26 +10729,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scopeRepeaterRefreshInFlight = true;
     try {
       debugLog('[SCOPES] Refreshing the repeater list for zone $iata');
+      final preset = radioFilterKey;
       final fetched = await _scopeLifecycle.resultIfStillCurrent(
         fetch: _apiService.fetchRepeaters(iata),
         zone: iata,
-        preset: radioFilterKey,
+        preset: preset,
         currentZone: () => zoneCode,
         currentPreset: () => radioFilterKey,
       );
-      if (fetched == null || fetched.isEmpty) return;
-      final refreshed = rcComputeExclusions(fetched);
+      if (_isDisposed) return;
+      final refreshedState = _repeaterListState.afterFetch(
+        fetched: fetched,
+        requestedZone: iata,
+        requestedPreset: preset,
+        currentZone: zoneCode,
+        currentPreset: radioFilterKey,
+        now: DateTime.now(),
+      );
+      if (identical(refreshedState, _repeaterListState)) return;
+      final refreshed = refreshedState.repeaters;
       // Wanted for its scope stamps: when nothing the map draws moved, the
       // map is not rebuilt for it (Rule 9).
       final mapChanged = !_repeatersLoaded ||
           _repeatersLoadedForIata != iata ||
           scopeRefreshChangesMap(_repeaters, refreshed);
-      _repeaters = refreshed;
+      _repeaterListState = refreshedState;
       _repeaterConflictHexIds = rcConflictHexIds(_repeaters);
       _siriRepeaterCatalogRevision++;
-      _repeatersLoaded = true;
-      _repeatersLoadedForIata = iata;
-      _repeatersLoadedAt = DateTime.now();
       debugLog('[SCOPES] Repeater list refreshed (${_repeaters.length}'
           '${mapChanged ? '' : ', nothing on the map changed'})');
       if (mapChanged) {
@@ -10911,33 +10914,52 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await box.flush();
   }
 
-  /// Fetch repeaters for a zone (called when zone is discovered)
-  /// Only fetches once per IATA code to avoid redundant network requests
+  /// Drop a list as soon as its region or preset ceases to be valid.
+  /// Same-context failures leave the existing list untouched.
+  void _invalidateRepeatersForContext() {
+    final retained = _repeaterListState.forContext(zoneCode, radioFilterKey);
+    if (identical(retained, _repeaterListState)) return;
+    _repeaterListState = retained;
+    _repeaterConflictHexIds = const {};
+    _siriRepeaterCatalogRevision++;
+    _notifyMapNow();
+  }
+
+  /// Fetch repeaters when a zone is discovered, including before connection.
   Future<void> _fetchRepeatersForZone(String iata) async {
-    // Skip if already loaded for this IATA
-    if (_repeatersLoaded && _repeatersLoadedForIata == iata) {
-      debugLog('[MAP] Repeaters already loaded for zone: $iata');
-      return;
-    }
+    if (_isDisposed || zoneCode != iata) return;
+    _invalidateRepeatersForContext();
+    if (_repeatersLoaded && _repeatersLoadedForIata == iata) return;
+    final preset = radioFilterKey;
+    final request = (iata, preset);
+    if (!_repeaterLoadsInFlight.add(request)) return;
 
     debugLog('[MAP] Fetching repeaters for zone: $iata');
     try {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
-      if (fetchedRepeaters.isNotEmpty) {
-        _repeaters = rcComputeExclusions(fetchedRepeaters);
+      if (_isDisposed) return;
+      final refreshed = _repeaterListState.afterFetch(
+        fetched: fetchedRepeaters,
+        requestedZone: iata,
+        requestedPreset: preset,
+        currentZone: zoneCode,
+        currentPreset: radioFilterKey,
+        now: DateTime.now(),
+      );
+      if (!identical(refreshed, _repeaterListState)) {
+        _repeaterListState = refreshed;
         _repeaterConflictHexIds = rcConflictHexIds(_repeaters);
         _siriRepeaterCatalogRevision++;
-        _repeatersLoaded = true;
-        _repeatersLoadedForIata = iata;
-        _repeatersLoadedAt = DateTime.now();
         debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
         _notifyMapNow();
-      } else {
-        debugWarn(
-            '[MAP] No repeaters returned for zone $iata — will retry on next zone check');
+      } else if (fetchedRepeaters.isEmpty) {
+        debugWarn('[MAP] No repeaters returned for zone $iata; '
+            'will retry on next zone check');
       }
     } catch (e) {
       debugError('[MAP] Failed to fetch repeaters: $e');
+    } finally {
+      _repeaterLoadsInFlight.remove(request);
     }
   }
 
