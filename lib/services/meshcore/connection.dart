@@ -42,6 +42,10 @@ class DeviceQueryResponse {
   /// Describes companion API capabilities, independent of the release string.
   final int protocolVersion;
   final String manufacturer;
+
+  /// Number of channel slots advertised in device-info byte 3.
+  /// Null when the parsed format has no capacity or reports zero.
+  final int? maxChannels;
   final String? firmwareBuildDate; // Added in protocol v8
   final String?
       firmwareVersionString; // e.g. "v1.14.0-9f1a3ea" (v7+, 20-byte C-string)
@@ -51,6 +55,7 @@ class DeviceQueryResponse {
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
+    this.maxChannels,
     this.firmwareBuildDate,
     this.firmwareVersionString,
     this.pathHashMode,
@@ -1749,7 +1754,8 @@ class MeshCoreConnection {
   void _onDeviceInfoResponse(BufferReader reader) {
     // Protocol format changed in v7/v8:
     // v1-v6: protoVer (1) + manufacturer C-string (64) + publicKey (32)
-    // v7+: firmwareVer (1) + reserved (6) + buildDate C-string (12) + manufacturerModel string (rest)
+    // v7+: firmwareVer (1), maxContacts/2 (1), maxChannels (1), BLE PIN (4),
+    // buildDate (12), model (40), then optional version and capability fields.
     // Note: Some v7 firmware (e.g., RAK4631) uses the new format
 
     final firmwareVer = reader.readByte();
@@ -1757,7 +1763,11 @@ class MeshCoreConnection {
 
     if (firmwareVer >= 7) {
       // Protocol v7+ format
-      reader.readBytes(6); // skip reserved bytes
+      reader.readByte(); // max contacts / 2
+      final channelCapacity = reader.readByte();
+      final maxChannels = channelCapacity > 0 ? channelCapacity : null;
+      reader.readBytes(4); // BLE PIN
+      debugLog('[CONN] Channel capacity: ${maxChannels ?? "unknown"}');
       final buildDate = reader.readCString(12); // e.g. "04-Jan-2026"
 
       // Read manufacturer model as CString(40) — fixed-length null-terminated
@@ -1792,6 +1802,7 @@ class MeshCoreConnection {
       final response = DeviceQueryResponse(
         protocolVersion: firmwareVer,
         manufacturer: manufacturerModel,
+        maxChannels: maxChannels,
         firmwareBuildDate: buildDate,
         firmwareVersionString: firmwareVersionString,
         pathHashMode: pathHashMode,

@@ -9,7 +9,7 @@ import 'package:mesh_mapper/services/meshcore/crypto_service.dart';
 import 'package:mesh_mapper/services/meshcore/packet_parser.dart';
 import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
 
-import 'fake_companion_transport.dart';
+import 'catalog_protocol_transport.dart';
 
 /// One scripted answer to a CMD_GET_CHANNEL read.
 sealed class _Answer {
@@ -47,14 +47,22 @@ class _StaleFirst extends _Answer {
   const _StaleFirst(this.staleIdx);
 }
 
-/// A radio whose channel table is [slots]; reads past it answer
-/// ERR_CODE_NOT_FOUND, as the firmware does past MAX_GROUP_CHANNELS.
+/// A radio whose channel table is [slots]; reads past it answer [endError].
+/// MeshCore uses NOT_FOUND, while ZephCore uses ILLEGAL_ARG.
 /// [faults] lists, per slot index, answers given before the real one.
-class _ChannelRadio extends FakeCompanionTransport {
+class _ChannelRadio extends CatalogProtocolTransport {
   final List<_Slot> slots;
   final Map<int, List<_Answer>> faults;
 
-  _ChannelRadio(this.slots, {Map<int, List<_Answer>>? faults})
+  final int? advertisedChannels;
+  final int endError;
+  final int protocolVersion;
+
+  _ChannelRadio(this.slots,
+      {Map<int, List<_Answer>>? faults,
+      this.advertisedChannels,
+      this.endError = ErrorCodes.notFound,
+      this.protocolVersion = 14})
       : faults = faults ?? {};
 
   final List<int> reads = [];
@@ -67,6 +75,32 @@ class _ChannelRadio extends FakeCompanionTransport {
 
   @override
   Future<void> write(Uint8List data) async {
+    if (data.first == CommandCodes.deviceQuery && advertisedChannels != null) {
+      // Device-info layout shared by MeshCore and ZephCore. Capacity is byte 3,
+      // distinct from max contacts and the four-byte BLE PIN next to it.
+      final frame = BufferWriter();
+      frame.writeBytes([
+        ResponseCodes.deviceInfo,
+        protocolVersion,
+        175,
+        advertisedChannels!,
+        0x40,
+        0xe2,
+        1,
+        0
+      ]);
+      frame.writeCString('2026 Sep 27', 12);
+      frame.writeCString('Heltec Mesh Node T1', 40);
+      frame.writeCString('1.17.6-zephcore', 20);
+      frame.writeBytes([0, 1]);
+      emit(frame.toBytes());
+      return;
+    }
+    if (data.first == CommandCodes.setChannel) {
+      writes.add(Uint8List.fromList(data));
+      emit([ResponseCodes.ok]);
+      return;
+    }
     if (data.first != CommandCodes.getChannel) {
       await super.write(data);
       return;
@@ -78,11 +112,11 @@ class _ChannelRadio extends FakeCompanionTransport {
         ? queued.removeAt(0)
         : idx < slots.length
             ? slots[idx]
-            : const _Err(ErrorCodes.notFound);
+            : _Err(endError);
     if (answer is _WriteFails) {
       throw StateError('GATT write failed');
     }
-    await super.write(data);
+    writes.add(Uint8List.fromList(data));
     final lagged = _lagged;
     if (answer is _Late) {
       _lagged = [_frameFor(idx, idx < slots.length ? slots[idx] : null)];
@@ -137,8 +171,12 @@ void main() {
     Object? error;
     fakeAsync((async) {
       final connection = MeshCoreConnection(transport: radio);
-      ChannelService.ensureWardrivingChannel(connection).then<void>(
-          (value) => result = value,
+      final operation = radio.advertisedChannels == null
+          ? ChannelService.ensureWardrivingChannel(connection)
+          : connection
+              .connect((_) async => null)
+              .then((_) => connection.wardrivingChannel!);
+      operation.then<void>((value) => result = value,
           onError: (Object e) => error = e);
       async.elapse(const Duration(minutes: 2));
       connection.dispose();
@@ -146,6 +184,104 @@ void main() {
     radio.dispose();
     return (result: result, error: error);
   }
+
+  for (final count in [8, 40, 64, 255]) {
+    for (final endError in [ErrorCodes.notFound, ErrorCodes.illegalArg]) {
+      test('$count advertised slots never probe the end (ERR $endError)', () {
+        final radio = _ChannelRadio(
+          [named('Public'), ...List.filled(count - 1, empty)],
+          advertisedChannels: count,
+          endError: endError,
+          protocolVersion: count == 8 ? 7 : 14,
+        );
+        final out = scan(radio);
+        expect(out.error, isNull);
+        expect(out.result?.channelIndex, 1);
+        expect(radio.reads, List.generate(count, (i) => i));
+        expect(radio.setChannelWrites.single[1], 1);
+      });
+    }
+  }
+
+  test('ZephCore report creates at slot 10 after reading all 40 slots', () {
+    final radio = _ChannelRadio(
+      [
+        ...List.generate(10, (i) => named('channel$i')),
+        ...List.filled(30, empty)
+      ],
+      advertisedChannels: 40,
+      endError: ErrorCodes.illegalArg,
+    );
+    final out = scan(radio);
+    expect(out.error, isNull);
+    expect(out.result?.channelIndex, 10);
+    expect(radio.reads, List.generate(40, (i) => i));
+    expect(radio.setChannelWrites.single[1], 10);
+  });
+
+  for (final existing in [wardriving, _Slot('My mapping', wardrivingKey)]) {
+    test('reuses ${existing.name} in the last advertised slot after holes', () {
+      final radio = _ChannelRadio(
+        [named('Public'), ...List.filled(38, empty), existing],
+        advertisedChannels: 40,
+        endError: ErrorCodes.illegalArg,
+      );
+      final out = scan(radio);
+      expect(out.error, isNull);
+      expect(out.result?.channelIndex, 39);
+      expect(radio.setChannelWrites, isEmpty);
+    });
+  }
+
+  test('a full advertised table fails without writing or probing past it', () {
+    final radio = _ChannelRadio(List.filled(8, named('#other')),
+        advertisedChannels: 8, endError: ErrorCodes.illegalArg);
+    final out = scan(radio);
+    expect(out.error.toString(), contains('No empty channel slots'));
+    expect(radio.reads, List.generate(8, (i) => i));
+    expect(radio.setChannelWrites, isEmpty);
+  });
+
+  for (final error in [ErrorCodes.notFound, ErrorCodes.illegalArg]) {
+    test('ERR $error inside advertised capacity cannot truncate the scan', () {
+      final radio = _ChannelRadio(
+        [named('Public'), empty, named('#other'), wardriving],
+        advertisedChannels: 4,
+        faults: {
+          2: [_Err(error), _Err(error)]
+        },
+      );
+      final out = scan(radio);
+      expect(out.error.toString(), contains('Please reconnect'));
+      expect(radio.setChannelWrites, isEmpty);
+      expect(radio.reads, [0, 1, 2, 2]);
+    });
+  }
+
+  test('transient not-found inside capacity retries and finds existing channel',
+      () {
+    final radio = _ChannelRadio(
+      [named('Public'), empty, named('#other'), wardriving],
+      advertisedChannels: 4,
+      faults: {
+        2: [const _Err(ErrorCodes.notFound)]
+      },
+    );
+    final out = scan(radio);
+    expect(out.error, isNull);
+    expect(out.result?.channelIndex, 3);
+    expect(radio.setChannelWrites, isEmpty);
+    expect(radio.reads, [0, 1, 2, 2, 3]);
+  });
+
+  test('zero capacity uses the legacy not-found fallback', () {
+    final radio =
+        _ChannelRadio([named('Public'), empty], advertisedChannels: 0);
+    final out = scan(radio);
+    expect(out.error, isNull);
+    expect(out.result?.channelIndex, 1);
+    expect(radio.reads, [0, 1, 2]);
+  });
 
   test('a timeout at slot 3 is retried and the existing channel at 6 is found',
       () {
@@ -184,10 +320,13 @@ void main() {
   });
 
   test('a write error at a slot is retried like any other failure', () {
-    final radio = _ChannelRadio([named('Public'), empty, wardriving],
-        faults: {
-          2: [const _WriteFails()],
-        });
+    final radio = _ChannelRadio([
+      named('Public'),
+      empty,
+      wardriving
+    ], faults: {
+      2: [const _WriteFails()],
+    });
     final out = scan(radio);
     expect(out.error, isNull);
     expect(out.result!.channelIndex, 2);
@@ -268,12 +407,14 @@ void main() {
     expect(radio.setChannelWrites.single[1], 3);
   });
 
-  test('a stale reply for another slot is ignored and the right one taken',
-      () {
-    final radio = _ChannelRadio([named('Public'), named('#a'), empty],
-        faults: {
-          2: [const _StaleFirst(1)],
-        });
+  test('a stale reply for another slot is ignored and the right one taken', () {
+    final radio = _ChannelRadio([
+      named('Public'),
+      named('#a'),
+      empty
+    ], faults: {
+      2: [const _StaleFirst(1)],
+    });
     ChannelInfo? result;
     fakeAsync((async) {
       final connection = MeshCoreConnection(transport: radio);

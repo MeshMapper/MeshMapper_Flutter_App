@@ -127,10 +127,11 @@ class ChannelService {
 
   /// Ensure #wardriving channel exists (find or create)
   ///
-  /// Reads every slot until the radio answers ERR_CODE_NOT_FOUND, which is the
-  /// firmware's only end-of-list answer (an empty slot is a normal reply with
-  /// an empty name). A slot that times out, fails to write or answers any
-  /// other ERR is read once more; if it fails again the whole setup fails,
+  /// Reads the advertised number of slots. MeshCore and ZephCore report the
+  /// same capacity field but return different errors beyond that boundary.
+  /// Without a usable capacity, falls back to ERR_CODE_NOT_FOUND as the end.
+  /// An empty slot is a normal reply with an empty name. Any failure within
+  /// the advertised range is read once more; a second failure fails setup,
   /// because creating a channel after an incomplete scan could duplicate a
   /// #wardriving sitting past the failed slot.
   ///
@@ -144,9 +145,10 @@ class ChannelService {
     debugLog('[CHANNEL] Looking up channel: $wardrivingChannelName');
     final wardrivingKey = CryptoService.deriveChannelKey(wardrivingChannelName);
 
+    final maxChannels = connection.deviceInfo?.maxChannels;
     int? firstEmptySlot;
     var channelIdx = 0;
-    while (true) {
+    while (maxChannels == null || channelIdx < maxChannels) {
       if (channelIdx > _maxSlotIndex) {
         debugError('[CHANNEL] Radio answered past slot $_maxSlotIndex without '
             'ending the list, not creating a channel');
@@ -155,7 +157,8 @@ class ChannelService {
 
       final ChannelInfo channel;
       try {
-        final read = await _readSlot(connection, channelIdx);
+        final read = await _readSlot(connection, channelIdx,
+            allowEndOfList: maxChannels == null);
         if (read == null) {
           // ERR_CODE_NOT_FOUND: the radio's end of list.
           debugLog('[CHANNEL] End of channel list at index $channelIdx');
@@ -192,6 +195,10 @@ class ChannelService {
       channelIdx++;
     }
 
+    if (maxChannels != null) {
+      debugLog('[CHANNEL] Read all $maxChannels advertised channel slots');
+    }
+
     if (firstEmptySlot == null) {
       debugError(
           '[CHANNEL] No empty channel slots found in $channelIdx channels');
@@ -216,10 +223,12 @@ class ChannelService {
 
   /// Reads one slot, retrying once after [slotRetryDelay].
   ///
-  /// Returns null on ERR_CODE_NOT_FOUND (the end of the list). Throws
-  /// [_SlotReadFailed] when both attempts fail any other way.
+  /// Without advertised capacity, ERR_CODE_NOT_FOUND ends the list. Within
+  /// advertised capacity it is a failed read, just like any other error.
+  /// Throws [_SlotReadFailed] when both attempts fail.
   static Future<ChannelInfo?> _readSlot(
-      MeshCoreConnection connection, int channelIdx) async {
+      MeshCoreConnection connection, int channelIdx,
+      {required bool allowEndOfList}) async {
     for (var attempt = 1; attempt <= 2; attempt++) {
       try {
         final channel = await connection.getChannel(channelIdx);
@@ -227,10 +236,12 @@ class ChannelService {
         debugWarn('[CHANNEL] Slot $channelIdx read answered for slot '
             '${channel.channelIndex} (attempt $attempt)');
       } on CommandErrorException catch (e) {
-        if (e.isNotFound) return null;
-        debugWarn('[CHANNEL] Slot $channelIdx read failed (attempt $attempt): $e');
+        if (allowEndOfList && e.isNotFound) return null;
+        debugWarn(
+            '[CHANNEL] Slot $channelIdx read failed (attempt $attempt): $e');
       } catch (e) {
-        debugWarn('[CHANNEL] Slot $channelIdx read failed (attempt $attempt): $e');
+        debugWarn(
+            '[CHANNEL] Slot $channelIdx read failed (attempt $attempt): $e');
       }
       if (attempt == 1) {
         debugLog('[CHANNEL] Retrying slot $channelIdx in '
