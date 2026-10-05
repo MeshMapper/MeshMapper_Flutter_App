@@ -11,7 +11,7 @@ import 'ping_colors.dart';
 /// **The one rule underneath the design: the marker's large area is neutral
 /// and the state rides its edge.** The body is a constant [bodyColor] in every
 /// state and under every colour-vision palette; the state only ever appears in
-/// the left bar, the state line and the group ring. That is not a stylistic
+/// the pill border and the group ring. That is not a stylistic
 /// preference. The old marker fills were darker siblings of the coverage
 /// colours painted underneath them (measured on the web at OKLab dE 6.2 for
 /// `new` against the no-coverage red, 7.6 for `stale` against the dead-zone
@@ -50,37 +50,28 @@ class RepeaterMarkerStyle {
 
   // ── Chip (single repeater) geometry, logical px ───────────────────────────
 
-  /// Width of the state-coloured bar down the chip's left edge, clipped to the
-  /// body's rounded rect.
-  static const double barWidth = 8;
+  /// The state-coloured border around the neutral body.
+  static const double accentBorderWidth = 3;
 
-  /// The state line laid just outside the body.
-  static const double stateLineWidth = 1.5;
-
-  /// The near-black hairline laid just outside the state line.
+  /// The near-black hairline laid just outside the accent border.
   static const double hairlineWidth = 1;
 
-  /// How far the body is inset from the marker's outer footprint, so the state
-  /// line and hairline are added *inward* and the footprint is unchanged.
-  static const double bodyInset = stateLineWidth + hairlineWidth;
+  /// How far the body is inset from the marker's outer footprint, so both
+  /// borders are added *inward* and the footprint is unchanged.
+  static const double bodyInset = accentBorderWidth + hairlineWidth;
 
-  /// Chip height, and the taller variant used for a newly discovered repeater.
-  static const double chipHeight = 24;
-  static const double chipHeightNew = 28;
+  /// Every repeater pill has the same height, regardless of status.
+  static const double chipHeight = 28;
+  static const double chipHeightNew = chipHeight;
 
-  /// Uniform body corner radius for every repeater label length.
-  static const double chipCornerRadius = 8;
+  /// Capsule corner radius, uniform across label lengths and states.
+  static const double chipCornerRadius = chipHeight / 2;
 
-  /// Label size, and the larger variant for a newly discovered repeater.
-  static const double chipFontSize = 12;
-  static const double chipFontSizeNew = 13;
+  /// Label size. Status changes the border colour, not the pill geometry.
+  static const double chipFontSize = 13;
+  static const double chipFontSizeNew = chipFontSize;
 
-  /// Glow blur behind the chip, in the state colour. A new repeater gets a
-  /// noticeably wider one: that is the whole emphasis treatment.
-  static const double chipGlow = 2;
-  static const double chipGlowNew = 6;
-
-  /// Padding either side of the label, inside the space right of the bar.
+  /// Padding either side of the centred label.
   static const double chipHorizontalPad = 8;
 
   // ── Badge (cluster) geometry, logical px ──────────────────────────────────
@@ -137,10 +128,10 @@ class RepeaterMarkerStyle {
   /// Pro Max a 6-character chip measured 84 pt wide against the old 56, and
   /// the cluster badge 56 pt across against the old 40.
   ///
-  /// At 1.0 the badge is 40 pt across, the size it has always been, and a chip
-  /// is 24 pt tall against the old 28 while growing with the id instead of
-  /// being padded to a fixed width. Raising this again means re-measuring
-  /// against those numbers, not guessing.
+  /// At 1.0 the badge is 40 pt across, the size it has always been, and a pill
+  /// is 28 pt tall while growing with the id instead of being padded to a fixed
+  /// width. Raising this again means re-measuring against those numbers, not
+  /// guessing.
   ///
   /// `addImage` honours the screen scale on both platforms (iOS reads
   /// `UIScreen.main.scale`, Android the decoded bitmap's density), so a 2x
@@ -151,33 +142,27 @@ class RepeaterMarkerStyle {
 
   /// Outer footprint of a chip carrying a [labelLength]-character hex.
   ///
-  /// The width rule is the spec's: a one- or two-character id gets a fixed 24,
-  /// anything longer grows with the label, and the state bar's 8 px is added
-  /// on top of either. [measuredLabelWidth] only ever widens the result, for a
+  /// The width grows with the label while preserving the capsule proportions
+  /// in the reference. [measuredLabelWidth] only ever widens the result, for a
   /// font that renders wider than the rule assumed.
   ///
-  /// This is the OUTER box. The body is [bodyInset] inside it, so the state
-  /// line and hairline are added inward and the footprint is unchanged.
+  /// This is the OUTER box. The body is [bodyInset] inside it, so the accent
+  /// border and hairline are added inward and the footprint is unchanged.
   static Size chipSize(
     int labelLength, {
     required bool isNew,
     double measuredLabelWidth = 0,
   }) {
-    final ruleWidth =
-        (labelLength <= 2 ? 24.0 : 10.0 + labelLength * 7.0) + barWidth;
-    final needed =
-        measuredLabelWidth + chipHorizontalPad * 2 + barWidth + bodyInset * 2;
+    final ruleWidth = 26.0 + labelLength * 8.0;
+    final needed = measuredLabelWidth + chipHorizontalPad * 2 + bodyInset * 2;
     return Size(
       math.max(ruleWidth, needed),
       isNew ? chipHeightNew : chipHeight,
     );
   }
 
-  /// Width available for the label: the body, less the state bar. The label is
-  /// centred in THIS, not in the whole chip, or a short one drifts left and
-  /// sits on the bar.
-  static double chipLabelWidth(double outerWidth) =>
-      outerWidth - bodyInset * 2 - barWidth;
+  /// Width available for the centred label inside the neutral body.
+  static double chipLabelWidth(double outerWidth) => outerWidth - bodyInset * 2;
 
   // ── Status registry ───────────────────────────────────────────────────────
 
@@ -398,7 +383,7 @@ enum RepeaterMarkerStatus {
   /// Online and adverting.
   active('active'),
 
-  /// Discovered recently. Drawn taller, with a larger label and glow.
+  /// Discovered recently. Uses the new-repeater accent on the same pill.
   fresh('new'),
 
   /// No advert inside the region's window.

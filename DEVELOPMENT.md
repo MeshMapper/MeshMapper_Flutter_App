@@ -1440,15 +1440,10 @@ underneath them (OKLab dE 6.2 for `new` against the no-coverage red, 7.6 for
 sat on. The constant body is dE 25.7 from the nearest coverage colour.
 
 - **Single repeater**: a `#22303A` body in every state and every colour-vision
-  palette, an 8 px state-coloured bar down the left clipped to the rounded
-  rect, a 1.5 px state line just outside the body and a 1 px `#0d1114`
-  hairline outside that. The body is inset 2.5 px (1.5 + 1) so the edge is
-  added INWARD and the footprint is unchanged. Width follows the id length
-  (`<= 2` chars: 24, else `10 + len * 7`, plus 8 for the bar), and the label is
-  centred in the space RIGHT of the bar, not in the whole box. A newly
-  discovered repeater is taller (28 vs 24), with a larger label and a wider
-  glow. Corner radius still encodes hop-byte width (4 / 6 / 8), which is this
-  app's own signal and has no web counterpart.
+  palette, a 3 px status-coloured border around the whole pill and a 1 px
+  `#0d1114` hairline outside that. Both borders are drawn inward, so the
+  footprint remains 28 px tall. Width follows the id length (`26 + len * 8`),
+  the label is centred, and all statuses use the same capsule geometry.
 - **Group marker**: a `#22303A` disc of radius 19 with the count across it, a
   2.5 px ring at radius 17.75 in the DOMINANT state's colour, a 1 px hairline
   at 19.5, and one uniform 2.6 px dot per state PRESENT, pitch 4.2, centred at

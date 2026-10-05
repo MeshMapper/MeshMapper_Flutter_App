@@ -70,7 +70,7 @@ class _MapImages {
   // Simplified-mode repeater CHIP bodies: status x hop_bytes. The chip body is
   // baked here and MapLibre places the hex on top as a shared-glyph text
   // label. Width follows the hop's hex length, so the label always has room in
-  // the space right of the state bar.
+  // the neutral body.
   // Names: rep_active_1, rep_dead_2, rep_dup_3, etc.
   static String repeater(String status, int hopBytes) =>
       'rep_${status}_$hopBytes';
@@ -235,20 +235,19 @@ Future<Uint8List> _encodePicture(
 const double _repeaterCardMaxHeightFraction = 0.32;
 
 /// Height of the repeater chip's whole BOX in the detail sheet's header,
-/// glow margin included, against the 44 the old solid pill occupied.
+/// antialiasing margin included, against the 44 the old solid pill occupied.
 ///
-/// The map bakes its chips at their final size, 24 logical px tall (28 for a
-/// newly discovered one). That is right on a map and small beside a
+/// The map bakes its chips at their final size, 28 logical px tall. That is
+/// right on a map and small beside a
 /// `titleLarge` name, so the sheet draws the SAME chip scaled up rather than a
-/// lookalike built from a `Container`. Scaling the canvas takes the bar, the
-/// state line, the hairline, the corner radius and the label with it, so the
-/// proportions the design rests on survive exactly.
+/// lookalike built from a `Container`. Scaling the canvas takes both borders,
+/// the corner radius and the label with it, so the proportions survive.
 ///
-/// It measures the BOX, not the body, because [repeaterChipGlowMargin] is
-/// transparent padding the chip needs but the header cannot spend. Sizing the
-/// body to 40 instead put the box at 67 tall and up to 127 wide for a
-/// six-character id, against the old badge's 44 by roughly 70, and the name
-/// beside it had nowhere left to go.
+/// It measures the BOX, not the body, because [repeaterChipCanvasMargin] is
+/// transparent antialiasing padding the chip needs but the header cannot
+/// spend. Sizing the body to 40 instead put the box at 67 tall and up to 127
+/// wide for a six-character id, against the old badge's 44 by roughly 70, and
+/// the name beside it had nowhere left to go.
 ///
 /// 44 is the old badge's own footprint, so swapping the pill for this chip
 /// cannot reflow the header, and it lands the label at about 13 px, which is
@@ -257,12 +256,9 @@ const double _repeaterCardMaxHeightFraction = 0.32;
 /// change, and everything else scales with it.
 const double _sheetChipBoxHeight = 44;
 
-/// The scale every header chip is drawn at. Derived from the ORDINARY chip, so
-/// it is one number for all of them and a new repeater stays proportionally
-/// taller here exactly as it is on the map, rather than being squashed back to
-/// a common height and losing the signal.
+/// The scale every header chip is drawn at. All statuses share this geometry.
 const double _sheetChipScale = _sheetChipBoxHeight /
-    (RepeaterMarkerStyle.chipHeight + repeaterChipGlowMargin * 2);
+    (RepeaterMarkerStyle.chipHeight + repeaterChipCanvasMargin * 2);
 
 /// Draws one repeater chip in the map's marker style, at [_sheetChipScale].
 ///
@@ -289,11 +285,10 @@ class _RepeaterChip extends StatelessWidget {
     final label = repeaterChipLabelPainter(hex, isNew: isNew);
     final chip = RepeaterMarkerStyle.chipSize(hex.length,
         isNew: isNew, measuredLabelWidth: label.width);
-    // The glow is drawn outside the chip's own box, so the widget reserves the
-    // same margin the baked bitmaps do or it would be clipped at the edges.
+    // Reserve the same antialiasing margin as the baked map bitmap.
     final logical = Size(
-      chip.width + repeaterChipGlowMargin * 2,
-      chip.height + repeaterChipGlowMargin * 2,
+      chip.width + repeaterChipCanvasMargin * 2,
+      chip.height + repeaterChipCanvasMargin * 2,
     );
     const scale = _sheetChipScale;
     return SizedBox(
@@ -335,8 +330,12 @@ class _RepeaterChipPainter extends CustomPainter {
     canvas.scale(scale);
     final body = paintRepeaterChip(
       canvas,
-      Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width,
-          chip.height),
+      Rect.fromLTWH(
+        repeaterChipCanvasMargin,
+        repeaterChipCanvasMargin,
+        chip.width,
+        chip.height,
+      ),
       accent,
       bodyRadius,
       isNew: isNew,
@@ -353,7 +352,7 @@ class _RepeaterChipPainter extends CustomPainter {
       old.label.text?.toPlainText() != label.text?.toPlainText();
 }
 
-/// Bakes a complete repeater chip (body, state bar, edge and the hex label)
+/// Bakes a complete repeater chip (body, accent border and the hex label)
 /// into a single PNG, so the label is part of the icon and can never detach
 /// onto a neighbouring chip's box (the MapLibre symbol two-pass "all icons,
 /// then all glyphs" overlap bug). Used ONLY in Detailed grid mode, where
@@ -370,8 +369,8 @@ Future<Uint8List> _renderRepeaterChipPng(
   final chip = RepeaterMarkerStyle.chipSize(hex.length,
       isNew: isNew, measuredLabelWidth: textPainter.width);
   final logical = Size(
-    chip.width + repeaterChipGlowMargin * 2,
-    chip.height + repeaterChipGlowMargin * 2,
+    chip.width + repeaterChipCanvasMargin * 2,
+    chip.height + repeaterChipCanvasMargin * 2,
   );
 
   final recorder = ui.PictureRecorder();
@@ -380,8 +379,12 @@ Future<Uint8List> _renderRepeaterChipPng(
 
   final body = paintRepeaterChip(
     canvas,
-    Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width,
-        chip.height),
+    Rect.fromLTWH(
+      repeaterChipCanvasMargin,
+      repeaterChipCanvasMargin,
+      chip.width,
+      chip.height,
+    ),
     accent,
     borderRadius,
     isNew: isNew,
@@ -4192,8 +4195,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     await _addCoverageOverlay(appState);
   }
 
-  /// The ACCENT colour for a repeater status keyword: the left bar, the state
-  /// line, the cluster ring. Never a fill. See [RepeaterMarkerStyle].
+  /// The ACCENT colour for a repeater status keyword: the pill border and the
+  /// cluster ring. Never a fill. See [RepeaterMarkerStyle].
   ///
   /// One registry, one lookup. A keyword with no entry draws in the active
   /// colour and logs a single warning, because a silent wrong colour is worse
@@ -4227,7 +4230,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Generates:
   ///   - 15 repeater chip bodies (5 states × 3 hop_byte widths). Width follows
   ///     the hop's hex length so the shared-glyph label always has room right
-  ///     of the state bar; a `new` chip is taller than the rest.
+  ///     inside the pill.
   ///   - 5 cluster badge discs, one per dominant state.
   ///   - 8 coverage marker bitmaps for the user's currently-selected style.
   ///   - 6 GPS marker bitmaps (one per style).
@@ -4260,8 +4263,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           stage = 'rendering ${_MapImages.repeater(status.wireKey, hopBytes)}';
           final bytes = await _renderPainterToPng(
             painter,
-            Size(chip.width + repeaterChipGlowMargin * 2,
-                chip.height + repeaterChipGlowMargin * 2),
+            Size(chip.width + repeaterChipCanvasMargin * 2,
+                chip.height + repeaterChipCanvasMargin * 2),
             devicePixelRatio: RepeaterMarkerStyle.bakeDevicePixelRatio,
           );
           stage = 'adding ${_MapImages.repeater(status.wireKey, hopBytes)}';
@@ -4622,13 +4625,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // so there is nothing left to tint. Both modes render at the same
     // iconScale, so a Grid Mode switch no longer changes marker size.
     //
-    // The Simplified label is nudged right by half the state bar, because it is
-    // centred in the space RIGHT of the bar rather than in the whole chip.
-    // text-offset is in ems, so that is barWidth / 2 over the font size. The
-    // halo is the body colour, not black: it only exists to keep a glyph
-    // legible if it overhangs the body, and a black one would smear the chip.
-    const labelNudgeEm =
-        RepeaterMarkerStyle.barWidth / 2 / RepeaterMarkerStyle.chipFontSize;
+    // The label is centred in the pill. The halo is the body colour, not
+    // black: it only exists to keep a glyph legible if it overhangs the body,
+    // and a black one would smear the chip.
     final labelInk = _colorToHex(
         RepeaterMarkerStyle.labelInkFor(RepeaterMarkerStyle.bodyColor));
     final SymbolLayerProperties repeaterSymbolProps = clustered
@@ -4641,8 +4640,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             textColor: labelInk,
             textHaloColor: _colorToHex(RepeaterMarkerStyle.bodyColor),
             textHaloWidth: 1,
-            // A newly discovered repeater gets the taller chip and the larger
-            // label. Data-driven, so one layer still covers every state.
+            // Kept data-driven so status-specific geometry can be restored
+            // without splitting this shared layer.
             textSize: [
               'case',
               [
@@ -4653,7 +4652,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               RepeaterMarkerStyle.chipFontSizeNew,
               RepeaterMarkerStyle.chipFontSize,
             ],
-            textOffset: const [labelNudgeEm, 0],
+            textOffset: const [0, 0],
             textAllowOverlap: true,
             textIgnorePlacement: true,
             textFont: _defaultFontStack,
@@ -7766,14 +7765,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Widget _repeaterChipSwatch(Color accent) => Container(
         width: 30,
         height: 18,
-        alignment: Alignment.centerLeft,
-        clipBehavior: Clip.antiAlias,
+        padding: const EdgeInsets.all(1),
         decoration: BoxDecoration(
-          color: RepeaterMarkerStyle.bodyColor,
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: accent, width: 1.5),
+          color: RepeaterMarkerStyle.hairlineColor,
+          borderRadius: BorderRadius.circular(9),
         ),
-        child: Container(width: 5, color: accent),
+        child: Container(
+          decoration: BoxDecoration(
+            color: RepeaterMarkerStyle.bodyColor,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: accent, width: 2),
+          ),
+        ),
       );
 
   /// One repeater-state row in the legend.
@@ -11802,10 +11805,10 @@ class _RepeaterShapePainter extends CustomPainter {
     paintRepeaterChip(
       canvas,
       Rect.fromLTWH(
-        repeaterChipGlowMargin,
-        repeaterChipGlowMargin,
-        size.width - repeaterChipGlowMargin * 2,
-        size.height - repeaterChipGlowMargin * 2,
+        repeaterChipCanvasMargin,
+        repeaterChipCanvasMargin,
+        size.width - repeaterChipCanvasMargin * 2,
+        size.height - repeaterChipCanvasMargin * 2,
       ),
       accent,
       borderRadius,
