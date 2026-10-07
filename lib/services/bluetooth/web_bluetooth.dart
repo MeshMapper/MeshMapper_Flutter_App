@@ -237,6 +237,11 @@ class WebBluetoothService implements BluetoothService {
     }
   }
 
+  /// Not offered on web: the Chrome picker owns device selection and the
+  /// connect is short, so there is nothing for the user to cancel.
+  @override
+  Future<void> cancelConnect() async {}
+
   @override
   Future<void> disconnect() async {
     debugLog('[BLE] Disconnecting...');

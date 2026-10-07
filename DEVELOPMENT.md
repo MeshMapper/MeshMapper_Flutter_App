@@ -324,7 +324,7 @@ now-unwanted pins off the map.
 
 Critical safety: The connection sequence MUST complete in order.
 
-1. **Transport Connect**: Platform-specific transport connection (BLE GATT, TCP socket, or USB Serial port)
+1. **Transport Connect**: Platform-specific transport connection (BLE GATT, TCP socket, or USB Serial port). On mobile BLE this is the one step the user can cancel (`AppStateProvider.cancelConnect`, the Cancel button on the progress screen): it bumps `_connectGeneration` so the in-flight attempt fails silently, and `MobileBluetoothService.cancelConnect` stops the retry loop and drops the pending GATT connect with `disconnect(queue: false)`, which also stops iOS completing it later. Past this step the handshake is not cancellable. Starting a scan also resets a failed connect's `error` step to `disconnected`, or the bottom Scan button stays disabled.
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
 3. **Device Info**: `deviceQuery()` returns manufacturer string, then `getSelfInfo()` acquires device public key (required for geo-auth API authentication). If `getSelfInfo()` fails, the entire connection fails.
 4. **Device Identification**: Resolve the queried manufacturer against the current server-managed catalog. With nothing cached, this connect may arm one more refresh and waits at most 3 s for it. Recognition is advisory and never modifies radio settings.

@@ -429,6 +429,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isScanning = false;
   StreamSubscription<DiscoveredDevice>? _activeScanSubscription;
 
+  /// True while connectToDevice is waiting on the BLE transport connect, the
+  /// one stretch of a connect the user can cancel (up to 3 x 15 s when the
+  /// radio is off or out of range).
+  bool _bleTransportConnecting = false;
+
+  /// True while [cancelConnect] is tearing the pending BLE connect down.
+  bool _isCancellingConnect = false;
+
   // TX/RX markers for map
   final List<TxPing> _txPings = [];
   final List<RxPing> _rxPings = [];
@@ -1218,6 +1226,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int? get currentBatteryPercent => _currentBatteryPercent;
   List<DiscoveredDevice> get discoveredDevices => _discoveredDevices;
   bool get isScanning => _isScanning;
+
+  /// Whether the connect in progress can be cancelled right now: a BLE
+  /// transport connect on mobile, not an auto-reconnect.
+  bool get canCancelConnect =>
+      !kIsWeb &&
+      _bleTransportConnecting &&
+      !_isAutoReconnecting &&
+      _connectionStep == ConnectionStep.transportConnecting;
+
+  /// True while a user cancel of the pending connect is still unwinding.
+  bool get isCancellingConnect => _isCancellingConnect;
   List<TxPing> get txPings => List.unmodifiable(_txPings);
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
 
@@ -3945,6 +3964,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isScanning = true;
     _discoveredDevices = [];
     _connectionError = null;
+    // A failed connect leaves the step at error, and the bottom Scan button
+    // only enables at disconnected, so clearing the error alone left it grey
+    // until the app was restarted.
+    if (_connectionStep == ConnectionStep.error) {
+      debugLog('[SCAN] Clearing failed connect state (error -> disconnected)');
+      _connectionStep = ConnectionStep.disconnected;
+    }
     _isAuthError = false;
     _isNetworkError = false;
     notifyListeners();
@@ -4430,6 +4456,39 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
+  /// Cancel a BLE connect that is still waiting on the radio.
+  ///
+  /// Only the transport stage can be cancelled: past it the handshake is
+  /// talking to the radio and has its own cleanup. The in-flight
+  /// connectToDevice is invalidated through [_connectGeneration], so its
+  /// failure is ignored and no error card is shown.
+  Future<void> cancelConnect() async {
+    if (!canCancelConnect || _isCancellingConnect) {
+      debugLog('[CONN] Cancel ignored: connect is not at a cancellable stage '
+          '(step=$_connectionStep, transport=$_bleTransportConnecting, '
+          'cancelling=$_isCancellingConnect)');
+      return;
+    }
+    debugLog('[CONN] User cancelled the connect');
+    _isCancellingConnect = true;
+    _connectGeneration++;
+    _bleTransportConnecting = false;
+    notifyListeners();
+    try {
+      await _bluetoothService.cancelConnect();
+    } catch (e) {
+      debugWarn('[CONN] Cancelling the BLE connect failed: $e');
+    } finally {
+      _isCancellingConnect = false;
+      _isConnecting = false;
+      _connectionStep = ConnectionStep.disconnected;
+      _connectionError = null;
+      _isAuthError = false;
+      _isNetworkError = false;
+      notifyListeners();
+    }
+  }
+
   /// Connect to a discovered device
   Future<void> connectToDevice(DiscoveredDevice device) async {
     if (_isConnecting) {
@@ -4466,8 +4525,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // During auto-reconnect the internal retry loop is capped to one
         // attempt: the reconnect ladder retries on its own, and a 3x15s
         // internal loop would eat the whole 30s reconnect budget in one call.
-        await _bluetoothService.connect(device.id,
-            maxAttempts: _isAutoReconnecting ? 1 : null);
+        _bleTransportConnecting = true;
+        notifyListeners(); // shows the Cancel button
+        try {
+          await _bluetoothService.connect(device.id,
+              maxAttempts: _isAutoReconnecting ? 1 : null);
+        } finally {
+          if (myGeneration == _connectGeneration) {
+            _bleTransportConnecting = false;
+            notifyListeners(); // hides it
+          }
+        }
+        if (myGeneration != _connectGeneration) {
+          // Cancelled (or superseded) just as the link opened. The canceller
+          // closes the link; this attempt must not build on it.
+          debugLog('[CONN] Transport connected after the attempt was '
+              'cancelled, abandoning it');
+          return;
+        }
         transportConnectedAt = DateTime.now();
         _activeTransport = _bluetoothService;
         debugLog('[APP] Creating new MeshCoreConnection');

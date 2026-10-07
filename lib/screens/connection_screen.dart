@@ -433,6 +433,20 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                 'Step ${step.stepNumber} of $totalSteps',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
+              // Only the wait for the radio can be cancelled. Past it the
+              // handshake has its own cleanup and finishes on its own.
+              if (appState.canCancelConnect ||
+                  appState.isCancellingConnect) ...[
+                SizedBox(height: isLandscape ? 16 : 24),
+                OutlinedButton(
+                  onPressed: appState.isCancellingConnect
+                      ? null
+                      : () => appState.cancelConnect(),
+                  child: Text(appState.isCancellingConnect
+                      ? 'Cancelling'
+                      : 'Cancel'),
+                ),
+              ],
             ],
           ),
         ),
