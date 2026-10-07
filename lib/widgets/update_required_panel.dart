@@ -19,7 +19,7 @@ class UpdateRequiredPanel extends StatelessWidget {
   static const String title = 'Update MeshMapper to continue';
   static const String body =
       'This version of the app is out of date, update the MeshMapper app on '
-      'your phone to keep wardriving here.';
+      'your phone to keep wardriving.';
 
   @override
   Widget build(BuildContext context) {

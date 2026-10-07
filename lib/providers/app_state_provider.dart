@@ -9604,7 +9604,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return 'Invalid session. Please reconnect.';
       case 'outofdate':
         return 'This version of the app is out of date, update the MeshMapper '
-            'app on your phone to keep wardriving here.';
+            'app on your phone to keep wardriving.';
       case 'session_invalid':
         return 'Session is invalid. Please reconnect.';
       case 'session_revoked':
