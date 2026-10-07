@@ -36,6 +36,7 @@ import '../utils/repeater_format.dart';
 import '../utils/repeater_marker_painter.dart';
 import '../utils/repeater_marker_style.dart';
 import '../utils/map_style_errors.dart';
+import '../utils/marker_data_version.dart';
 import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
 import 'repeater_admin_sheet.dart';
@@ -6698,11 +6699,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (t.success) traceSuccessTotal++;
     }
 
+    // Each capped list contributes its length plus the identity of both ends,
+    // so add-one/evict-one at the 500 cap still moves the version.
     return Object.hashAll([
-      appState.txPings.length,
-      appState.rxPings.length,
-      appState.discLogEntries.length,
-      appState.traceLogEntries.length,
+      cappedListSignature(appState.txPings),
+      cappedListSignature(appState.rxPings),
+      cappedListSignature(appState.discLogEntries),
+      cappedListSignature(appState.traceLogEntries),
       deferredMarkers.length,
       deferredMarkers.lastOrNull,
       appState.repeaters.length,
@@ -6719,7 +6722,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       traceSuccessTotal,
       appState.preferences.showDeferredMarkers,
       appState.viewingHistorySession,
-      appState.historySessionMarkers?.length ?? 0,
+      // The history list is replaced wholesale per session, so its identity
+      // (not just its length) tells two same-sized sessions apart.
+      identityHashCode(appState.historySessionMarkers),
     ]);
   }
 
