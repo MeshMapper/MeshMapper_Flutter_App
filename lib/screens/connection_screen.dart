@@ -11,8 +11,10 @@ import '../models/connection_state.dart';
 import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../services/permission_disclosure_service.dart';
 import '../services/transport/android_serial_service.dart';
 import '../services/transport/tcp_service.dart';
 import '../services/transport/web_serial_factory.dart';
@@ -71,18 +73,35 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
   }
 
-  /// Request location permission - tries to request first, opens settings if permanently denied
+  /// Request location permission. Tries the system prompt first and opens the
+  /// app settings when it is permanently denied, or when the request came back
+  /// denied without a dialog ever being shown (Android stops prompting after
+  /// two refusals but can still report plain `denied`).
   Future<void> _requestLocationPermission(AppStateProvider appState) async {
     // Check current permission status
     LocationPermission permission = await Geolocator.checkPermission();
 
     // If denied (not permanently), try requesting again
     if (permission == LocationPermission.denied) {
+      final stopwatch = Stopwatch()..start();
       permission = await Geolocator.requestPermission();
+      stopwatch.stop();
+      debugLog('[GPS] Location permission request returned $permission '
+          'after ${stopwatch.elapsedMilliseconds}ms');
+      if (permission == LocationPermission.denied &&
+          PermissionDisclosureService.deniedWithoutDialog(stopwatch.elapsed)) {
+        // No dialog was shown, so a person cannot have just refused. Without
+        // this the button silently did nothing on every tap.
+        debugLog('[GPS] Location denied without a system dialog, '
+            'opening app settings');
+        await Geolocator.openAppSettings();
+        return;
+      }
     }
 
     // If permanently denied, open app settings
     if (permission == LocationPermission.deniedForever) {
+      debugLog('[GPS] Location permanently denied, opening app settings');
       await Geolocator.openAppSettings();
       return;
     }

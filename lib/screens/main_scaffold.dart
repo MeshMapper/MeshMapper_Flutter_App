@@ -162,11 +162,25 @@ class _MainScaffoldState extends State<MainScaffold> {
     } else {
       // Android: only request if needed so previously granted permission just restarts GPS.
       var status = await Permission.locationWhenInUse.status;
+      var deniedSilently = false;
       if (status.isDenied) {
+        final stopwatch = Stopwatch()..start();
         status = await Permission.locationWhenInUse.request();
+        stopwatch.stop();
+        // Android stops showing the dialog after two refusals but can still
+        // report plain `denied`, answered in a few milliseconds. Treat that
+        // like a permanent denial so the user is offered the settings.
+        deniedSilently = status.isDenied &&
+            PermissionDisclosureService.deniedWithoutDialog(stopwatch.elapsed);
+        debugLog('[DISCLOSURE] Android location request took '
+            '${stopwatch.elapsedMilliseconds}ms');
       }
       debugLog('[DISCLOSURE] Android location permission: $status');
-      if (status.isPermanentlyDenied) {
+      if (status.isPermanentlyDenied || deniedSilently) {
+        if (deniedSilently) {
+          debugLog('[DISCLOSURE] Location denied without a system dialog, '
+              'offering app settings');
+        }
         _showLocationSettingsPrompt();
         return;
       }

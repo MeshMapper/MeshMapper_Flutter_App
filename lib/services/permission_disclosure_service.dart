@@ -6,6 +6,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 class PermissionDisclosureService {
   static const String _disclosureShownKey = 'location_disclosure_shown';
 
+  /// A permission request that comes back denied faster than this was
+  /// answered by the OS, not by a person. After two refusals Android stops
+  /// showing the system dialog and (on some builds) still reports plain
+  /// `denied` rather than `permanentlyDenied`, so a fast denial is the only
+  /// sign that no dialog was shown and the app settings are the way forward.
+  static const Duration silentDenialThreshold = Duration(milliseconds: 500);
+
+  /// True when a request that came back still denied after [elapsed] was
+  /// answered without the system dialog ever being shown.
+  static bool deniedWithoutDialog(Duration elapsed) =>
+      elapsed < silentDenialThreshold;
+
   /// Check if the disclosure has been shown before
   static Future<bool> hasShownDisclosure() async {
     final prefs = await SharedPreferences.getInstance();
