@@ -58,11 +58,15 @@ class _ChannelRadio extends CatalogProtocolTransport {
   final int endError;
   final int protocolVersion;
 
+  /// When set, CMD_SET_CHANNEL is answered with this ERR code, not OK.
+  final int? setChannelErr;
+
   _ChannelRadio(this.slots,
       {Map<int, List<_Answer>>? faults,
       this.advertisedChannels,
       this.endError = ErrorCodes.notFound,
-      this.protocolVersion = 14})
+      this.protocolVersion = 14,
+      this.setChannelErr})
       : faults = faults ?? {};
 
   final List<int> reads = [];
@@ -98,7 +102,8 @@ class _ChannelRadio extends CatalogProtocolTransport {
     }
     if (data.first == CommandCodes.setChannel) {
       writes.add(Uint8List.fromList(data));
-      emit([ResponseCodes.ok]);
+      final err = setChannelErr;
+      emit(err == null ? [ResponseCodes.ok] : [ResponseCodes.err, err]);
       return;
     }
     if (data.first != CommandCodes.getChannel) {
@@ -184,6 +189,15 @@ void main() {
     radio.dispose();
     return (result: result, error: error);
   }
+
+  test('a create the radio refuses with ERR fails the setup', () {
+    final radio = _ChannelRadio([named('Public'), empty],
+        setChannelErr: ErrorCodes.illegalArg);
+    final out = scan(radio);
+    expect(out.result, isNull);
+    expect(out.error.toString(), contains(ChannelService.createFailedMessage));
+    expect(radio.setChannelWrites, hasLength(1));
+  });
 
   for (final count in [8, 40, 64, 255]) {
     for (final endError in [ErrorCodes.notFound, ErrorCodes.illegalArg]) {

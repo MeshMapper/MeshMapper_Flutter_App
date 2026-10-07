@@ -207,7 +207,7 @@ class _AdminCommandToken {
 }
 
 /// A send whose own bare OK or ERR the connection claims.
-enum _OwnReplyKind { tx, discovery }
+enum _OwnReplyKind { tx, discovery, channel }
 
 /// One pending claim on the next OK or ERR, queued as its frame goes out.
 class _OwnReplyClaim {
@@ -217,10 +217,19 @@ class _OwnReplyClaim {
   final Completer<void> reply = Completer<void>();
   Timer? expiry;
 
+  /// True once the radio answered with OK or ERR (not expired or released).
+  bool answered = false;
+
+  /// The ERR code the radio answered with, null on OK or no answer.
+  int? errorCode;
+
   _OwnReplyClaim(this.kind);
 
-  String get label =>
-      kind == _OwnReplyKind.tx ? 'TX send' : 'discovery request';
+  String get label => switch (kind) {
+        _OwnReplyKind.tx => 'TX send',
+        _OwnReplyKind.discovery => 'discovery request',
+        _OwnReplyKind.channel => 'channel write',
+      };
 
   void settle() {
     expiry?.cancel();
@@ -632,6 +641,23 @@ class MeshCoreConnection {
   Timer? _noiseFloorTimer;
   bool _isFetchingNoiseFloor = false;
   int _noiseFloorFailCount = 0;
+
+  /// True while noise floor polling runs at [noiseFloorBackoffInterval]
+  /// after [_noiseFloorFailLimit] failures in a row.
+  bool _noiseFloorBackedOff = false;
+
+  /// Consecutive failures before polling slows to the backoff interval.
+  static const int _noiseFloorFailLimit = 3;
+
+  /// Normal noise floor poll interval. Tests shorten it.
+  @visibleForTesting
+  Duration noiseFloorPollInterval = const Duration(seconds: 5);
+
+  /// Slower poll interval used after repeated failures, so a radio that is
+  /// briefly busy (an Android GATT busy run, a second app on the link) costs a
+  /// few samples rather than the rest of the session. Tests shorten it.
+  @visibleForTesting
+  Duration noiseFloorBackoffInterval = const Duration(seconds: 30);
 
   // Battery tracking
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
@@ -2431,12 +2457,13 @@ class MeshCoreConnection {
   }
 
   /// Queues a claim on the next OK or ERR for a send about to hit the wire.
-  _OwnReplyClaim _armOwnReply(_OwnReplyKind kind) {
+  _OwnReplyClaim _armOwnReply(_OwnReplyKind kind, {Duration? timeout}) {
     final claim = _OwnReplyClaim(kind);
-    claim.expiry = Timer(ownReplyTimeout, () {
+    final wait = timeout ?? ownReplyTimeout;
+    claim.expiry = Timer(wait, () {
       if (_ownReplyClaims.remove(claim)) {
         debugWarn('[CONN] No reply to ${claim.label} within '
-            '${ownReplyTimeout.inMilliseconds}ms');
+            '${wait.inMilliseconds}ms');
       }
       claim.settle();
     });
@@ -2448,12 +2475,12 @@ class MeshCoreConnection {
   /// again when the write itself fails.
   Future<_OwnReplyClaim> _sendClaimingReply(
       BufferWriter data, _OwnReplyKind kind,
-      {void Function()? onWire}) async {
+      {void Function()? onWire, Duration? timeout}) async {
     _OwnReplyClaim? claim;
     try {
       await _write(data.toBytes(), onWire: () {
         onWire?.call();
-        claim = _armOwnReply(kind);
+        claim = _armOwnReply(kind, timeout: timeout);
       });
     } catch (_) {
       final armed = claim;
@@ -2471,13 +2498,19 @@ class MeshCoreConnection {
   bool _claimOwnReply(int? errorCode) {
     if (_ownReplyClaims.isEmpty) return false;
     final claim = _ownReplyClaims.removeAt(0);
+    claim.answered = true;
+    claim.errorCode = errorCode;
     claim.settle();
     if (errorCode == null) {
       debugLog('[CONN] OK claimed by ${claim.label}');
     } else {
-      // Logged only: the send's return and the ping flow are unchanged.
-      debugWarn('[CONN] ${claim.kind == _OwnReplyKind.tx ? 'TX send' : 'Discovery request'} '
-          'rejected by radio (error code $errorCode)');
+      // Logged only for TX and discovery: the send's return and the ping flow
+      // are unchanged. A channel write reads the code and throws.
+      debugWarn('[CONN] ${switch (claim.kind) {
+        _OwnReplyKind.tx => 'TX send',
+        _OwnReplyKind.discovery => 'Discovery request',
+        _OwnReplyKind.channel => 'Channel write',
+      }} rejected by radio (error code $errorCode)');
     }
     return true;
   }
@@ -2675,14 +2708,37 @@ class MeshCoreConnection {
     );
   }
 
-  /// Set channel
-  Future<void> setChannel(int channelIdx, String name, Uint8List secret) async {
+  /// How long a channel delete waits for its OK during disconnect. Short on
+  /// purpose: teardown must not stall on a radio that stays quiet.
+  static const Duration channelDeleteReplyTimeout =
+      Duration(milliseconds: 1500);
+
+  /// Set channel and await the radio's OK or ERR.
+  ///
+  /// The firmware answers CMD_SET_CHANNEL with a bare OK, or ERR on a bad
+  /// index or name. The reply is claimed like a TX send's (FIFO among own
+  /// claims), so an OK arriving for this write is never left for another
+  /// consumer. Throws [CommandErrorException] on ERR. When no reply arrives
+  /// within [replyTimeout] (default [ownReplyTimeout]) it logs and returns,
+  /// as setDeviceTime does: the write may still have landed.
+  Future<void> setChannel(int channelIdx, String name, Uint8List secret,
+      {Duration? replyTimeout}) async {
     final data = BufferWriter();
     data.writeByte(CommandCodes.setChannel);
     data.writeByte(channelIdx);
     data.writeCString(name, 32);
     data.writeBytes(secret);
-    await _sendToRadio(data);
+    final claim = await _sendClaimingReply(data, _OwnReplyKind.channel,
+        timeout: replyTimeout);
+    await claim.reply.future;
+    final errorCode = claim.errorCode;
+    if (errorCode != null) {
+      throw CommandErrorException(errorCode);
+    }
+    if (!claim.answered) {
+      debugWarn('[CHANNEL] No OK for channel write at index $channelIdx, '
+          'continuing');
+    }
   }
 
   /// Set flood scope for regional packet filtering
@@ -2705,7 +2761,8 @@ class MeshCoreConnection {
 
   /// Delete channel by setting it to empty
   Future<void> deleteChannel(int channelIdx) async {
-    await setChannel(channelIdx, '', Uint8List(16));
+    await setChannel(channelIdx, '', Uint8List(16),
+        replyTimeout: channelDeleteReplyTimeout);
   }
 
   /// Get all channels (queries until error)
@@ -3374,15 +3431,34 @@ class MeshCoreConnection {
     _noiseFloorTimer?.cancel();
     _isFetchingNoiseFloor = false;
     _noiseFloorFailCount = 0;
+    _noiseFloorBackedOff = false;
 
     // Get initial reading immediately
     _fetchNoiseFloor();
 
-    _noiseFloorTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _scheduleNoiseFloorTimer(noiseFloorPollInterval);
+
+    debugLog('[CONN] Started noise floor polling '
+        '(${noiseFloorPollInterval.inSeconds}s interval)');
+  }
+
+  /// Starts noise floor polling outside the connect workflow, for tests.
+  @visibleForTesting
+  void debugStartNoiseFloorPolling() => _startNoiseFloorPolling();
+
+  /// Whether noise floor polling is running, for tests.
+  @visibleForTesting
+  bool get isNoiseFloorPolling => _noiseFloorTimer != null;
+
+  /// Whether noise floor polling is backed off to the slower interval.
+  @visibleForTesting
+  bool get isNoiseFloorBackedOff => _noiseFloorBackedOff;
+
+  void _scheduleNoiseFloorTimer(Duration interval) {
+    _noiseFloorTimer?.cancel();
+    _noiseFloorTimer = Timer.periodic(interval, (_) async {
       await _fetchNoiseFloor();
     });
-
-    debugLog('[CONN] Started noise floor polling (5s interval)');
   }
 
   /// True while a repeater admin command holds the link. The two pollers
@@ -3421,13 +3497,28 @@ class MeshCoreConnection {
       // line (once every 5 seconds, all session) pure duplication.
       await getNoiseFloor();
       _noiseFloorFailCount = 0; // Reset on success
+      // Polling may have been stopped (disconnect) while this fetch was in
+      // flight; only a live poller returns to the normal interval.
+      if (_noiseFloorBackedOff && _noiseFloorTimer != null) {
+        _noiseFloorBackedOff = false;
+        _scheduleNoiseFloorTimer(noiseFloorPollInterval);
+        debugLog('[CONN] Noise floor fetch recovered, polling back to '
+            '${noiseFloorPollInterval.inSeconds}s');
+      }
     } catch (e) {
       _noiseFloorFailCount++;
-      debugLog('[CONN] Noise floor fetch failed ($_noiseFloorFailCount/3): $e');
-      if (_noiseFloorFailCount >= 3) {
-        debugLog(
-            '[CONN] Noise floor polling stopped after 3 consecutive failures');
-        _stopNoiseFloorPolling();
+      debugLog('[CONN] Noise floor fetch failed '
+          '($_noiseFloorFailCount/$_noiseFloorFailLimit): $e');
+      // Back off rather than stop: a run of transient failures used to end
+      // polling for the rest of the session while battery polls kept working.
+      if (_noiseFloorFailCount >= _noiseFloorFailLimit &&
+          !_noiseFloorBackedOff &&
+          _noiseFloorTimer != null) {
+        _noiseFloorBackedOff = true;
+        _scheduleNoiseFloorTimer(noiseFloorBackoffInterval);
+        debugWarn('[CONN] Noise floor polling slowed to '
+            '${noiseFloorBackoffInterval.inSeconds}s after '
+            '$_noiseFloorFailLimit consecutive failures');
       }
     } finally {
       _isFetchingNoiseFloor = false;
@@ -3439,6 +3530,7 @@ class MeshCoreConnection {
     _noiseFloorTimer?.cancel();
     _noiseFloorTimer = null;
     _isFetchingNoiseFloor = false;
+    _noiseFloorBackedOff = false;
     debugLog('[CONN] Stopped noise floor polling');
   }
 

@@ -125,6 +125,10 @@ class ChannelService {
   static const String incompleteScanMessage =
       'Could not read the channel list from your radio. Please reconnect.';
 
+  /// Shown when the radio answers the channel create with ERR.
+  static const String createFailedMessage =
+      'Your radio could not create the #wardriving channel. Please reconnect.';
+
   /// Ensure #wardriving channel exists (find or create)
   ///
   /// Reads the advertised number of slots. MeshCore and ZephCore report the
@@ -209,8 +213,14 @@ class ChannelService {
 
     debugLog(
         '[CHANNEL] #wardriving not found in $channelIdx channels, creating at index $firstEmptySlot');
-    await connection.setChannel(
-        firstEmptySlot, wardrivingChannelName, wardrivingKey);
+    try {
+      await connection.setChannel(
+          firstEmptySlot, wardrivingChannelName, wardrivingKey);
+    } on CommandErrorException catch (e) {
+      debugError('[CHANNEL] Radio refused to create $wardrivingChannelName '
+          'at index $firstEmptySlot: $e');
+      throw Exception(createFailedMessage);
+    }
     debugLog(
         '[CHANNEL] Channel $wardrivingChannelName created successfully at index $firstEmptySlot');
 

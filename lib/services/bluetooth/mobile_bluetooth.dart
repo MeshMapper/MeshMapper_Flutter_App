@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,6 +15,53 @@ import 'bluetooth_service.dart';
 
 /// Mobile Bluetooth implementation using flutter_blue_plus
 /// For Android and iOS platforms
+/// Delays between retries of an Android write the stack refused as busy.
+const List<Duration> kGattBusyRetryDelays = [
+  Duration(milliseconds: 50),
+  Duration(milliseconds: 100),
+  Duration(milliseconds: 150),
+];
+
+/// True when [error] is Android's ERROR_GATT_WRITE_REQUEST_BUSY, which the
+/// stack returns when another write (often a second app on the same radio)
+/// still holds the GATT queue. The write never went out, so it is safe to
+/// send again.
+bool isGattWriteBusy(Object error) =>
+    error.toString().contains('ERROR_GATT_WRITE_REQUEST_BUSY');
+
+/// Runs [write], retrying it after each of [delays] while it fails with
+/// [isGattWriteBusy]. Any other error, or a busy error after the last retry,
+/// is rethrown unchanged.
+@visibleForTesting
+Future<void> writeRetryingGattBusy(
+  Future<void> Function() write, {
+  List<Duration> delays = kGattBusyRetryDelays,
+  Future<void> Function(Duration delay)? sleep,
+}) async {
+  for (var attempt = 0;; attempt++) {
+    try {
+      await write();
+      if (attempt > 0) {
+        debugLog('[BLE] Write succeeded after $attempt GATT busy '
+            'retr${attempt == 1 ? 'y' : 'ies'}');
+      }
+      return;
+    } catch (e) {
+      if (!isGattWriteBusy(e) || attempt >= delays.length) {
+        if (attempt > 0) {
+          debugWarn('[BLE] Write failed after $attempt GATT busy '
+              'retr${attempt == 1 ? 'y' : 'ies'}: $e');
+        }
+        rethrow;
+      }
+      final delay = delays[attempt];
+      debugLog('[BLE] GATT write busy, retrying in ${delay.inMilliseconds} ms '
+          '(${attempt + 1}/${delays.length})');
+      await (sleep ?? Future<void>.delayed)(delay);
+    }
+  }
+}
+
 class MobileBluetoothService implements BluetoothService {
   // Retry constants for transient connect failures (see ble_connect_retry_policy.dart)
   static const int _maxRetries = 3;
@@ -531,14 +579,36 @@ class MobileBluetoothService implements BluetoothService {
     }
   }
 
+  /// Tail of the local write queue. Every write waits for the one before it,
+  /// so a write retrying a GATT busy refusal keeps its place in line instead
+  /// of letting a later frame reach the radio first. Never completes with an
+  /// error.
+  Future<void> _writeTail = Future<void>.value();
+
   @override
   Future<void> write(Uint8List data) async {
-    if (_rxCharacteristic == null) {
-      throw Exception('Not connected');
-    }
+    final previous = _writeTail;
+    final done = Completer<void>();
+    _writeTail = done.future;
+    try {
+      await previous;
+      final characteristic = _rxCharacteristic;
+      if (characteristic == null) {
+        throw Exception('Not connected');
+      }
 
-    // Write to RX characteristic (device reads from this)
-    await _rxCharacteristic!.write(data, withoutResponse: false);
+      // Write to RX characteristic (device reads from this). Android can
+      // refuse a write as busy without sending it; that one is retried
+      // briefly here so the caller's await covers the retry.
+      Future<void> send() => characteristic.write(data, withoutResponse: false);
+      if (Platform.isAndroid) {
+        await writeRetryingGattBusy(send);
+      } else {
+        await send();
+      }
+    } finally {
+      done.complete();
+    }
   }
 
   @override
