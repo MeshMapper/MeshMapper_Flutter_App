@@ -1016,7 +1016,7 @@ Keeps BLE and GPS active when the app is backgrounded during auto-ping.
 
 Continuous RSSI measurement of the idle channel, providing ambient noise data for coverage analysis.
 
-- **Polling**: 5-second interval via `MeshCoreConnection.getNoiseFloor()` (MeshCore stats request for radio stats, parses int16LE). Retries up to 3 consecutive failures before stopping.
+- **Polling**: 5-second interval via `MeshCoreConnection.getNoiseFloor()` (MeshCore stats request for radio stats, parses int16LE). After 3 consecutive failures it backs off to a 30-second interval instead of stopping, and returns to 5 seconds on the next success. On Android a write refused with `ERROR_GATT_WRITE_REQUEST_BUSY` (usually a second app talking to the same radio) is retried up to 3 times, 50 to 150 ms apart, in its place in the write queue (`writeRetryingGattBusy` in `lib/services/bluetooth/mobile_bluetooth.dart`).
 - **Sessions**: `NoiseFloorSession` (HiveType 13) records samples + ping event markers over time. Each sample has a timestamp and noise floor value (dBm).
 - **Event Markers**: `PingEventMarker` records ping events overlaid on the noise floor graph:
   - `txSuccess` (Green) — TX heard by repeater
@@ -2540,7 +2540,7 @@ All API endpoints may return maintenance mode:
 
 1. **Unified RX Handler accepts ALL packets** - No header filtering at entry point. Session log tracking filters headers internally.
 
-2. **GPS freshness** - The client doesn't enforce GPS freshness for pings (25m movement check is sufficient), but zone status checks require GPS < 60s old and < 50m accuracy. The server also enforces fresh GPS on submitted wardrive data.
+2. **GPS freshness** - The client doesn't enforce GPS freshness for pings (25m movement check is sufficient), but zone status checks require GPS < 60s old and < 50m accuracy. The app enforces the accuracy half itself: a zone check or connect `/auth` never sends a fix worse than 50 m (`GpsService.isAccurateForZoneCheck`). It uses the newest accurate fix under 60 s old (`bestRecentZoneCheckFix`), or waits briefly for one (4 s on connect), and before the first zone result it shows the Weak GPS Signal state instead of sending. A `gps_inaccurate` answer never overwrites a zone result already known. Fix age is left to the server on purpose, because a stationary phone gets no new fixes from the stream. The server also enforces fresh GPS on submitted wardrive data.
 
 3. **Control locking during ping lifecycle** - `sendPing()` disables all controls until API post completes. Must call unlock in ALL code paths (success/error).
 
