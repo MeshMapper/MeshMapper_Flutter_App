@@ -14,6 +14,7 @@ import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
@@ -29,6 +30,7 @@ import '../services/airborne_release.dart';
 import '../services/api_queue_service.dart';
 import '../utils/coverage_refresh.dart';
 import '../utils/mvt_cells.dart';
+import '../utils/store_links.dart';
 import '../services/api_service.dart';
 import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
@@ -347,6 +349,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _connectionError;
   bool _isAuthError = false; // Track if connection failed due to auth
   bool _isNetworkError = false; // Track if connection failed due to network
+  AppUpdateRequirement? _appUpdateRequirement; // Set when /auth said outofdate
+
+  /// How the app was installed (`PackageInfo.installerStore`), read only when
+  /// the server refuses this build. Replaceable in tests, where the real
+  /// plugin call hangs.
+  @visibleForTesting
+  Future<String?> Function() installerStoreReader =
+      () async => (await PackageInfo.fromPlatform()).installerStore;
 
   // Bluetooth adapter state (on/off)
   BluetoothAdapterState _bluetoothAdapterState = BluetoothAdapterState.unknown;
@@ -1122,6 +1132,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get connectionError => _connectionError;
   bool get isAuthError => _isAuthError;
   bool get isNetworkError => _isNetworkError;
+
+  /// Non-null while the current connection error is the server refusing
+  /// this build as out of date. Tied to the error text so every path that
+  /// clears or replaces the error also drops the panel.
+  AppUpdateRequirement? get appUpdateRequirement {
+    final requirement = _appUpdateRequirement;
+    if (requirement == null || _connectionError != requirement.errorMessage) {
+      return null;
+    }
+    return requirement;
+  }
   BluetoothAdapterState get bluetoothAdapterState => _bluetoothAdapterState;
   bool get isBluetoothOn => _bluetoothAdapterState == BluetoothAdapterState.on;
   bool get isBluetoothOff =>
@@ -4338,6 +4359,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
         _isNetworkError = reason == 'network_error';
         _connectionError = _getErrorMessage(reason, serverMessage);
+        if (reason == 'outofdate') {
+          _appUpdateRequirement = await _buildAppUpdateRequirement(
+              _connectionError!, serverMessage);
+        }
       } else {
         _connectionError = 'Authentication failed';
       }
@@ -4355,6 +4380,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isConnecting = false;
     _connectionStep = ConnectionStep.error;
     notifyListeners();
+  }
+
+  /// Works out the update panel's version line and store link after the
+  /// server refused this build. The installer read never throws: a failure
+  /// falls back to the store listing for the platform.
+  Future<AppUpdateRequirement> _buildAppUpdateRequirement(
+      String errorMessage, String? serverMessage) async {
+    String? installerStore;
+    try {
+      installerStore =
+          await installerStoreReader().timeout(const Duration(seconds: 2));
+    } catch (e) {
+      debugWarn('[APP] Could not read installer store: $e');
+    }
+    final link = StoreLinks.resolve(defaultTargetPlatform, installerStore);
+    final required = parseRequiredAppVersion(serverMessage);
+    debugLog('[APP] App out of date: have $_appVersion, server needs '
+        '${required ?? 'unknown'}, installer ${installerStore ?? 'unknown'}, '
+        'update via ${link.uri}');
+    return AppUpdateRequirement(
+      errorMessage: errorMessage,
+      versionLine: appUpdateVersionLine(_appVersion, required),
+      link: link,
+    );
   }
 
   /// Set up disconnect listener for non-BLE transports (TCP, USB Serial).
@@ -9554,7 +9603,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'bad_session':
         return 'Invalid session. Please reconnect.';
       case 'outofdate':
-        return 'App version outdated. Please update to the latest version.';
+        return 'This version of the app is out of date, update the MeshMapper '
+            'app on your phone to keep wardriving here.';
       case 'session_invalid':
         return 'Session is invalid. Please reconnect.';
       case 'session_revoked':

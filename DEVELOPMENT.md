@@ -986,6 +986,14 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
 - **Retry Logic**: Exponential backoff on failures. A 429 storm-brake answer holds the whole queue for the server's `Retry-After` without spending a retry (see Session Heartbeat)
 - **Closed keep-alive sockets are replayed once**: every request `ApiService` makes goes through `_send`, which sends it again when the first attempt comes back `ClientException: Connection closed before full header was received`. The server closes an idle connection after 5 seconds while Dart's HttpClient keeps it pooled for 15, so a request made in that gap goes out on a socket that is already gone; a backgrounded app widens the gap further, because a frozen event loop cannot notice the close. Such a request never reaches the server (no access-log entry there), so replaying it changes nothing about what the server did. One replay only, and the per-attempt timeout stays at the call site so the replay gets a full allowance. Without it a single dead socket failed the whole connect on `/auth` and the user had to press Connect again.
 
+### Update Required Panel
+
+The app never checks its own version: it sends `APP-<x.y.z>` (store) or `APP-<epoch>` (TestFlight) and the server refuses an old build at `/auth` with reason `outofdate`, comparing against the zone's `min_version` or `min_dev_version`. When that happens the Connection screen shows `UpdateRequiredPanel` (`lib/widgets/update_required_panel.dart`) instead of the error card: "Update MeshMapper to continue", one line of copy, the installed and required versions in small grey ("Your build: N" for TestFlight builds, which the server compares by build number; the required version is parsed from the server's "Required: v1.4.0" message and left off when it names none), an update button and Back.
+
+- **The button follows how the app was installed** (`StoreLinks.resolve` in `lib/utils/store_links.dart`, one unit test per row): iOS `com.apple.testflight` opens TestFlight (`itms-beta://`), any other iOS value the App Store listing; Android `com.android.vending` or `com.google.android.feedback` opens the Play listing (which also serves closed-test members), anything else (a sideloaded APK) opens the latest MeshMapper_Project GitHub release.
+- **`installerStore`** comes from `package_info_plus`, read only when the server refuses the build (`AppStateProvider.installerStoreReader`, replaceable in tests because the real plugin call hangs under flutter_test), with a 2 s timeout; any failure falls back to the store listing.
+- **`appUpdateRequirement`** is tied to the connection error text, so every path that clears or replaces the error drops the panel too. Logged under `[APP]` and `[UI]`.
+
 ### Offline Mode
 
 `OfflineSessionService` enables wardriving when the API is unavailable (no network, maintenance mode, etc.). Data accumulates locally and can be uploaded later.

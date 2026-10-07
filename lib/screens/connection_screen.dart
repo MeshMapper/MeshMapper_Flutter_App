@@ -13,6 +13,7 @@ import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/store_links.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/transport/android_serial_service.dart';
@@ -20,6 +21,7 @@ import '../services/transport/tcp_service.dart';
 import '../services/transport/web_serial_factory.dart';
 import '../widgets/offline_mode_toggle.dart';
 import '../widgets/regional_config_card.dart';
+import '../widgets/update_required_panel.dart';
 import 'onboarding/onboarding_prompt_gate.dart';
 
 /// BLE device selection and connection screen
@@ -208,6 +210,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     // card would title it "Connection Failed".
     if (appState.isAirborne) {
       return _buildDeviceList(context, appState);
+    }
+
+    // The server refused this build: an update panel, not an error card
+    final updateRequirement = appState.appUpdateRequirement;
+    if (updateRequirement != null) {
+      return UpdateRequiredPanel(
+        requirement: updateRequirement,
+        onUpdate: _openStoreLink,
+        onBack: () => appState.startScan(),
+      );
     }
 
     // Show error
@@ -1434,6 +1446,18 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         ],
       ),
     );
+  }
+
+  /// Opens the store (or release page) the update panel picked.
+  Future<void> _openStoreLink(StoreLink link) async {
+    debugLog('[UI] Opening update link ${link.uri}');
+    try {
+      final opened =
+          await launchUrl(link.uri, mode: LaunchMode.externalApplication);
+      if (!opened) debugWarn('[UI] Could not open update link ${link.uri}');
+    } catch (e) {
+      debugWarn('[UI] Opening update link failed: $e');
+    }
   }
 
   Widget _buildError(BuildContext context, AppStateProvider appState) {
