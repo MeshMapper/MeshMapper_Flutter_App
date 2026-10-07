@@ -221,6 +221,24 @@ bool scopeDiscoveryFirmwareTooOld(
 bool shouldLogScopeContactsFull({required bool alreadyLoggedThisConnection}) =>
     !alreadyLoggedThisConnection;
 
+/// How long a countdown may sit past its deadline before the stuck-timer
+/// watchdog names it. Its 500 ms tick clears a finished window a moment after
+/// the deadline, so a check that lands in that gap is not a lockout.
+const Duration stuckCountdownGrace = Duration(seconds: 2);
+
+/// Whether a countdown is still running at least [stuckCountdownGrace] past
+/// its deadline, the stuck-lockout fingerprint. Running with no deadline at
+/// all counts as stuck, as it always did.
+@visibleForTesting
+bool countdownLooksStuck(
+    {required bool isRunning,
+    required DateTime? endTime,
+    required DateTime now}) {
+  if (!isRunning) return false;
+  if (endTime == null) return true;
+  return now.difference(endTime) >= stuckCountdownGrace;
+}
+
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Maximum sizes for in-memory lists to prevent unbounded growth during long sessions
@@ -1026,8 +1044,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// This logging is here to capture the real trigger on-device; the actual fix
   /// is deferred until a debug log confirms it. See countdown_timer_service.dart.
   void _logStuckTimers(String reason) {
+    final now = DateTime.now();
     void check(String name, CountdownTimerService t) {
-      if (t.isRunning && t.remainingMs == 0) {
+      if (countdownLooksStuck(
+          isRunning: t.isRunning, endTime: t.endTime, now: now)) {
         debugWarn(
             '[TIMER] $name isRunning past its deadline (stuck, remaining=0) — '
             'locks ping controls until restart [$reason]');
@@ -3734,9 +3754,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
+      // A coarse fix is never sent: the server would only answer 403
+      // gps_inaccurate, once per fix. Wait for the stream (or the 10 s
+      // retry's fresh read) to bring a better one. A retry already armed for
+      // another reason (network, server) owns the next attempt, so a fix does
+      // not stack a second request on top of it.
       if (_inZone == null && !_preferences.offlineMode) {
-        debugLog('[GEOFENCE] First GPS lock, triggering zone check');
-        await checkZoneStatus();
+        if (!GpsService.isAccurateForZoneCheck(position)) {
+          _noteZoneCheckWaitingForGps(position);
+        } else if (_isCheckingZone ||
+            (_zoneCheckCountdownTimer != null &&
+                _zoneCheckErrorReason != 'gps_inaccurate')) {
+          // In flight or a retry is already scheduled; let that one answer.
+        } else {
+          debugLog('[GEOFENCE] First GPS lock, triggering zone check');
+          await checkZoneStatus();
+        }
         _firstGpsLockLogged = true;
       } else if (_inZone == null &&
           _preferences.offlineMode &&
@@ -3750,9 +3783,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Skip zone checks when offline mode is enabled
       // Not while airborne: at cruise every fix is 100 m from the last, and
       // this branch would ask the server about zones once a second for hours.
+      // Not on a coarse fix either: a jumpy weak fix often lands 100 m away,
+      // and its 403 used to replace a good result moments old.
       if (!isConnected &&
           !_preferences.offlineMode &&
           !_gpsService.isAirborne &&
+          GpsService.isAccurateForZoneCheck(position) &&
           _shouldRecheckZone(position)) {
         // Throttle log to once per 30s to avoid spam while driving
         final now = DateTime.now();
@@ -4088,6 +4124,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // last one left in preferences (#426).
       _applyConnectingDevicePower(deviceName);
 
+      // The server refuses a fix coarser than 50 m, so send the best one
+      // there is: the current fix, a good one from the last 60 s, or a short
+      // bounded wait for one. With none, the current fix goes as before.
+      final authFix = await _pickAuthFix();
+
       // Stage 1: Try existing public_key authentication
       debugLog(
           '[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
@@ -4116,9 +4157,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _meshCoreConnection!.deviceInfo?.manufacturer ??
             'Unknown',
         radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-        lat: _currentPosition?.latitude,
-        lon: _currentPosition?.longitude,
-        accuracyMeters: _currentPosition?.accuracy,
+        lat: authFix?.latitude,
+        lon: authFix?.longitude,
+        accuracyMeters: authFix?.accuracy,
       );
 
       if (result != null && result['maintenance'] == true) {
@@ -4199,9 +4240,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _meshCoreConnection!.deviceInfo?.manufacturer ??
             'Unknown',
         radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-        lat: _currentPosition?.latitude,
-        lon: _currentPosition?.longitude,
-        accuracyMeters: _currentPosition?.accuracy,
+        lat: authFix?.latitude,
+        lon: authFix?.longitude,
+        accuracyMeters: authFix?.accuracy,
       );
 
       if (registerResult == null) {
@@ -9717,6 +9758,39 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _maintenanceCheckTimer = null;
   }
 
+  /// How long the connect /auth waits for a fix the server will accept.
+  static const Duration _authFixWait = Duration(seconds: 4);
+
+  /// The fix the connect /auth sends. The current one when it is accurate
+  /// enough (50 m), else the newest accurate fix from the last 60 s, else
+  /// the first accurate one within [_authFixWait]. Falls back to the current
+  /// fix, so the server answers exactly as it did before this check existed.
+  Future<Position?> _pickAuthFix() async {
+    final current = _currentPosition;
+    if (current != null && GpsService.isAccurateForZoneCheck(current)) {
+      return current;
+    }
+    final currentText = current == null
+        ? 'no fix'
+        : '${current.accuracy.toStringAsFixed(0)}m fix';
+    final recent = _gpsService.bestRecentZoneCheckFix();
+    if (recent != null) {
+      debugLog('[GPS] [AUTH] Current $currentText too coarse, using a recent '
+          '${recent.accuracy.toStringAsFixed(1)}m fix');
+      return recent;
+    }
+    debugLog('[GPS] [AUTH] Current $currentText too coarse, waiting up to '
+        '${_authFixWait.inSeconds}s for a more accurate one');
+    final waited = await _gpsService.waitForZoneCheckFix(_authFixWait);
+    if (waited != null) {
+      debugLog('[GPS] [AUTH] Got a ${waited.accuracy.toStringAsFixed(1)}m fix');
+      return waited;
+    }
+    debugWarn('[GPS] [AUTH] No accurate fix within '
+        '${_authFixWait.inSeconds}s, sending the current $currentText');
+    return current;
+  }
+
   // ============================================
   // GPS Validation
   // ============================================
@@ -9832,6 +9906,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Don't notifyListeners here — caller will do it or checkZoneStatus will
   }
 
+  /// A zone check was held back because no fix is accurate enough yet.
+  /// Before the first zone result this shows the existing Weak GPS Signal
+  /// state and arms its 10 s retry (whose fresh read is what finds a better
+  /// fix on a phone standing still). Once a zone result is known it stays,
+  /// and nothing is surfaced. Re-arming is skipped while that wait is
+  /// already counting down, so a stream of coarse fixes cannot reset it.
+  void _noteZoneCheckWaitingForGps(Position position) {
+    if (_inZone != null) return;
+    if (_zoneCheckCountdownTimer != null &&
+        _zoneCheckErrorReason == 'gps_inaccurate') {
+      return;
+    }
+    final accuracy = position.accuracy.toStringAsFixed(0);
+    final max = GpsService.maxAccuracyMetersForZoneCheck.toStringAsFixed(0);
+    debugLog('[GPS] Waiting for a more accurate fix before the zone check '
+        '(${accuracy}m, max ${max}m)');
+    _scheduleZoneCheckRetry(
+      seconds: 10,
+      error: 'GPS accuracy is ${accuracy}m (max ${max}m). '
+          'Waiting for a more accurate fix.',
+      reason: 'gps_inaccurate',
+    );
+  }
+
   /// Check zone status via API
   /// Should be called on app launch and every 100m of GPS movement while disconnected
   Future<void> checkZoneStatus() async {
@@ -9865,14 +9963,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // or overwritten by _scheduleZoneCheckRetry on failure.
 
     try {
+      // Never send a fix the server will refuse for accuracy. Use the current
+      // fix when it is good enough, else the newest good one from the last
+      // 60 s, else one fresh hardware read (the stream is quiet while the
+      // phone stands still, which is how a retry finds a better fix).
+      final current = _currentPosition!;
+      var position = GpsService.isAccurateForZoneCheck(current)
+          ? current
+          : _gpsService.bestRecentZoneCheckFix();
+      if (position == null) {
+        final fresh = await _gpsService.getFreshPosition();
+        if (fresh != null && GpsService.isAccurateForZoneCheck(fresh)) {
+          position = fresh;
+        }
+      }
+      if (position == null) {
+        debugLog('[GPS] Zone check held: fix accuracy '
+            '${current.accuracy.toStringAsFixed(0)}m (max '
+            '${GpsService.maxAccuracyMetersForZoneCheck.toStringAsFixed(0)}m), '
+            'waiting for a more accurate fix');
+        _noteZoneCheckWaitingForGps(current);
+        return;
+      }
+      if (!identical(position, current)) {
+        debugLog('[GPS] Zone check using a recent accurate fix '
+            '(${position.accuracy.toStringAsFixed(1)}m) instead of the current '
+            '${current.accuracy.toStringAsFixed(0)}m one');
+      }
+
       debugLog(
-          '[GEOFENCE] Making API call to check zone at ${_currentPosition!.latitude.toStringAsFixed(5)}, '
-          '${_currentPosition!.longitude.toStringAsFixed(5)} (accuracy: ${_currentPosition!.accuracy.toStringAsFixed(1)}m)');
+          '[GEOFENCE] Making API call to check zone at ${position.latitude.toStringAsFixed(5)}, '
+          '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
 
       final result = await _apiService.checkZoneStatus(
-        lat: _currentPosition!.latitude,
-        lon: _currentPosition!.longitude,
-        accuracyMeters: _currentPosition!.accuracy,
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyMeters: position.accuracy,
         appVersion: _appVersion,
       );
 
@@ -9882,7 +10008,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (result == null) {
         // Update position even on failure to prevent zone check flooding
         // (without this, every GPS update re-triggers a zone check while driving)
-        _lastZoneCheckPosition = _currentPosition;
+        _lastZoneCheckPosition = position;
         debugError('[GEOFENCE] Zone status check failed: no response from API');
         _scheduleZoneCheckRetry(
           seconds: 5,
@@ -9913,7 +10039,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Clear maintenance if normal response
       _clearMaintenanceMode();
 
-      _lastZoneCheckPosition = _currentPosition;
+      _lastZoneCheckPosition = position;
 
       final success = result['success'] == true;
       if (!success) {
@@ -9923,7 +10049,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugError(
             '[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
 
-        if (reason == 'gps_inaccurate') {
+        if (reason == 'gps_inaccurate' && _inZone != null) {
+          // A zone result is already known and stands. A refused weak fix
+          // says nothing about the zone, so it must not replace that result
+          // with "GPS Unavailable"; the next accurate fix rechecks.
+          debugWarn('[GEOFENCE] gps_inaccurate on a recheck, keeping the '
+              'last zone result (inZone=$_inZone)');
+        } else if (reason == 'gps_inaccurate') {
           logError('Weak GPS Signal\n$message', autoSwitch: false);
           // Schedule a retry so we don't depend solely on the GPS stream firing
           // again — on first launch the stream may stall on a low-accuracy fix

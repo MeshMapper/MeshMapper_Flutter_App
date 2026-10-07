@@ -436,6 +436,7 @@ class GpsService {
         }
         _lastPosition = position;
         trackAirborne(position);
+        recordRecentFix(position);
         _positionController.add(position);
 
         // GPS signal acquired
@@ -458,6 +459,7 @@ class GpsService {
           '[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
+      recordRecentFix(position);
       // Note: Don't emit via _positionController here — the stream listener
       // at line 198 already fires with the initial position, so emitting here
       // would cause duplicate position events (~0.15ms apart).
@@ -581,6 +583,71 @@ class GpsService {
     return null; // Valid
   }
 
+  /// Fixes seen recently, oldest first, capped at [_recentFixCap]. Feeds
+  /// [bestRecentZoneCheckFix], so a coarse fix that lands just after a good
+  /// one cannot stand in for it at a zone check or the connect /auth.
+  final List<Position> _recentFixes = [];
+  static const int _recentFixCap = 30;
+
+  /// Remember a real fix for [bestRecentZoneCheckFix]. Called wherever a fix
+  /// becomes [lastPosition] (stream, initial read, fresh read, simulator).
+  void recordRecentFix(Position position) {
+    _recentFixes.add(position);
+    if (_recentFixes.length > _recentFixCap) _recentFixes.removeAt(0);
+  }
+
+  /// Whether [position] is accurate enough for the server's zone check and
+  /// /auth (50 m). Age is NOT part of this: the server stamps those requests
+  /// with the send time, and a stationary phone's stream goes quiet, so an
+  /// old but accurate fix is still the right one to send.
+  static bool isAccurateForZoneCheck(Position position) =>
+      position.accuracy <= maxAccuracyMetersForZoneCheck;
+
+  /// Pure pick behind [bestRecentZoneCheckFix]: the NEWEST fix in [fixes]
+  /// that is accurate enough for a zone check and no older than
+  /// [maxGpsAgeForManualPing] at [now], or null when there is none. Newest
+  /// rather than most accurate, because the phone may have moved since.
+  static Position? pickZoneCheckFix(Iterable<Position> fixes, DateTime now) {
+    Position? best;
+    for (final fix in fixes) {
+      if (!isAccurateForZoneCheck(fix)) continue;
+      if (now.difference(fix.timestamp) > maxGpsAgeForManualPing) continue;
+      if (best == null || !fix.timestamp.isBefore(best.timestamp)) best = fix;
+    }
+    return best;
+  }
+
+  /// The newest recent fix good enough for a zone check or /auth, or null.
+  Position? bestRecentZoneCheckFix({DateTime? now}) =>
+      pickZoneCheckFix(_recentFixes, now ?? DateTime.now());
+
+  /// Wait at most [timeout] for a fix good enough for a zone check or /auth.
+  /// Returns a recent one at once when there is one; otherwise takes the
+  /// first accurate fix from the stream or from one fresh hardware read
+  /// (the stream is quiet while the phone stands still). Null on timeout.
+  Future<Position?> waitForZoneCheckFix(Duration timeout) async {
+    final recent = bestRecentZoneCheckFix();
+    if (recent != null) return recent;
+
+    final completer = Completer<Position?>();
+    void offer(Position? fix) {
+      if (completer.isCompleted || fix == null) return;
+      if (isAccurateForZoneCheck(fix)) completer.complete(fix);
+    }
+
+    final sub = positionStream.listen(offer);
+    final timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete(null);
+    });
+    unawaited(getFreshPosition(timeout: timeout).then(offer));
+    try {
+      return await completer.future;
+    } finally {
+      timer.cancel();
+      await sub.cancel();
+    }
+  }
+
   /// Request a fresh GPS position from the hardware for auto-ping accuracy.
   /// On mobile, this forces a warm-start GPS read (typically < 1 second when
   /// GPS is already streaming). Falls back to lastPosition on timeout/error.
@@ -606,6 +673,7 @@ class GpsService {
       }
       _lastPosition = position;
       trackAirborne(position);
+      recordRecentFix(position);
       return position;
     } catch (e) {
       debugLog('[GPS] Fresh position request failed, using cached: $e');
@@ -687,6 +755,7 @@ class GpsService {
       }
       _lastPosition = position;
       trackAirborne(position);
+      recordRecentFix(position);
       _positionController.add(position);
 
       // Simulator position acquired
@@ -701,6 +770,7 @@ class GpsService {
     if (seed != null && isValidLatLng(seed.latitude, seed.longitude)) {
       _lastPosition = seed;
       trackAirborne(seed);
+      recordRecentFix(seed);
       _positionController.add(seed);
     }
 
