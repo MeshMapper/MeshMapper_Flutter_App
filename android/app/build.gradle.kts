@@ -78,4 +78,9 @@ dependencies {
     // OfflineManager for the tile cache MethodChannel handlers. Version must
     // match maplibre_gl-0.27.1's OpenGL transitive dependency.
     implementation("org.maplibre.gl:android-sdk-opengl:13.5.0")
+
+    // Fused location client, already pulled transitively by geolocator_android
+    // 4.6.2, but declared so MeshMapperAltitudeService.kt compiles against it.
+    // Version must match geolocator_android's transitive dependency.
+    implementation("com.google.android.gms:play-services-location:21.2.0")
 }

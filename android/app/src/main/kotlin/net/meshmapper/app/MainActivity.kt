@@ -11,6 +11,7 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private var usbService: MeshMapperUsbService? = null
     private var networkService: MeshMapperNetworkService? = null
+    private var altitudeService: MeshMapperAltitudeService? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -20,6 +21,8 @@ class MainActivity : FlutterActivity() {
 
         networkService = MeshMapperNetworkService(applicationContext)
         networkService!!.configureFlutterEngine(flutterEngine)
+        altitudeService = MeshMapperAltitudeService(applicationContext)
+        altitudeService!!.configureFlutterEngine(flutterEngine)
 
         // MapLibre tile cache management. Mirrors AppDelegate.swift's iOS
         // implementation. Called from Dart's TileCacheService by the Offline
