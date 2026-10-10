@@ -213,4 +213,49 @@ void main() {
     expect(result.uploadedCount, 2);
     expect(result.removedScopesCount, 0);
   });
+
+  test('a stored row with a bare altitude loses it before upload and forward, '
+      'a labelled row keeps the trio', () async {
+    final uploaded = <Map<String, dynamic>>[];
+    final forwarded = <Map<String, dynamic>>[];
+    final result = await runOfflineChunkedUpload(
+      [
+        {'type': 'TX', 'lat': 45.0, 'lon': -75.0, 'altitude': 84},
+        {
+          'type': 'RX',
+          'lat': 45.0,
+          'lon': -75.0,
+          'altitude': 90,
+          'altitude_ref': 'msl',
+          'altitude_acc': 4,
+        },
+        {
+          'type': 'TX',
+          'lat': 45.0,
+          'lon': -75.0,
+          'altitude': 91,
+          'altitude_ref': 'bogus',
+        },
+      ],
+      scopeDiscoveryOffered: true,
+      batchSize: 50,
+      persistRows: (_) async {},
+      uploadChunk: (chunk, _, __) async {
+        uploaded.addAll(chunk);
+        return true;
+      },
+      forwardChunk: (chunk, _) => forwarded.addAll(chunk),
+    );
+    expect(result.uploadedCount, 3);
+    for (final rows in [uploaded, forwarded]) {
+      expect(rows[0].containsKey('altitude'), isFalse);
+      expect(rows[0].containsKey('altitude_ref'), isFalse);
+      expect(rows[1]['altitude'], 90);
+      expect(rows[1]['altitude_ref'], 'msl');
+      expect(rows[1]['altitude_acc'], 4);
+      expect(rows[2].containsKey('altitude'), isFalse,
+          reason: 'an unknown reference word is as good as none');
+      expect(rows[2].containsKey('altitude_ref'), isFalse);
+    }
+  });
 }

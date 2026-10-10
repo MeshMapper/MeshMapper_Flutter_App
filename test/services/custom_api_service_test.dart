@@ -126,4 +126,42 @@ void main() {
     await t.sent.timeout(const Duration(seconds: 5));
     expect(original.single['auto_mode'], 'active');
   });
+
+  test('a bare altitude is stripped from a forwarded item, nothing else is',
+      () async {
+    final t = build();
+    t.svc.forwardPings([
+      {
+        'type': 'TX',
+        'lat': 45.0,
+        'lon': -75.0,
+        'altitude': 84,
+        'altitude_acc': 5,
+        'noisefloor': -103,
+      },
+    ]);
+    final sent = await t.sent.timeout(const Duration(seconds: 5));
+    expect(sent.single.containsKey('altitude'), isFalse);
+    expect(sent.single.containsKey('altitude_acc'), isFalse);
+    expect(sent.single['noisefloor'], -103);
+  });
+
+  test('the altitude trio is kept on every forwarded item', () async {
+    final t = build();
+    t.svc.forwardPings([
+      {
+        'type': 'TX',
+        'lat': 45.0,
+        'lon': -75.0,
+        'altitude': 84,
+        'altitude_ref': 'msl',
+        'altitude_acc': 6,
+        'auto_mode': 'active',
+      },
+    ]);
+    final sent = await t.sent.timeout(const Duration(seconds: 5));
+    expect(sent.single['altitude'], 84);
+    expect(sent.single['altitude_ref'], 'msl');
+    expect(sent.single['altitude_acc'], 6);
+  });
 }

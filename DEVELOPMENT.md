@@ -224,7 +224,7 @@ The app uses a layered service architecture with clear separation of concerns:
 - `CryptoService`: SHA-256 channel key derivation, AES-ECB message decryption
 
 **Application Services** (`lib/services/`):
-- `GpsService`: GPS tracking with server-side zone validation
+- `GpsService`: GPS tracking with server-side zone validation; resolves each fix's altitude reference through `FixAltitudeResolver`
 - `PingService`: TX/RX/Discovery ping orchestration, coordinates with TxTracker/DiscTracker/RxLogger
 - `ApiQueueService`: Hive-based persistent upload queue with batch POST and retry logic
 - `ApiService`: HTTP client for MeshMapper API endpoints
@@ -973,7 +973,7 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
 
 - **Storage**: Hive-based persistent queue survives app restarts
 - **Batch Size**: Max 50 messages, auto-flush at 10 items or 30 seconds
-- **Payload Format**: `[{type:"TX"|"RX"|"DISC"|"TRACE"|"SCOPES", ...}]`. TX/RX include `heard_repeats`; DISC includes `repeater_id`, `node_type`, `local_snr`, `local_rssi`, `remote_snr`, `public_key`; TRACE includes `repeater_id`, `local_snr`, `local_rssi`, `remote_snr`; SCOPES carries only `public_key` and `scopes` (see Scope Discovery), none of `external_antenna`, `noisefloor`, `altitude` or `power`. Every other type also carries `altitude` (whole meters, omitted when the phone did not know it; iOS reports height above mean sea level; Android usually reports height above the WGS84 ellipsoid, but Android 14+ substitutes mean sea level when the fix carries it, so one device can report either. The two references differ by the local geoid separation, up to ~100 m)
+- **Payload Format**: `[{type:"TX"|"RX"|"DISC"|"TRACE"|"SCOPES", ...}]`. TX/RX include `heard_repeats`; DISC includes `repeater_id`, `node_type`, `local_snr`, `local_rssi`, `remote_snr`, `public_key`; TRACE includes `repeater_id`, `local_snr`, `local_rssi`, `remote_snr`; SCOPES carries only `public_key` and `scopes` (see Scope Discovery), none of `external_antenna`, `noisefloor`, `altitude` or `power`. Every other type also carries `altitude` (whole meters) together with `altitude_ref` (`msl` above mean sea level, or `ellipsoid` above the WGS84 ellipsoid) and `altitude_acc` (vertical accuracy in whole meters, about one sigma, omitted when unknown). The altitude and its reference travel together or not at all, and the accuracy only beside them: an altitude whose reference the app cannot prove is never uploaded, and an offline session saved by an older build has its bare altitudes stripped at upload (`withoutUnlabelledAltitude`). iOS is always `msl`. Android below 14 is always `ellipsoid` (the app never enables the plugin's NMEA sea level option). On Android 14 and later the plugin swaps in a sea level value whenever the fix object carries one, so `GpsService` asks a native handler (`MeshMapperAltitudeService.kt`, channel `meshmapper/altitude`) to describe the provider's last fix and `resolveFixAltitude` (`lib/services/fix_altitude.dart`) proves identity by exact timestamp, coordinates and altitude value before labelling; nearness is never accepted. The GPS simulator and mocked fixes resolve unknown. Resolution runs in the background per fix (`FixAltitudeResolver`, keyed by exact fix plus a source generation, 128 entries) so no send path waits; it never notifies or bumps `mapRevision`. Logged under `[GPS]`, one line on first resolution, a once-a-minute warning when an Android fix cannot be proved, and one summary line per 50 Android resolutions (`AltitudeResolutionStats`). Contract: `MeshMapper_Server/docs/APP_API.md`)
 - **Radio preset stamp**: every item (TX, RX, DISC, TRACE and DEFER) carries `radio_freq`, the
   radio's configuration tag `freqMHz,bwKHz,SF,CR` as reported at connect (`ApiQueueItem` Hive
   field 20, read at enqueue time through `ApiQueueService.radioConfigGetter`, wired to the live
@@ -2606,6 +2606,9 @@ All API endpoints may return maintenance mode:
 - `lib/services/status/ping_control_labels.dart` - The in-app button labels and countdowns, read from the model's lanes
 - `lib/services/status/android_notification.dart` - Pure title/body for the Android foreground notification
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
+- `lib/services/fix_altitude.dart` - The rule that labels a fix's altitude with its reference (msl or ellipsoid) and accuracy, or unknown
+- `lib/services/fix_altitude_resolver.dart` - Per-fix store of resolved altitude references, background Android read, source generation
+- `lib/services/android_altitude_channel.dart` - Dart side of the `meshmapper/altitude` channel that describes the last Android fix
 - `lib/services/recent_coverage_service.dart` - Smart Pinging lookup: recently covered cells from filtered z13 tiles
 - `lib/services/airborne_release.dart` - Pure builder for the airborne session-end text and release telemetry
 - `lib/services/disconnect_alert_decision.dart` - Pure staleness rule for the disconnect alert, so a beep delayed by a suspended process is never played

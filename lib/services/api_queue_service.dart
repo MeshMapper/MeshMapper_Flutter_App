@@ -125,6 +125,29 @@ String altitudeLabelSummary(List<Map<String, dynamic>> entries) {
   return 'altitude_ref $labelled/$total ($parts)';
 }
 
+/// Removes `altitude`, `altitude_ref` and `altitude_acc` from every row whose
+/// reference is not one of [kAltitudeReferences]. An altitude never leaves
+/// the phone without a proved reference, and a row saved by an older build
+/// (an offline session from before the reference existed) was serialized
+/// before that rule, so it is cleaned here, at the doors it leaves through.
+/// No reference is ever guessed. Row order and count are unchanged.
+List<Map<String, dynamic>> withoutUnlabelledAltitude(
+    List<Map<String, dynamic>> rows) {
+  return rows.map((r) {
+    final ref = r['altitude_ref'];
+    if (ref is String && kAltitudeReferences.contains(ref)) return r;
+    if (!r.containsKey('altitude') &&
+        !r.containsKey('altitude_ref') &&
+        !r.containsKey('altitude_acc')) {
+      return r;
+    }
+    return Map<String, dynamic>.from(r)
+      ..remove('altitude')
+      ..remove('altitude_ref')
+      ..remove('altitude_acc');
+  }).toList();
+}
+
 /// Removes every SCOPES row from a list of API JSON rows, preserving the
 /// order of everything else. Used before an offline upload when the auth
 /// answer did not offer scope discovery: the server would refuse every one
@@ -182,6 +205,10 @@ class OfflineChunkedUploadResult {
 /// [forwardChunk] is called once for each chunk that uploaded, right after
 /// it did, with exactly that chunk's rows. A chunk that failed and every
 /// chunk after it are never forwarded, and no chunk is forwarded twice.
+///
+/// Every row also loses a bare altitude first (`withoutUnlabelledAltitude`),
+/// so a session saved by an older build never uploads or forwards an
+/// altitude without its reference.
 Future<OfflineChunkedUploadResult> runOfflineChunkedUpload(
   List<Map<String, dynamic>> rows, {
   required bool scopeDiscoveryOffered,
@@ -196,7 +223,9 @@ Future<OfflineChunkedUploadResult> runOfflineChunkedUpload(
   required void Function(List<Map<String, dynamic>> chunk, int chunkNumber)
       forwardChunk,
 }) async {
-  final stripped = scopeDiscoveryOffered ? rows : withoutScopesItems(rows);
+  final cleaned = withoutUnlabelledAltitude(rows);
+  final stripped =
+      scopeDiscoveryOffered ? cleaned : withoutScopesItems(cleaned);
   final removedScopesCount = rows.length - stripped.length;
   final ordered = orderDiscBeforeScopes(stripped);
 

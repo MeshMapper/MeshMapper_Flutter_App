@@ -8833,9 +8833,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     try {
-      final pings = (sessionData['pings'] as List<dynamic>)
-          .map((p) => Map<String, dynamic>.from(p as Map))
-          .toList();
+      final pings = withoutUnlabelledAltitude(
+          (sessionData['pings'] as List<dynamic>)
+              .map((p) => Map<String, dynamic>.from(p as Map))
+              .toList());
 
       if (pings.isEmpty) {
         debugLog('[APP] Session has no pings: $filename');
