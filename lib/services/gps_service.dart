@@ -9,11 +9,46 @@ import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
 import 'gps_simulator_service.dart';
+import 'android_altitude_channel.dart';
+import 'fix_altitude.dart';
+import 'fix_altitude_resolver.dart';
 
 /// GPS service for location tracking
 /// Ported from wardrive.js geolocation logic
 /// Note: Zone validation is now handled server-side by the API
 class GpsService {
+  GpsService({FixAltitudeResolver? altitudeResolver})
+      : _altitude = altitudeResolver ?? _defaultAltitudeResolver();
+
+  /// Resolves and remembers each fix's altitude reference. See
+  /// `fix_altitude.dart` for the rule and `fix_altitude_resolver.dart` for
+  /// the store. Reset whenever the fix source restarts.
+  final FixAltitudeResolver _altitude;
+
+  static FixAltitudeResolver _defaultAltitudeResolver() {
+    final AltitudePlatform platform;
+    if (kIsWeb) {
+      platform = AltitudePlatform.web;
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      platform = AltitudePlatform.android;
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      platform = AltitudePlatform.ios;
+    } else {
+      platform = AltitudePlatform.other;
+    }
+    return FixAltitudeResolver(
+      platform: platform,
+      readNative: platform == AltitudePlatform.android
+          ? AndroidAltitudeChannel().describeLastFix
+          : null,
+    );
+  }
+
+  /// The altitude [position] may be uploaded with: meters, reference and
+  /// accuracy, or unknown when the reference is not (yet) proved. Resolved
+  /// in the background when the fix was accepted; nothing waits here.
+  FixAltitude fixAltitudeOf(Position position) => _altitude.lookup(position);
+
   /// Minimum distance (meters) from last ping before allowing new ping
   static const double minDistanceMeters = 25.0;
 
@@ -151,12 +186,8 @@ class GpsService {
   /// platforms. Android also omits the accuracy on fixes that DO carry an
   /// altitude, so the accuracy alone cannot decide; only the 0/0 pair means
   /// unknown.
-  static double? altitudeOrNull(Position position) {
-    if (position.altitude == 0.0 && position.altitudeAccuracy == 0.0) {
-      return null;
-    }
-    return position.altitude;
-  }
+  static double? altitudeOrNull(Position position) =>
+      reportedAltitudeOrNull(position);
 
   /// The ground speed a fix actually carries in m/s, or null when the
   /// platform had none. Same shape as [altitudeOrNull]: geolocator reports a
@@ -356,6 +387,7 @@ class GpsService {
   Future<void> startWatching() async {
     debugLog('[GPS] startWatching() called, current status: $_status');
     resetAirborne();
+    _altitude.reset();
 
     // Ensure only one active position stream subscription exists.
     // startWatching() can be called multiple times (e.g. after permission flow).
@@ -417,6 +449,10 @@ class GpsService {
     // The distanceFilter handles update frequency (10m for RX batch checks at 25m)
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
+        // No `AndroidSettings(useMSLAltitude: true)`: the altitude reference
+        // rule in fix_altitude.dart relies on the plugin never substituting
+        // an NMEA sea level value. Enabling it would invalidate the pre
+        // Android 14 ellipsoid label.
         accuracy: LocationAccuracy.high,
         distanceFilter:
             10, // Trigger every 10m movement (check RX batches at 25m)
@@ -435,6 +471,7 @@ class GpsService {
           return;
         }
         _lastPosition = position;
+        _altitude.track(position);
         trackAirborne(position);
         recordRecentFix(position);
         _positionController.add(position);
@@ -459,6 +496,7 @@ class GpsService {
           '[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
+      _altitude.track(position);
       recordRecentFix(position);
       // Note: Don't emit via _positionController here — the stream listener
       // at line 198 already fires with the initial position, so emitting here
@@ -672,6 +710,7 @@ class GpsService {
         return _lastPosition;
       }
       _lastPosition = position;
+      _altitude.track(position);
       trackAirborne(position);
       recordRecentFix(position);
       return position;
@@ -736,6 +775,7 @@ class GpsService {
     // Stop real GPS
     stopWatching();
     resetAirborne();
+    _altitude.reset();
 
     // Configure and start simulator
     simulator.configure(
@@ -754,6 +794,7 @@ class GpsService {
         return;
       }
       _lastPosition = position;
+      _altitude.track(position, simulated: true);
       trackAirborne(position);
       recordRecentFix(position);
       _positionController.add(position);
@@ -769,6 +810,7 @@ class GpsService {
     final seed = simulator.currentPosition;
     if (seed != null && isValidLatLng(seed.latitude, seed.longitude)) {
       _lastPosition = seed;
+      _altitude.track(seed, simulated: true);
       trackAirborne(seed);
       recordRecentFix(seed);
       _positionController.add(seed);
@@ -811,6 +853,7 @@ class GpsService {
 
   /// Dispose of resources
   void dispose() {
+    _altitude.reset();
     stopWatching();
     simulator.dispose();
     _simulatorSubscription?.cancel();
