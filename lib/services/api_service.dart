@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../models/device_catalog.dart';
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
+import 'api_queue_service.dart' show altitudeLabelSummary;
 import 'meshcore/regional_carpeater_filter.dart';
 import 'network_state_service.dart';
 
@@ -1199,6 +1200,7 @@ class ApiService {
         request: {
           'data': '${entries.length} items',
           'items': antennaSummary,
+          'altitude': altitudeLabelSummary(entries),
           if (autoMode != null) 'auto_mode': autoMode,
         },
         response: data,
@@ -2314,7 +2316,11 @@ class ApiService {
         method: 'POST',
         stopwatch: stopwatch,
         statusCode: response.statusCode,
-        request: {'data': '${entries.length} items', 'items': antennaSummary},
+        request: {
+          'data': '${entries.length} items',
+          'items': antennaSummary,
+          'altitude': altitudeLabelSummary(entries),
+        },
         response: data,
       );
 

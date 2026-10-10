@@ -99,6 +99,32 @@ List<Map<String, dynamic>> orderDiscBeforeScopes(
   return [...others, ...scopes];
 }
 
+/// The two altitude references the app ever labels.
+const Set<String> kAltitudeReferences = {'msl', 'ellipsoid'};
+
+/// One short phrase per upload saying how many rows carried a labelled
+/// altitude, by type, for the Android 14 device check. Batch level only,
+/// never per fix. Example: `altitude_ref 3/5 (TX 2/3, RX 1/2)`.
+String altitudeLabelSummary(List<Map<String, dynamic>> entries) {
+  final byType = <String, (int labelled, int total)>{};
+  var labelled = 0;
+  var total = 0;
+  for (final e in entries) {
+    final type = e['type']?.toString() ?? '?';
+    if (type == 'DEFER' || type == 'SCOPES') continue;
+    final has = kAltitudeReferences.contains(e['altitude_ref']);
+    total++;
+    if (has) labelled++;
+    final prev = byType[type] ?? (0, 0);
+    byType[type] = (prev.$1 + (has ? 1 : 0), prev.$2 + 1);
+  }
+  if (total == 0) return 'altitude_ref 0/0';
+  final parts = byType.entries
+      .map((kv) => '${kv.key} ${kv.value.$1}/${kv.value.$2}')
+      .join(', ');
+  return 'altitude_ref $labelled/$total ($parts)';
+}
+
 /// Removes every SCOPES row from a list of API JSON rows, preserving the
 /// order of everything else. Used before an offline upload when the auth
 /// answer did not offer scope discovery: the server would refuse every one
@@ -545,6 +571,8 @@ class ApiQueueService {
     int? pingCounter,
     String? wireTag,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
@@ -557,6 +585,8 @@ class ApiQueueService {
       pingCounter: pingCounter,
       wireTag: wireTag,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoModeGetter?.call(),
       radioFreq: radioConfigGetter?.call(),
     );
@@ -594,6 +624,8 @@ class ApiQueueService {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
   }) async {
     final item = ApiQueueItem.fromRx(
       latitude: latitude,
@@ -604,6 +636,8 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoModeGetter?.call(),
       radioFreq: radioConfigGetter?.call(),
     );
@@ -644,6 +678,8 @@ class ApiQueueService {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
   }) async {
     final item = ApiQueueItem.fromDisc(
       latitude: latitude,
@@ -659,6 +695,8 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoModeGetter?.call(),
       radioFreq: radioConfigGetter?.call(),
     );
@@ -697,6 +735,8 @@ class ApiQueueService {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
   }) async {
     final item = ApiQueueItem.fromTrace(
       latitude: latitude,
@@ -710,6 +750,8 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoModeGetter?.call(),
       radioFreq: radioConfigGetter?.call(),
     );
@@ -744,6 +786,8 @@ class ApiQueueService {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
   }) async {
     final item = ApiQueueItem.fromDiscDrop(
       latitude: latitude,
@@ -753,6 +797,8 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoModeGetter?.call(),
       radioFreq: radioConfigGetter?.call(),
     );

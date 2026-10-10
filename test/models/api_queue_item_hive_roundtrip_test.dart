@@ -5,9 +5,9 @@ import 'package:hive/hive.dart';
 import 'package:hive/src/hive_impl.dart';
 import 'package:mesh_mapper/models/api_queue_item.dart';
 
-/// The generated adapter as it existed before field 21 (`scopes`) was
-/// added: writes only fields 0-20. A record written with TODAY's adapter
-/// always carries field 21 (as an explicit null when [ApiQueueItem.scopes]
+/// The generated adapter as it existed before fields 21 to 23 (`scopes`,
+/// `altitudeRef`, `altitudeAccuracy`) were added: writes only fields 0-20.
+/// A record written with TODAY's adapter always carries field 21 (as an explicit null when [ApiQueueItem.scopes]
 /// is null), so it does not exercise a reader's handling of a field that is
 /// genuinely ABSENT from the binary data, the shape every item recorded
 /// before this migration actually has on disk. This adapter, run against a
@@ -220,6 +220,41 @@ void main() {
     });
   });
 
+  test('the altitude trio survives the adapter, and a null pair stays null',
+      () async {
+    final box = await Hive.openBox<ApiQueueItem>('roundtrip5');
+    await box.add(ApiQueueItem.fromTx(
+      latitude: 45.0,
+      longitude: -75.0,
+      heardRepeats: '4e(12.25)',
+      timestamp: 1757400000,
+      externalAntenna: false,
+      altitude: 84.0,
+      altitudeRef: 'msl',
+      altitudeAccuracy: 6.0,
+    ));
+    await box.add(ApiQueueItem.fromTx(
+      latitude: 45.0,
+      longitude: -75.0,
+      heardRepeats: 'None',
+      timestamp: 1757400001,
+      externalAntenna: false,
+      altitude: 84.0,
+    ));
+    await box.close();
+
+    final reopened = await Hive.openBox<ApiQueueItem>('roundtrip5');
+    final labelled = reopened.getAt(0)!;
+    final bare = reopened.getAt(1)!;
+    expect(labelled.altitudeRef, 'msl');
+    expect(labelled.altitudeAccuracy, 6.0);
+    expect(labelled.toApiJson()['altitude_ref'], 'msl');
+    expect(labelled.toApiJson()['altitude_acc'], 6);
+    expect(bare.altitudeRef, isNull);
+    expect(bare.altitudeAccuracy, isNull);
+    expect(bare.toApiJson().containsKey('altitude'), isFalse);
+  });
+
   test(
       'a record genuinely lacking field 21 (written before it existed) '
       'reads scopes as null through the real adapter', () async {
@@ -245,6 +280,9 @@ void main() {
     final item = reopened.getAt(0)!;
     expect(item.type, 'RX');
     expect(item.scopes, isNull);
+    expect(item.altitudeRef, isNull);
+    expect(item.altitudeAccuracy, isNull);
+    expect(item.toApiJson().containsKey('altitude_ref'), isFalse);
     expect(item.toApiJson().containsKey('scopes'), isFalse);
   });
 }

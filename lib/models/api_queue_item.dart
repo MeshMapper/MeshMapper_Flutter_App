@@ -67,10 +67,9 @@ class ApiQueueItem extends HiveObject {
   final String? wireTag;
 
   /// Altitude of the fix in meters, null when the phone did not know it.
-  /// iOS reports height above mean sea level. Android usually reports height
-  /// above the WGS84 ellipsoid, but Android 14+ substitutes mean sea level
-  /// when the fix carries it, so one device can report either. The two differ
-  /// by the local geoid separation (up to ~100 m).
+  /// Uploaded ONLY together with [altitudeRef]: an altitude whose reference
+  /// is not proved is stored but never emitted. Contract:
+  /// MeshMapper_Server/docs/APP_API.md.
   @HiveField(18)
   final double? altitude;
 
@@ -100,6 +99,18 @@ class ApiQueueItem extends HiveObject {
   @HiveField(21)
   final List<String>? scopes;
 
+  /// The vertical reference [altitude] is measured from, `msl` (above mean
+  /// sea level) or `ellipsoid` (above the WGS84 ellipsoid). Null when the
+  /// app could not prove it, in which case [toApiJson] emits no altitude.
+  @HiveField(22)
+  final String? altitudeRef;
+
+  /// Vertical accuracy of the fix in meters, about one standard deviation.
+  /// Null when the phone did not know it. Emitted only beside a labelled
+  /// altitude and only when finite and above zero.
+  @HiveField(23)
+  final double? altitudeAccuracy;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -115,6 +126,8 @@ class ApiQueueItem extends HiveObject {
     this.pingCounter,
     this.wireTag,
     this.altitude,
+    this.altitudeRef,
+    this.altitudeAccuracy,
     this.autoMode,
     this.radioFreq,
     this.scopes,
@@ -133,6 +146,8 @@ class ApiQueueItem extends HiveObject {
     int? pingCounter,
     String? wireTag,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -150,6 +165,8 @@ class ApiQueueItem extends HiveObject {
       pingCounter: pingCounter,
       wireTag: wireTag,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -166,6 +183,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -180,6 +199,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -201,6 +222,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -218,6 +241,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -237,6 +262,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -253,6 +280,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -267,6 +296,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -281,6 +312,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -350,6 +383,22 @@ class ApiQueueItem extends HiveObject {
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
+  /// The altitude trio, or nothing. An altitude is never emitted without its
+  /// reference, and the accuracy only beside both and when usable. The
+  /// enqueue paths already pass null for all three when the reference is
+  /// unknown; this gate makes sure neither side alone can leak a bare value.
+  Map<String, dynamic> get _altitudeFields {
+    final meters = altitude;
+    final ref = altitudeRef;
+    if (meters == null || ref == null) return const {};
+    final acc = altitudeAccuracy;
+    return {
+      'altitude': meters.round(),
+      'altitude_ref': ref,
+      if (acc != null && acc.isFinite && acc > 0) 'altitude_acc': acc.round(),
+    };
+  }
+
   Map<String, dynamic> toApiJson() {
     // A repeater's scope answer: public key, the scopes exactly as heard,
     // when the answer arrived, and where the discovery that found it was
@@ -400,7 +449,7 @@ class ApiQueueItem extends HiveObject {
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
-        if (altitude != null) 'altitude': altitude!.round(),
+        ..._altitudeFields,
         if (autoMode != null) 'auto_mode': autoMode,
         if (radioFreq != null) 'radio_freq': radioFreq,
       };
@@ -419,7 +468,7 @@ class ApiQueueItem extends HiveObject {
           'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
           'external_antenna': externalAntenna,
           'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
-          if (altitude != null) 'altitude': altitude!.round(),
+          ..._altitudeFields,
           if (autoMode != null) 'auto_mode': autoMode,
           if (radioFreq != null) 'radio_freq': radioFreq,
         };
@@ -442,7 +491,7 @@ class ApiQueueItem extends HiveObject {
             1000, // Unix timestamp in seconds
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
-        if (altitude != null) 'altitude': altitude!.round(),
+        ..._altitudeFields,
         if (autoMode != null) 'auto_mode': autoMode,
         if (radioFreq != null) 'radio_freq': radioFreq,
       };
@@ -462,8 +511,8 @@ class ApiQueueItem extends HiveObject {
       // absence (coords mode / RX) is the unchanged-from-today coords path.
       if (pingCounter != null) 'ping_counter': pingCounter,
       if (wireTag != null) 'wire_tag': wireTag,
-      // Whole meters, omitted when the phone did not know its altitude.
-      if (altitude != null) 'altitude': altitude!.round(),
+      // Altitude, its reference and its accuracy together, or nothing.
+      ..._altitudeFields,
       if (autoMode != null) 'auto_mode': autoMode,
       if (radioFreq != null) 'radio_freq': radioFreq,
     };
