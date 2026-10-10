@@ -8,6 +8,7 @@ import 'package:mesh_mapper/models/connection_state.dart';
 import 'package:mesh_mapper/models/ping_data.dart';
 import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/countdown_timer_service.dart';
+import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/gps_service.dart';
 import 'package:mesh_mapper/services/meshcore/crypto_service.dart';
 import 'package:mesh_mapper/services/meshcore/packet_metadata.dart';
@@ -24,6 +25,10 @@ import 'meshcore/scope_test_support.dart';
 /// arrives 2 s after the TX actually went out must still count.
 
 class _FakeGps implements GpsService {
+  @override
+  FixAltitude fixAltitudeOf(Position position) => FixAltitude.known(
+      meters: 84.0, reference: AltitudeReference.msl, accuracy: 6.0);
+
   final Position position = Position(
     latitude: 45.0,
     longitude: -75.0,
@@ -62,11 +67,17 @@ class _FakeGps implements GpsService {
 
 class _FakeApiQueue implements ApiQueueService {
   final List<String> txHeard = [];
+  final List<(double?, String?, double?)> txAltitude = [];
 
   @override
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #enqueueTx) {
       txHeard.add(invocation.namedArguments[#heardRepeats] as String);
+      txAltitude.add((
+        invocation.namedArguments[#altitude] as double?,
+        invocation.namedArguments[#altitudeRef] as String?,
+        invocation.namedArguments[#altitudeAccuracy] as double?,
+      ));
       return Future<void>.value();
     }
     if (invocation.memberName.toString().contains('enqueue')) {
@@ -167,6 +178,8 @@ void main() {
 
       async.elapse(const Duration(seconds: 4));
       expect(queue.txHeard, ['4E(5.00)']);
+      expect(queue.txAltitude, [(84.0, 'msl', 6.0)],
+          reason: 'the labelled altitude rides the TX enqueue');
       ping.dispose();
     });
   });

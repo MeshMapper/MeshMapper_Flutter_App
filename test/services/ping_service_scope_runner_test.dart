@@ -10,6 +10,7 @@ import 'package:mesh_mapper/models/device_model.dart';
 import 'package:mesh_mapper/models/scope_log_entry.dart';
 import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/countdown_timer_service.dart';
+import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/gps_service.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
@@ -27,6 +28,9 @@ import 'meshcore/scope_test_support.dart' as lease_support;
 /// every scheduled moment with and without a runner.
 
 class _FakeGps implements GpsService {
+  @override
+  FixAltitude fixAltitudeOf(Position position) => const FixAltitude.unknown();
+
   double _lat = 45.0;
   bool tooClose = false;
 

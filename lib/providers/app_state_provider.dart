@@ -6087,7 +6087,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             externalAntenna: _preferences.externalAntenna,
             noiseFloor: _meshCoreConnection?.lastNoiseFloor,
             power: _preferences.powerLevel,
-            altitude: entry.alt,
+            altitude: entry.altitude.meters,
+            altitudeRef: entry.altitude.wireReference,
+            altitudeAccuracy: entry.altitude.accuracy,
           );
 
           // Update UI (throttled — dense mesh RX must not churn the map)
@@ -6104,7 +6106,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (
           lat: pos.latitude,
           lon: pos.longitude,
-          alt: GpsService.altitudeOrNull(pos),
+          altitude: _gpsService.fixAltitudeOf(pos),
         );
       },
 

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/meshcore/packet_metadata.dart';
 import 'package:mesh_mapper/services/meshcore/packet_validator.dart';
 import 'package:mesh_mapper/services/meshcore/rx_logger.dart';
@@ -25,7 +26,8 @@ void main() {
     drops = [];
     logger = RxLogger(
       onRxEntry: (_) async {},
-      getGpsLocation: () => (lat: 53.4903, lon: 8.0317, alt: null),
+      getGpsLocation: () =>
+          (lat: 53.4903, lon: 8.0317, altitude: const FixAltitude.unknown()),
       onCarpeaterDrop: (id, _) => drops.add(id),
     );
     logger.startWardriving();

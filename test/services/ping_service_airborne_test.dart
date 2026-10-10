@@ -7,6 +7,7 @@ import 'package:mesh_mapper/models/connection_state.dart';
 import 'package:mesh_mapper/models/device_model.dart';
 import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/countdown_timer_service.dart';
+import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/gps_service.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/ping_service.dart';
@@ -17,6 +18,9 @@ import 'package:mesh_mapper/services/wakelock_service.dart';
 /// mode can send in the seconds between detection and the transport closing.
 
 class _FakeGps implements GpsService {
+  @override
+  FixAltitude fixAltitudeOf(Position position) => const FixAltitude.unknown();
+
   Position? position;
   bool airborne = false;
   int freshCalls = 0;

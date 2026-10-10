@@ -1278,6 +1278,7 @@ class PingService {
     // Queue TX entry with heard_repeats AFTER RX window ends
     final txTimestamp = _pendingTxTimestamp;
     if (txTimestamp != null) {
+      final fixAltitude = _gpsService.fixAltitudeOf(txPosition);
       _txWindowFinalizing = true;
       try {
         try {
@@ -1291,7 +1292,9 @@ class PingService {
             power: getPowerLevel?.call(),
             pingCounter: _pendingTxPingCounter,
             wireTag: _pendingTxWireTag,
-            altitude: GpsService.altitudeOrNull(txPosition),
+            altitude: fixAltitude.meters,
+            altitudeRef: fixAltitude.wireReference,
+            altitudeAccuracy: fixAltitude.accuracy,
           );
           debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
         } catch (e) {
@@ -1315,7 +1318,9 @@ class PingService {
               externalAntenna: getExternalAntenna?.call() ?? false,
               noiseFloor: _pendingTxNoiseFloor,
               power: getPowerLevel?.call(),
-              altitude: GpsService.altitudeOrNull(txPosition),
+              altitude: fixAltitude.meters,
+              altitudeRef: fixAltitude.wireReference,
+              altitudeAccuracy: fixAltitude.accuracy,
             );
           }
           debugLog(
@@ -2198,6 +2203,7 @@ class PingService {
     // The sweep's DISC writes. Nothing waits on them unless a scope runner
     // starts, which must not ask before they are safely queued.
     final discWrites = <Future<void>>[];
+    final fixAltitude = _gpsService.fixAltitudeOf(position);
 
     if (discoverySuccess) {
       debugLog('[DISC] Processing ${nodes.length} discovered nodes');
@@ -2217,7 +2223,9 @@ class PingService {
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
           power: getPowerLevel?.call(),
-          altitude: GpsService.altitudeOrNull(position),
+          altitude: fixAltitude.meters,
+          altitudeRef: fixAltitude.wireReference,
+          altitudeAccuracy: fixAltitude.accuracy,
         ));
       }
 
@@ -2236,7 +2244,9 @@ class PingService {
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
           power: getPowerLevel?.call(),
-          altitude: GpsService.altitudeOrNull(position),
+          altitude: fixAltitude.meters,
+          altitudeRef: fixAltitude.wireReference,
+          altitudeAccuracy: fixAltitude.accuracy,
         );
         debugLog('[DISC] Discovery drop queued (no response)');
       }
@@ -2673,6 +2683,7 @@ class PingService {
           '[TRACE] Trace successful: localSnr=${result.localSnr}, remoteSnr=${result.remoteSnr}');
 
       // Queue to API (only successful traces)
+      final fixAltitude = _gpsService.fixAltitudeOf(position);
       _apiQueue.enqueueTrace(
         latitude: position.latitude,
         longitude: position.longitude,
@@ -2684,7 +2695,9 @@ class PingService {
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
         power: getPowerLevel?.call(),
-        altitude: GpsService.altitudeOrNull(position),
+        altitude: fixAltitude.meters,
+        altitudeRef: fixAltitude.wireReference,
+        altitudeAccuracy: fixAltitude.accuracy,
       );
 
       // Update stats
