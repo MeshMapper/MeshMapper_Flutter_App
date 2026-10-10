@@ -25,10 +25,13 @@ void main() {
       'com.google.android.feedback',
     ]) {
       test('Android installer $installer opens Google Play', () {
-        final link = StoreLinks.resolve(TargetPlatform.android, installer);
-        expect(link.label, 'Update MeshMapper');
-        expect(link.uri.toString(),
-            'https://play.google.com/store/apps/details?id=net.meshmapper.app');
+        for (final beta in [false, true]) {
+          final link = StoreLinks.resolve(TargetPlatform.android, installer,
+              isBetaBuild: beta);
+          expect(link.label, 'Update MeshMapper');
+          expect(link.uri.toString(),
+              'https://play.google.com/store/apps/details?id=net.meshmapper.app');
+        }
       });
     }
 
@@ -42,6 +45,15 @@ void main() {
         expect(link.label, 'Download latest version');
         expect(link.uri.toString(),
             'https://github.com/MeshMapper/MeshMapper_Project/releases/latest');
+      });
+
+      test('Android installer $installer on a beta build opens the releases '
+          'page, where the newest pre-release is listed first', () {
+        final link = StoreLinks.resolve(TargetPlatform.android, installer,
+            isBetaBuild: true);
+        expect(link.label, 'Download latest version');
+        expect(link.uri.toString(),
+            'https://github.com/MeshMapper/MeshMapper_Project/releases');
       });
     }
   });

@@ -4420,7 +4420,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugWarn('[APP] Could not read installer store: $e');
     }
-    final link = StoreLinks.resolve(defaultTargetPlatform, installerStore);
+    final link = StoreLinks.resolve(defaultTargetPlatform, installerStore,
+        isBetaBuild: AppConstants.isDevelopmentBuild);
     final required = parseRequiredAppVersion(serverMessage);
     debugLog('[APP] App out of date: have $_appVersion, server needs '
         '${required ?? 'unknown'}, installer ${installerStore ?? 'unknown'}, '

@@ -45,9 +45,19 @@ class StoreLinks {
         'https://play.google.com/store/apps/details?id=$androidPackage'),
     'Update MeshMapper',
   );
+  /// A store build's sideload link. GitHub resolves `/releases/latest` to
+  /// the newest stable release and skips pre-releases.
   static final StoreLink githubRelease = StoreLink(
     Uri.parse(
         'https://github.com/MeshMapper/MeshMapper_Project/releases/latest'),
+    'Download latest version',
+  );
+
+  /// A beta build's sideload link. GitHub has no address for the newest
+  /// pre-release, so this is the releases page, which lists it first.
+  /// `/releases/latest` sent beta testers to the older stable build.
+  static final StoreLink githubPrerelease = StoreLink(
+    Uri.parse('https://github.com/MeshMapper/MeshMapper_Project/releases'),
     'Download latest version',
   );
 
@@ -56,7 +66,11 @@ class StoreLinks {
     'com.google.android.feedback',
   };
 
-  static StoreLink resolve(TargetPlatform platform, String? installerStore) {
+  /// `isBetaBuild` is true for an `APP-<epoch>` build (dev and beta lanes),
+  /// which only ever ships as a GitHub pre-release.
+  static StoreLink resolve(TargetPlatform platform, String? installerStore,
+      {bool isBetaBuild = false}) {
+    final sideload = isBetaBuild ? githubPrerelease : githubRelease;
     switch (platform) {
       case TargetPlatform.iOS:
       case TargetPlatform.macOS:
@@ -64,9 +78,9 @@ class StoreLinks {
       case TargetPlatform.android:
         return _playInstallers.contains(installerStore)
             ? playStore
-            : githubRelease;
+            : sideload;
       default:
-        return githubRelease;
+        return sideload;
     }
   }
 }
