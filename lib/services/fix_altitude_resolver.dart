@@ -6,13 +6,31 @@ import 'package:geolocator/geolocator.dart';
 import '../utils/debug_logger_io.dart';
 import 'fix_altitude.dart';
 
-/// One answer per fix, keyed by the fix's exact timestamp and coordinates.
-typedef _FixKey = ({int timeMs, double lat, double lon});
+/// One answer per fix, keyed on everything the rule reads from the fix: its
+/// timestamp, coordinates, altitude, altitude accuracy and mock flag. Two
+/// fixes that share only a time and place (a mocked twin, or a different
+/// altitude) must never share an answer, completed or pending.
+typedef _FixKey = ({
+  int timeMs,
+  double? lat,
+  double? lon,
+  double? altitude,
+  double? altitudeAccuracy,
+  bool isMocked,
+});
+
+/// NaN never equals itself, so it would make every lookup a fresh key. It is
+/// keyed as null instead; every other double, infinities included, is
+/// compared exactly.
+double? _keyDouble(double v) => v.isNaN ? null : v;
 
 _FixKey _keyOf(Position p) => (
       timeMs: p.timestamp.millisecondsSinceEpoch,
-      lat: p.latitude,
-      lon: p.longitude,
+      lat: _keyDouble(p.latitude),
+      lon: _keyDouble(p.longitude),
+      altitude: _keyDouble(p.altitude),
+      altitudeAccuracy: _keyDouble(p.altitudeAccuracy),
+      isMocked: p.isMocked,
     );
 
 /// Running counts of how the Android proof went, for one bounded summary

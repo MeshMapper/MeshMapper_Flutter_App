@@ -5,8 +5,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/fix_altitude_resolver.dart';
 
-/// The store remembers one answer per exact fix (timestamp, latitude,
-/// longitude) under a source generation, resolves Android fixes in the
+/// The store remembers one answer per exact fix (timestamp, coordinates,
+/// altitude, altitude accuracy and the mock flag) under a source generation, resolves Android fixes in the
 /// background, and answers unknown for anything it has not finished.
 
 Position _pos({
@@ -15,6 +15,7 @@ Position _pos({
   int timeMs = 1760000000000,
   double altitude = 120.0,
   double altitudeAccuracy = 6.0,
+  bool isMocked = false,
 }) =>
     Position(
       latitude: lat,
@@ -27,6 +28,7 @@ Position _pos({
       headingAccuracy: 1.0,
       speed: 0.0,
       speedAccuracy: 0.0,
+      isMocked: isMocked,
     );
 
 NativeAltitudeAnswer _matching(Position p) => NativeAltitudeAnswer(sdk: 34, fixes: [
@@ -291,6 +293,81 @@ void main() {
       expect(r.stats.proved, 1);
       expect(r.stats.unproved, 1);
       expect(r.stats.reasons, {'time_differs': 1});
+    });
+  });
+  group('the key is the whole fix', () {
+    test('a mocked fix with the same time and place does not borrow a known '
+        'answer', () {
+      final r = FixAltitudeResolver(platform: AltitudePlatform.ios);
+      final a = _pos();
+      final b = _pos(isMocked: true);
+      r.track(a);
+      r.track(b);
+      expect(r.lookup(a).isKnown, isTrue);
+      expect(r.lookup(b).isKnown, isFalse);
+    });
+
+    test('a different altitude with the same time and place is its own '
+        'answer', () async {
+      final a = _pos(altitude: 120.0);
+      final b = _pos(altitude: 300.0);
+      final r = FixAltitudeResolver(
+          platform: AltitudePlatform.android,
+          readNative: () async => _matching(a));
+      r.track(a);
+      await r.idle;
+      r.track(b);
+      await r.idle;
+      expect(r.lookup(a).reference, AltitudeReference.ellipsoid);
+      expect(r.lookup(a).meters, 120.0);
+      expect(r.lookup(b).isKnown, isFalse,
+          reason: 'the native fix proves 120 m, not 300 m');
+    });
+
+    test('a different altitude accuracy is its own answer', () {
+      final r = FixAltitudeResolver(platform: AltitudePlatform.ios);
+      final a = _pos(altitudeAccuracy: 6.0);
+      final b = _pos(altitudeAccuracy: 9.0);
+      r.track(a);
+      r.track(b);
+      expect(r.lookup(a).accuracy, 6.0);
+      expect(r.lookup(b).accuracy, 9.0);
+      expect(r.size, 2);
+    });
+
+    test('a pending read is never handed to a different fix with the same '
+        'time and place', () async {
+      final gates = <int, Completer<NativeAltitudeAnswer?>>{};
+      var calls = 0;
+      final a = _pos(altitude: 120.0);
+      final b = _pos(altitude: 300.0);
+      final r = FixAltitudeResolver(
+          platform: AltitudePlatform.android,
+          readNative: () {
+            final c = Completer<NativeAltitudeAnswer?>();
+            gates[calls++] = c;
+            return c.future;
+          });
+      r.track(a);
+      r.track(b); // A's read is still out
+      expect(calls, 2, reason: 'B is read for itself');
+      gates[0]!.complete(_matching(a));
+      await Future<void>.delayed(Duration.zero);
+      expect(r.lookup(a).isKnown, isTrue);
+      expect(r.lookup(b).isKnown, isFalse, reason: 'B never gets A\'s answer');
+      gates[1]!.complete(_matching(a)); // the last fix is still A
+      await r.idle;
+      expect(r.lookup(b).isKnown, isFalse);
+      expect(r.lookup(a).meters, 120.0);
+    });
+
+    test('a NaN altitude fix is found again and stays unknown', () {
+      final r = FixAltitudeResolver(platform: AltitudePlatform.ios);
+      final p = _pos(altitude: double.nan, altitudeAccuracy: double.nan);
+      r.track(p);
+      r.track(p);
+      expect(r.size, 1, reason: 'NaN must not make every lookup a new key');
+      expect(r.lookup(p).isKnown, isFalse);
     });
   });
 }

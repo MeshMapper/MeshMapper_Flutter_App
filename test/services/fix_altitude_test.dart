@@ -439,5 +439,41 @@ void main() {
       final a = NativeAltitudeAnswer.tryFromMap({'sdk': 34, 'fixes': [m]});
       expect(a!.fixes, isEmpty);
     });
+    test('a non-finite accuracy is dropped, the altitude is still proved', () {
+      final msl = fixMap()
+        ..['hasMslAccuracy'] = true
+        ..['mslAccuracy'] = double.nan;
+      final a = NativeAltitudeAnswer.tryFromMap({'sdk': 34, 'fixes': [msl]});
+      expect(a!.fixes.single.hasMslAccuracy, isFalse);
+      final r = resolveFixAltitude(
+          platform: AltitudePlatform.android,
+          position: _pos(altitude: 84.5),
+          simulated: false,
+          native: a);
+      expect(r.altitude.reference, AltitudeReference.msl);
+      expect(r.altitude.meters, 84.5);
+      expect(r.altitude.accuracy, isNull);
+
+      final ell = fixMap()
+        ..['hasMsl'] = false
+        ..['verticalAccuracy'] = double.infinity;
+      final b = NativeAltitudeAnswer.tryFromMap({'sdk': 34, 'fixes': [ell]});
+      expect(b!.fixes.single.hasVerticalAccuracy, isFalse);
+      final r2 = resolveFixAltitude(
+          platform: AltitudePlatform.android,
+          position: _pos(altitude: 120.0),
+          simulated: false,
+          native: b);
+      expect(r2.altitude.reference, AltitudeReference.ellipsoid);
+      expect(r2.altitude.meters, 120.0);
+      expect(r2.altitude.accuracy, isNull);
+    });
+
+    test('a missing accuracy behind a true flag is no accuracy, not a reject',
+        () {
+      final m = fixMap()..remove('verticalAccuracy');
+      final a = NativeAltitudeAnswer.tryFromMap({'sdk': 34, 'fixes': [m]});
+      expect(a!.fixes.single.hasVerticalAccuracy, isFalse);
+    });
   });
 }

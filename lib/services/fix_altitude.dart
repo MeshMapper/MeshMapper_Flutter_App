@@ -123,9 +123,11 @@ class NativeFixDescription {
 
   /// Parses one entry of the channel's `fixes` list. Returns null when the
   /// entry is not a map, when a required field is missing or mistyped, when
-  /// the timestamp is not an integer, or when a presence flag is true but
-  /// its value is absent. Nothing is invented: a value the handler did not
-  /// send cannot prove anything.
+  /// the timestamp is not an integer, or when an altitude flag is true but
+  /// its value is absent or not finite. Nothing is invented: a value the
+  /// handler did not send cannot prove anything. An accuracy is different:
+  /// it never proves the reference, so a missing or non-finite accuracy
+  /// only clears its flag and the altitude can still be proved without it.
   static NativeFixDescription? tryFromMap(Object? raw) {
     if (raw is! Map) return null;
     double? d(Object? v) => v is num && v.isFinite ? v.toDouble() : null;
@@ -152,10 +154,7 @@ class NativeFixDescription {
     final verticalAccuracy = d(raw['verticalAccuracy']);
     final msl = d(raw['msl']);
     final mslAccuracy = d(raw['mslAccuracy']);
-    if ((hasAltitude && altitude == null) ||
-        (hasVerticalAccuracy && verticalAccuracy == null) ||
-        (hasMsl && msl == null) ||
-        (hasMslAccuracy && mslAccuracy == null)) {
+    if ((hasAltitude && altitude == null) || (hasMsl && msl == null)) {
       return null;
     }
     return NativeFixDescription(
@@ -165,11 +164,11 @@ class NativeFixDescription {
       lon: lon,
       hasAltitude: hasAltitude,
       altitude: altitude ?? 0.0,
-      hasVerticalAccuracy: hasVerticalAccuracy,
+      hasVerticalAccuracy: hasVerticalAccuracy && verticalAccuracy != null,
       verticalAccuracy: verticalAccuracy ?? 0.0,
       hasMsl: hasMsl,
       msl: msl ?? 0.0,
-      hasMslAccuracy: hasMslAccuracy,
+      hasMslAccuracy: hasMslAccuracy && mslAccuracy != null,
       mslAccuracy: mslAccuracy ?? 0.0,
       isMock: isMock,
     );
