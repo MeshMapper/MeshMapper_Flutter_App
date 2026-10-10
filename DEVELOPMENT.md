@@ -1058,7 +1058,16 @@ Two-service system for capturing debug logs and submitting bug reports.
 - Writes timestamped log files (`meshmapper-debug-{unix_timestamp}.txt`) to app documents directory
 - Auto-rotation: max 10 files, max 4.5 MB per chunk (0.5 MB safety margin under 5 MB server limit)
 - 5-second flush timer (critical for iOS background suspension)
-- Non-persistent: always starts disabled on app launch
+- On by default. The stored preference (`user_preferences` box, `debug_logs_enabled`) is
+  read in `main.dart` before the first file is created; startup lines are held in memory
+  (`DebugFileLogger.beginCapture`, capped at 500) until then and land under the header, or
+  are dropped when the preference reads off. The provider's `_initDebugLogs` reconciles the
+  logger's real state with the preference rather than mirroring it, and deletes the stub
+  files an older build left behind (one per launch with logging off, matched by the exact
+  line that build wrote before closing). The file list is shown whether or not logging is on.
+- A log is rotated exactly once per upload, at submit (`prepareDebugLogsForUpload`), never on
+  opening the Upload sheet or the Submit Feedback dialog (`listDebugLogFiles`); the current
+  file is listed and labelled, and a cancel leaves nothing behind.
 - Log format: `[ISO8601_timestamp] LEVEL: message`
 - Every file opens with a two-line header: the start time, then the app build,
   OS version and hardware model (`=== App APP-1.4.0 | iOS 18.5 | iPhone 15 Pro

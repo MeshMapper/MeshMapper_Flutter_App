@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
 import '../utils/constants.dart';
@@ -11,20 +12,59 @@ import '../utils/constants.dart';
 /// - Writes debug logs to timestamped files in app documents directory
 /// - Auto-rotates to maintain max 10 log files (deletes oldest)
 /// - Provides file listing, viewing, and deletion capabilities
-/// - Non-persistent (always starts disabled on app launch)
+/// - On by default. The stored preference is read before the first file is
+///   created: `main.dart` calls [beginCapture] first thing, which holds the
+///   startup lines in memory, and only once the preference is known does it
+///   call [enable] (the held lines land under the header) or [discardCapture].
+///   Opening a file first and closing it when the preference read off left
+///   one stub file per launch, and they all surfaced the moment the user
+///   turned logging on.
 class DebugFileLogger {
   static const int maxLogFiles = 10;
+
+  /// Lines held while capturing (or while a rotation has no sink yet). The
+  /// cap is a safety net: nothing normal leaves a capture open for long.
+  static const int maxPendingLogs = 500;
 
   /// Maximum file size for upload (4.5MB, 0.5MB safety margin under 5MB server limit)
   static const int maxUploadSizeBytes = 4718592;
   static File? _currentLogFile;
   static IOSink? _logSink;
   static bool _enabled = false;
+  static bool _capturing = false;
+  static int _droppedPendingLogs = 0;
+  static Future<void>? _enabling;
   static final List<String> _pendingLogs = [];
   static Timer? _flushTimer;
 
   /// Returns whether file logging is currently enabled
   static bool get isEnabled => _enabled;
+
+  /// Whether a stored `debug_logs_enabled` preference asks for file logging.
+  /// Only an explicit `false` turns it off; a missing or malformed value keeps
+  /// the default (on). One definition, read by `main.dart` and the provider.
+  static bool wantsFileLogging(Object? stored) => stored != false;
+
+  /// Hold every line written from now on in memory, without a file, until
+  /// [enable] flushes them into the first file or [discardCapture] drops them.
+  /// A no-op while a file is already open.
+  static void beginCapture() {
+    if (_enabled) return;
+    _capturing = true;
+  }
+
+  /// End a capture without a file: the preference read off.
+  static void discardCapture() {
+    _capturing = false;
+    _pendingLogs.clear();
+    _droppedPendingLogs = 0;
+  }
+
+  @visibleForTesting
+  static int get pendingLogCount => _pendingLogs.length;
+
+  @visibleForTesting
+  static List<String> get pendingLogsForTest => List.unmodifiable(_pendingLogs);
 
   /// The app build and the device this log came from, resolved once per launch
   /// and written at the top of every log file. A report that blames the app is
@@ -73,9 +113,14 @@ class DebugFileLogger {
   ///
   /// Creates a new file with format: meshmapper-debug-{unix_timestamp}.txt
   /// Auto-rotates old files if limit exceeded
-  static Future<void> enable() async {
-    if (_enabled) return;
+  static Future<void> enable() {
+    if (_enabled) return Future.value();
+    // The flag only flips after two awaits, so a second caller landing in
+    // that window would open a second file. Hand it the same future instead.
+    return _enabling ??= _enable().whenComplete(() => _enabling = null);
+  }
 
+  static Future<void> _enable() async {
     try {
       // Resolved before the sink exists: an await between opening it and
       // writing the header would let a concurrent debugLog land above the
@@ -98,6 +143,7 @@ class DebugFileLogger {
 
       // Flush any logs that were captured before the sink was ready
       _flushPendingLogs();
+      _capturing = false;
 
       // Start periodic flush timer (every 5 seconds) to ensure logs persist
       // This is important on iOS where background suspension can lose buffered data
@@ -109,6 +155,9 @@ class DebugFileLogger {
       await _rotateOldFiles(dir);
     } catch (e) {
       _enabled = false;
+      _capturing = false;
+      _pendingLogs.clear();
+      _droppedPendingLogs = 0;
       _logSink = null;
       _currentLogFile = null;
       rethrow;
@@ -137,6 +186,9 @@ class DebugFileLogger {
       _logSink = null;
       _currentLogFile = null;
       _enabled = false;
+      _capturing = false;
+      _pendingLogs.clear();
+      _droppedPendingLogs = 0;
     }
   }
 
@@ -194,16 +246,20 @@ class DebugFileLogger {
   /// Called by debug_logger_stub.dart for each log message
   /// Format: [ISO8601_timestamp] LEVEL: message
   ///
-  /// If the log sink isn't ready yet (race condition during init), logs are
-  /// buffered and flushed when the sink becomes available.
+  /// While capturing, or while the sink isn't ready yet (a rotation in
+  /// flight), lines are held in memory and written once a sink exists, up to
+  /// [maxPendingLogs]; past the cap the newest lines are dropped and counted.
   static void write(String level, String message) {
-    if (!_enabled) return;
+    if (!_enabled && !_capturing) return;
 
     final timestamp = DateTime.now().toIso8601String();
     final line = '[$timestamp] $level: ${scrubSecrets(message)}';
 
     if (_logSink == null) {
-      // Buffer logs until sink is ready (race condition during initialization)
+      if (_pendingLogs.length >= maxPendingLogs) {
+        _droppedPendingLogs++;
+        return;
+      }
       _pendingLogs.add(line);
       return;
     }
@@ -229,6 +285,15 @@ class DebugFileLogger {
       } catch (e) {
         // Silently fail - avoid recursive logging errors
       }
+    }
+    if (_droppedPendingLogs > 0) {
+      try {
+        sink.writeln('=== $_droppedPendingLogs lines dropped while the log '
+            'had no file ===');
+      } catch (e) {
+        // Silently fail - avoid recursive logging errors
+      }
+      _droppedPendingLogs = 0;
     }
     _pendingLogs.clear();
   }
@@ -267,6 +332,43 @@ class DebugFileLogger {
     } catch (e) {
       // Silently fail - rotation is not critical
     }
+  }
+
+  /// The line the old startup path wrote right before closing the file it had
+  /// just opened: every file containing it is a stub by construction. The
+  /// provider's wording changed with the fix, so no new file can match.
+  static const String legacyStartupStubLine =
+      '[INIT] Debug logs disabled by user preference, turning off';
+
+  /// Only files this small are ever read by [deleteStartupStubs].
+  static const int maxStartupStubBytes = 16 * 1024;
+
+  /// Whether a log file's content is a stub left by the old startup path.
+  static bool isStartupStubContent(String content) =>
+      content.contains(legacyStartupStubLine);
+
+  /// Delete the stub files the old startup path left behind, once per launch
+  /// and best effort: at most [maxLogFiles] stats, and only a small file that
+  /// is not the current one is read.
+  static Future<int> deleteStartupStubs() async {
+    var deleted = 0;
+    try {
+      final currentPath = _currentLogFile?.path;
+      for (final file in await listLogFiles()) {
+        if (file.path == currentPath) continue;
+        try {
+          if (await file.length() > maxStartupStubBytes) continue;
+          if (!isStartupStubContent(await file.readAsString())) continue;
+          await file.delete();
+          deleted++;
+        } catch (e) {
+          // Best effort: a file that cannot be read or deleted stays.
+        }
+      }
+    } catch (e) {
+      // Best effort: the cleanup is never allowed to fail startup.
+    }
+    return deleted;
   }
 
   /// Delete all debug log files

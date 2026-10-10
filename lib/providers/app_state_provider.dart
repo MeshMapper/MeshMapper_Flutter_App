@@ -11253,39 +11253,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Debug File Logging (Mobile Only)
   // ============================================
 
-  /// Initialize debug file logging, respecting persisted user preference.
-  /// Enabled by default on all builds. If the user previously disabled it,
-  /// that preference is restored.
+  /// Reconcile debug file logging with the persisted user preference.
+  /// Enabled by default on all builds. `main.dart` already read the
+  /// preference and opened (or did not open) the file, so in the normal case
+  /// nothing changes here; the two branches only matter when the two reads
+  /// disagreed (a transient Hive timeout in main). The flag mirrors what the
+  /// logger is really doing, never the preference alone, so the switch can
+  /// not read OFF while a file keeps growing.
   Future<void> _initDebugLogs() async {
     if (kIsWeb) return; // File logging not available on web
 
     try {
       final box = await _openBoxSafely(_preferencesBoxName);
-      if (box == null) {
-        // Can't read preference — keep default (enabled, already started in main.dart)
-        _debugLogsEnabled = true;
-        await _refreshDebugLogFiles();
-        return;
-      }
-
-      final userDisabled = box.get('debug_logs_enabled') == false;
-
-      if (userDisabled) {
-        debugLog('[INIT] Debug logs disabled by user preference, turning off');
+      final wanted =
+          DebugFileLogger.wantsFileLogging(box?.get('debug_logs_enabled'));
+      if (wanted && !DebugFileLogger.isEnabled) {
+        await DebugFileLogger.enable();
+      } else if (!wanted && DebugFileLogger.isEnabled) {
+        debugLog('[INIT] File logging stopped: preference is off');
         await DebugFileLogger.disable();
-        _debugLogsEnabled = false;
-        DebugLogger.setEnabled(false);
-      } else {
-        debugLog('[INIT] Debug logging enabled (${AppConstants.appVersion})');
-        // DebugFileLogger already enabled in main.dart
-        _debugLogsEnabled = true;
-        await _refreshDebugLogFiles();
       }
     } catch (e) {
       debugError('[INIT] Failed to init debug logs: $e');
-      // Fallback: keep enabled (already started in main.dart)
-      _debugLogsEnabled = true;
     }
+    _debugLogsEnabled = DebugFileLogger.isEnabled;
+    DebugLogger.setEnabled(_debugLogsEnabled);
+    if (_debugLogsEnabled) {
+      debugLog('[INIT] Debug logging enabled (${AppConstants.appVersion})');
+    }
+    final stubs = await DebugFileLogger.deleteStartupStubs();
+    if (stubs > 0) {
+      debugLog('[INIT] Deleted $stubs startup stub log file(s)');
+    }
+    // Files from earlier sessions are listed whether or not logging is on,
+    // so they can still be viewed, uploaded and deleted.
+    await _refreshDebugLogFiles();
   }
 
   /// Enable debug file logging
@@ -11342,6 +11344,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugError('[DEBUG] Failed to refresh debug log files: $e');
     }
+  }
+
+  /// List the debug log files without touching the live log.
+  ///
+  /// The upload sheet and the feedback dialog list from this; the one
+  /// rotation an upload needs happens at submit, in
+  /// [prepareDebugLogsForUpload], never on opening a sheet.
+  Future<List<File>> listDebugLogFiles() async {
+    await _refreshDebugLogFiles();
+    return _debugLogFiles;
   }
 
   /// Prepare debug logs for upload by rotating the current log file

@@ -61,8 +61,9 @@ class _BugReportSheetState extends State<BugReportSheet> {
 
   Future<void> _loadUploadableFiles() async {
     try {
-      // Rotate log and get uploadable files (excludes new current file)
-      final files = await widget.appState.prepareDebugLogsForUpload();
+      // Listed as they are. The live log is rotated once, at submit, and
+      // only when logs are attached, never on opening the dialog.
+      final files = await widget.appState.listDebugLogFiles();
       if (mounted) {
         setState(() {
           _availableLogFiles = files;
@@ -151,10 +152,13 @@ class _BugReportSheetState extends State<BugReportSheet> {
     try {
       final service = DebugSubmitService();
 
-      // Get selected files
+      // Get selected files. The one rotation happens here: the live log is
+      // closed in place (same path) so it is complete, and the selection,
+      // made by path, still names it.
       List<File>? filesToUpload;
       if (_uploadLogs && _selectedLogFiles.isNotEmpty) {
-        filesToUpload = _availableLogFiles
+        final freshFiles = await widget.appState.prepareDebugLogsForUpload();
+        filesToUpload = freshFiles
             .where((f) => _selectedLogFiles.contains(f.path))
             .toList();
       }
@@ -486,6 +490,10 @@ class _BugReportSheetState extends State<BugReportSheet> {
                               } else {
                                 sizeDisplay =
                                     '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                              }
+                              if (file.path ==
+                                  DebugFileLogger.currentLogPath) {
+                                sizeDisplay = '$sizeDisplay (current)';
                               }
 
                               return ListTile(

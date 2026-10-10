@@ -23,17 +23,18 @@ import 'utils/debug_logger_io.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Hold every startup line in memory until the stored preference says
+  // whether a log file should exist at all. Opening one here and closing it
+  // when the preference read off left a stub file on every launch.
+  if (!kIsWeb) {
+    DebugFileLogger.beginCapture();
+  }
+
   // Before anything slow. A watch command can launch this process, and the
   // native relay fires as soon as WatchConnectivity delivers — long before the
   // provider finishes initializing and starts listening.
   WatchBridgeService.reserveCommandQueue();
   AppIntentBridgeService.reserveCommandQueue();
-
-  // Enable debug file logging FIRST on mobile to capture early logs
-  // This must happen before DebugLogger.initialize() to capture early logs
-  if (!kIsWeb) {
-    await DebugFileLogger.enable();
-  }
 
   // Initialize debug logger (checks for ?debug=1 URL param on web)
   DebugLogger.initialize();
@@ -43,9 +44,25 @@ void main() async {
   await Hive.initFlutter();
   debugLog('[APP] Hive initialized');
 
-  // Load theme preference BEFORE runApp to avoid flash of wrong theme
-  final initialThemeMode = await _loadInitialThemeMode();
+  // Load the theme preference BEFORE runApp to avoid a flash of the wrong
+  // theme, and the debug log preference so the first file is only created
+  // when the user wants one.
+  final startupPrefs = await _loadStartupPreferences();
+  final initialThemeMode = startupPrefs.themeMode;
   debugLog('[APP] Initial theme mode: $initialThemeMode');
+  if (!kIsWeb) {
+    if (startupPrefs.debugLogsEnabled) {
+      try {
+        await DebugFileLogger.enable();
+      } catch (e) {
+        // The provider reconciles later; startup must not die on a log file.
+        DebugFileLogger.discardCapture();
+        debugPrint('[DEBUG] Could not open the debug log file: $e');
+      }
+    } else {
+      DebugFileLogger.discardCapture();
+    }
+  }
 
   // Register noise floor session adapters before opening any boxes
   // Note: MarkerRepeaterInfo (14) must be registered before PingEventMarker (12)
@@ -86,25 +103,32 @@ void main() async {
   runApp(MeshMapperApp(initialThemeMode: initialThemeMode));
 }
 
-/// Load theme mode from Hive before app starts to avoid flash of wrong theme
-Future<String> _loadInitialThemeMode() async {
+/// The two preferences main needs before runApp, read from one box open:
+/// the theme (to avoid a flash) and whether to write a debug log file at all.
+/// Defaults are dark and on; a Hive failure keeps them.
+Future<({String themeMode, bool debugLogsEnabled})>
+    _loadStartupPreferences() async {
+  var themeMode = 'dark';
+  var debugLogsEnabled = true;
   try {
     final box = await Hive.openBox('user_preferences')
         .timeout(const Duration(seconds: 5));
     final json = box.get('preferences');
     if (json != null && json is Map) {
-      final themeMode = json['themeMode'] as String?;
-      if (themeMode != null) {
-        return themeMode;
+      final stored = json['themeMode'] as String?;
+      if (stored != null) {
+        themeMode = stored;
       }
     }
+    debugLogsEnabled =
+        DebugFileLogger.wantsFileLogging(box.get('debug_logs_enabled'));
   } catch (e) {
-    debugLog('[HIVE] Initial theme load failed (non-fatal): $e');
+    debugLog('[HIVE] Startup preference load failed (non-fatal): $e');
     // Do NOT delete the box here. A transient open timeout would wipe every
     // saved setting. AppStateProvider's _attemptHiveRecovery handles real
     // corruption later with a user-visible logError() notification.
   }
-  return 'dark'; // Default to dark mode
+  return (themeMode: themeMode, debugLogsEnabled: debugLogsEnabled);
 }
 
 /// Request all required permissions on app startup
