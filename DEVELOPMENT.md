@@ -1237,10 +1237,11 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   of its own 30s..8m ladder and the server's value. A 429 is never a sign-out:
   401 + `token_invalid` stays the only signed-out signal.
 - **Account page overview**: `me` also answers `overview: {points, weekly, grid,
-  awards:[{name, description}]}`, the portal Overview tab's numbers, summed
-  server-side over each companion's primary so a grouped radio counts once. The
-  app never adds up the per-companion points itself. The block is absent on a
-  server that predates it; the app reads that as unknown (`PortalOverview`
+  awards:[{name, description}]}`, the portal Overview tab's numbers. Each
+  linked radio keeps its own points (`pubkeys[].points`); the overview is the
+  server's sum of them plus any credit tied to no radio, and grid squares are a
+  union, not a sum. The app never adds up the per-companion points itself. The
+  block is absent on a server that predates it; the app reads that as unknown (`PortalOverview`
   null) and hides the Overview card rather than show zeros. The Account page
   lists every linked companion from `portalCompanions` (name, else label, else
   "Companion"; the key; a points pill above zero), runs the throttled `refreshMe`

@@ -185,9 +185,10 @@ class PortalAward {
 
 /// The account-wide totals the portal's Overview tab shows (`me` -> `overview`).
 ///
-/// The server sums points over each companion's primary, exactly as the
-/// portal does, so a radio filed under a group counts once. The app never adds
-/// up the per-companion points itself: that sum is wrong for grouped radios.
+/// Each linked radio keeps its own points; the server sums them, adds any
+/// credit tied to no radio, and takes the union of grid squares. The app never
+/// adds up the per-companion points itself: that would miss the unattributed
+/// credit and double count shared grid squares.
 class PortalOverview {
   final int points;
   final int weekly;
