@@ -2072,8 +2072,14 @@ Keep future targets separated by lifecycle:
 
 **One deadline, both sides.** `SiriIntentCoordinator` stops waiting after
 `SiriCommand.responseTimeout` (10 s, or 30 s for Connect) and tells the person
-it failed. That same instant travels to Dart as `expiresAtMs`, so giving up is
-one decision rather than two, and it is rechecked at three points:
+it failed, capped at `SiriCommand.intentBudget` (25 s) from the moment
+`perform()` created the command (`responseDeadline`). The cap exists because
+iOS ends an App Intent on its own 30 seconds after `perform()` starts and shows
+a generic failure ("an unknown error occurred" on iOS 26), discarding whatever
+the intent returns afterwards; measured on device, iOS cut a Connect run at
+30.01 s while our own 30 s timer, started later, never got to answer. That same
+instant travels to Dart as `expiresAtMs`, so giving up is one decision rather
+than two, and it is rechecked at three points:
 
 1. Admission refuses an already-expired command outright.
 2. `toggleAutoPing`/`sendPing` recheck after the awaited session check, before
@@ -2123,7 +2129,7 @@ never be abandoned because a voice request timed out. A surface that sends no
 `expiresAtMs`, such as the watch, still falls back to the shared 30-second
 `maximumExternalCommandAge`.
 
-**Connect's 30 seconds is a response deadline, not a cancellation guarantee.**
+**Connect's deadline is a response deadline, not a cancellation guarantee.**
 This is the one mutation where the two differ, and the difference is deliberate.
 
 Up to the point of dialling, Connect behaves like the rest:
@@ -2142,6 +2148,21 @@ case, which is why the preflight margin is a sanity check rather than a
 guarantee. Such a reconnect is deliberately left connected: it transmits nothing
 on the mesh, starts no session, and is what the person asked for; tearing it
 down would only make them wait out another cold reconnect.
+
+**Connect answers early and lets the dial run.** An unreachable radio runs three
+15 second BLE attempts, which no deadline under iOS's 30 seconds can hold. So
+`_connectToLastCompanion` waits for the dial only for
+`lastCompanionAnswerWindow` (`last_companion_connection.dart`): 12 seconds
+(`lastCompanionQuickAnswer`; a reachable radio connects in 4 to 7), shortened to
+stay 3 seconds clear of `expiresAtMs` (`lastCompanionAnswerMargin`). A dial that
+finishes inside it answers with its real outcome; one that does not answers
+"MeshMapper is connecting to X. Check the app in a moment." (admitted, success)
+and carries on. `_reconnectForSiri` never throws, because by then nothing may be
+awaiting it. Logged under `[SIRI]`: every command's receipt, time left and answer
+(`AppIntentBridgeService`), the dial's start, window, finish and whether it
+finished after the intent was answered. The native side logs the channel wait,
+the send, the answer and any timeout through `os.Logger` (category `Siri`), which
+shows in the device syslog but not in the app's debug file.
 
 Because of that, `SiriCommand.Kind.timeoutMessage` is per-kind, and the rule is
 that only a kind which really is cancelled may say so:

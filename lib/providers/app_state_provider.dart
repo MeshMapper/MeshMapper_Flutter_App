@@ -2928,11 +2928,51 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
 
+    // The dial runs on its own and is never abandoned. The intent only waits
+    // up to the answer window for it: a reachable radio finishes well inside
+    // that, and an unreachable one would outlast iOS's 30 second limit on the
+    // intent, which then discards our answer and shows a generic failure.
+    final shortId =
+        command.id.length > 8 ? command.id.substring(0, 8) : command.id;
+    final window = lastCompanionAnswerWindow(command.expiresAt);
+    final dialStarted = DateTime.now();
+    debugLog('[SIRI] Connect $shortId: dialling ${remembered!.displayName}, '
+        'answering within ${window.inMilliseconds}ms');
+    var answered = false;
+    final dial = _reconnectForSiri(remembered).then((completion) {
+      final elapsed = DateTime.now().difference(dialStarted).inMilliseconds;
+      debugLog('[SIRI] Connect $shortId: dial finished in ${elapsed}ms, '
+          'success=${completion.success}'
+          '${answered ? ' (after the intent was answered)' : ''}');
+      return completion;
+    });
+    final completion = await dial.timeout(window, onTimeout: () {
+      debugLog('[SIRI] Connect $shortId: still dialling after '
+          '${window.inMilliseconds}ms, answering that it is underway');
+      return ExternalCommandCompletion(
+        success: true,
+        disposition: ExternalCommandDisposition.admitted,
+        message: ExternalCommandReason.other(
+          'MeshMapper is connecting to ${remembered.displayName}. '
+          'Check the app in a moment.',
+        ),
+      );
+    });
+    answered = true;
+    return completion;
+  }
+
+  /// One reconnect to [remembered] for the connect intent, as a completion.
+  /// Never throws, because the intent may already have been answered and
+  /// nothing else awaits it.
+  Future<ExternalCommandCompletion> _reconnectForSiri(
+    RememberedDevice remembered,
+  ) async {
     try {
       await reconnectToRememberedDevice();
       final reconnectedDevice =
           (_activeTransport ?? _bluetoothService).connectedDevice;
-      if (isConnected && reconnectedDevice?.id == remembered!.id) {
+      if (isConnected && reconnectedDevice?.id == remembered.id) {
         return ExternalCommandCompletion(
           success: true,
           disposition: ExternalCommandDisposition.admitted,
@@ -2946,7 +2986,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         disposition: ExternalCommandDisposition.refused,
         message: ExternalCommandReason.other(
           _connectionError ??
-              'MeshMapper could not connect to ${remembered!.displayName}.',
+              'MeshMapper could not connect to ${remembered.displayName}.',
         ),
       );
     } catch (error) {
@@ -2956,7 +2996,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         disposition: ExternalCommandDisposition.refused,
         message: ExternalCommandReason.other(
           _connectionError ??
-              'MeshMapper could not connect to ${remembered!.displayName}.',
+              'MeshMapper could not connect to ${remembered.displayName}.',
         ),
       );
     }
