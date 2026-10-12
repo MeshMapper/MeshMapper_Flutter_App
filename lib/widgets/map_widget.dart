@@ -4917,6 +4917,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (!mounted) return;
       _syncSpiderSymbols(appState, currentZoom);
     });
+    // A post-frame callback does not schedule a frame of its own, and the
+    // setState frame from _spiderfy/_collapseSpider has usually already run by
+    // the time the await above returns. Map gestures and GPS do not rebuild
+    // this widget, so without this the spider push waited for an unrelated
+    // frame: opening a spider hid the originals and showed nothing, and
+    // closing one left the spread drawn over the restored originals.
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   // ---------------------------------------------------------------------------
