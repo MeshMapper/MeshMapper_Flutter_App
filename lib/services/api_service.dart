@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../models/device_catalog.dart';
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/mvt_cells.dart';
 import 'api_queue_service.dart' show altitudeLabelSummary;
 import 'meshcore/regional_carpeater_filter.dart';
 import 'network_state_service.dart';
@@ -1869,7 +1870,7 @@ class ApiService {
         '${recentDays == null ? '' : '&f_days=$recentDays'}';
     final url =
         Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
-            '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
+            '?z=$z&x=$x&y=$y&gsize=$gsize&cf=$kCoverageTileFormat&fresh=1$filter');
     final verdictOnly = z >= 11 && z <= 13;
     final sw = Stopwatch()..start();
     // No GET line here: the response and failure lines below both name the
@@ -1929,13 +1930,14 @@ class ApiService {
       'x': '$x',
       'y': '$y',
       'gsize': '$gsize',
+      'cf': '$kCoverageTileFormat',
       'f_days': '$days',
       'f_types': 'green,cyan',
       ...filter,
     });
     final sw = Stopwatch()..start();
     debugLog(
-        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
+        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&cf=$kCoverageTileFormat&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
     try {
       final response = await _send(
         'GET /vector_tile.php?z=$z&x=$x&y=$y (recent coverage)',

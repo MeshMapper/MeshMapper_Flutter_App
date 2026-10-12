@@ -295,7 +295,15 @@ class RecentCoverageService {
                 '[COVERAGE] Recent tile $key came back unfiltered (a cell that is not green or cyan), ignoring it');
             continue;
           }
-          tile.cells = cells.map((c) => '${c.i},${c.j}').toSet();
+          // A block (a feature carrying `k`) summarises k by k 300 m cells,
+          // so its i/j are not cells of this grid and its colour does not
+          // say every cell inside it is covered. Leave it out: those cells
+          // read clear and the ping goes out, the fail-open answer. z13
+          // tiles carry no blocks today.
+          tile.cells = cells
+              .where((c) => !c.isBlock)
+              .map((c) => '${c.i},${c.j}')
+              .toSet();
           tile.fetchedAt = _now();
           debugLog(
               '[COVERAGE] Recent tile $key loaded: ${tile.cells!.length} covered cells');

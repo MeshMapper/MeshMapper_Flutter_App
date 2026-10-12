@@ -1603,6 +1603,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final seen = <int>{};
     for (final body in bodies) {
       for (final cell in decodeCoverageCells(body)) {
+        // A block's i/j index k by k 300 m blocks, not cells of this grid,
+        // so it can never be the user's own cell. Fresh z14 tiles carry no
+        // blocks today; this keeps a block from matching by accident.
+        if (cell.isBlock) continue;
         if (wanted.contains('${cell.i}_${cell.j}') && seen.add(cell.id)) {
           out.add(cell);
         }

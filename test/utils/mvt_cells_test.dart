@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/utils/mvt_cells.dart';
@@ -43,4 +46,296 @@ void main() {
   test('garbage input decodes to empty, never throws', () {
     expect(decodeCoverageCells(base64Decode('aGVsbG8gd29ybGQ=')), isEmpty);
   });
+
+  group('coverage format 2 blocks', () {
+    // Real sea.meshmapper.net tiles captured 2026-10-11 (server v1.5.130),
+    // each trimmed to its first 300 features with every byte of those kept.
+    // z7..z10 were requested with cf=2; z6 blocks go to every client. At
+    // z7..z9 the gsize=100 and gsize=300 answers are byte-identical, so one
+    // capture covers both grids. (z, x, y, file, expected k)
+    const captured = [
+      (6, 10, 22, 'coverage_z6_sea_10_22.mvt', 8),
+      (7, 20, 44, 'coverage_cf2_z7_sea_20_44.mvt', 4),
+      (8, 41, 89, 'coverage_cf2_z8_sea_41_89.mvt', 2),
+      (9, 82, 178, 'coverage_cf2_z9_sea_82_178.mvt', 1),
+      (10, 164, 357, 'coverage_cf2_z10_sea_164_357_gsize300.mvt', null),
+    ];
+    for (final (z, x, y, file, k) in captured) {
+      test('real z$z tile: k=$k and rectangles match the geometry', () {
+        final bytes = File('test/fixtures/$file').readAsBytesSync();
+        final cells = decodeCoverageCells(bytes);
+        expect(cells.length, 300);
+        for (final c in cells) {
+          expect(c.k, k);
+          expect(c.isBlock, k != null);
+          expect(c.st, inInclusiveRange(1, 6));
+        }
+        // gsize 300 for the z10 capture; ignored for blocks, whose bounds
+        // come from k whatever grid the user picked.
+        for (final gsize in [300, if (k != null) 100]) {
+          expect(_checkAgainstGeometry(bytes, cells, z, x, y, gsize),
+              greaterThan(0));
+        }
+      });
+    }
+
+    test('a k=1 block on a 100 m request is a plain 300 m cell', () {
+      final c = decodeCoverageCells(_tile([(10, 20, 1, 1)])).single;
+      expect(c.bounds(100), [
+        closeTo(10 * 0.0027, 1e-12),
+        closeTo(20 * 0.00384, 1e-12),
+        closeTo(0.0027, 1e-12),
+        closeTo(0.00384, 1e-12),
+      ]);
+    });
+
+    test('z10+ cells without k keep the requested grid', () {
+      final cells = decodeCoverageCells(_tile([(10, 20, 1, null)]));
+      expect(cells.single.k, isNull);
+      expect(cells.single.isBlock, isFalse);
+      expect(cells.single.bounds(300),
+          [closeTo(0.027, 1e-12), closeTo(0.0768, 1e-12), 0.0027, 0.00384]);
+      expect(cells.single.bounds(100),
+          [closeTo(0.009, 1e-12), closeTo(0.0256, 1e-12), 0.0009, 0.00128]);
+    });
+
+    test('any positive k works and a non-positive k is dropped', () {
+      final cells = decodeCoverageCells(
+          _tile([(1, 1, 1, 128), (2, 2, 1, 3), (3, 3, 1, 0), (4, 4, 1, -2)]));
+      expect(cells.map((c) => c.k), [128, 3]);
+    });
+
+    test('the known format-1 tile still decodes without k', () {
+      final cells = decodeCoverageCells(base64Decode(_knownTile));
+      expect(cells.every((c) => c.k == null), isTrue);
+    });
+  });
+
+  group('patch base filter', () {
+    // Truth table: the filter SHOWS a feature when it returns true.
+    final filter = coveragePatchBaseFilter(['3_7', '-5_7']);
+    bool shows(Map<String, int> props) => _eval(filter, props) as bool;
+
+    test('a block whose index is a patched key is shown', () {
+      expect(shows({'i': 3, 'j': 7, 'st': 1, 'k': 4}), isTrue);
+    });
+    test('a block whose index is not patched is shown', () {
+      expect(shows({'i': 9, 'j': 9, 'st': 1, 'k': 4}), isTrue);
+    });
+    test('a fine cell that is patched is hidden', () {
+      expect(shows({'i': 3, 'j': 7, 'st': 1}), isFalse);
+      expect(shows({'i': -5, 'j': 7, 'st': 1}), isFalse);
+    });
+    test('a fine cell that is not patched is shown', () {
+      expect(shows({'i': 7, 'j': 3, 'st': 1}), isTrue);
+    });
+    test('blocks stay visible with no keys and with many keys', () {
+      expect(_eval(coveragePatchBaseFilter([]), {'i': 1, 'j': 1, 'k': 2}),
+          isTrue);
+    });
+  });
+}
+
+double _sinh(double v) => (math.exp(v) - math.exp(-v)) / 2;
+
+/// Tiny evaluator for the expression operators the patch filter uses, so
+/// the truth table runs against the real expression without a device.
+Object? _eval(Object? e, Map<String, int> props) {
+  if (e is! List) return e;
+  switch (e[0]) {
+    case 'any':
+      return e.skip(1).any((x) => _eval(x, props) == true);
+    case 'has':
+      return props.containsKey(e[1]);
+    case '!':
+      return !(_eval(e[1], props) as bool);
+    case 'in':
+      final needle = _eval(e[1], props);
+      final hay = _eval(e[2], props) as List;
+      return hay.contains(needle);
+    case 'concat':
+      return e.skip(1).map((x) => _eval(x, props).toString()).join();
+    case 'to-string':
+      return _eval(e[1], props).toString();
+    case 'get':
+      return props[e[1]];
+    case 'literal':
+      return e[1];
+  }
+  throw UnsupportedError('operator ${e[0]}');
+}
+
+void _varint(List<int> b, int v) {
+  while (v >= 128) {
+    b.add((v % 128) + 128);
+    v = v ~/ 128;
+  }
+  b.add(v);
+}
+
+void _bytesField(List<int> b, int field, List<int> payload) {
+  _varint(b, field * 8 + 2);
+  _varint(b, payload.length);
+  b.addAll(payload);
+}
+
+/// Single-layer MVT with features `(i, j, st, k)`; `k` null leaves it out.
+Uint8List _tile(List<(int, int, int, int?)> features) {
+  int zigzag(int n) => n >= 0 ? n * 2 : -n * 2 - 1;
+  final layer = <int>[];
+  _bytesField(layer, 1, 'coverage'.codeUnits);
+  for (final key in ['i', 'j', 'st', 'k']) {
+    _bytesField(layer, 3, key.codeUnits);
+  }
+  final valueIndex = <int, int>{};
+  int valueOf(int n) => valueIndex.putIfAbsent(n, () {
+        final v = <int>[];
+        _varint(v, 6 * 8);
+        _varint(v, zigzag(n));
+        _bytesField(layer, 4, v);
+        return valueIndex.length;
+      });
+  final feats = <List<int>>[];
+  var id = 1;
+  for (final f in features) {
+    final tags = <int>[0, valueOf(f.$1), 1, valueOf(f.$2), 2, valueOf(f.$3)];
+    if (f.$4 != null) tags.addAll([3, valueOf(f.$4!)]);
+    final feat = <int>[];
+    _varint(feat, 1 * 8);
+    _varint(feat, id++);
+    final packed = <int>[];
+    for (final t in tags) {
+      _varint(packed, t);
+    }
+    _bytesField(feat, 2, packed);
+    feats.add(feat);
+  }
+  for (final f in feats) {
+    _bytesField(layer, 2, f);
+  }
+  final tile = <int>[];
+  _bytesField(tile, 3, layer);
+  return Uint8List.fromList(tile);
+}
+
+/// Feature id -> [minX, minY, maxX, maxY, extent] in tile coordinates, read
+/// from the real geometry (the decoder under test skips geometry entirely).
+Map<int, List<double>> _decodeGeometryBoxes(Uint8List bytes) {
+  var pos = 0;
+  int varint(Uint8List buf) {
+    var value = 0, mult = 1;
+    while (true) {
+      final b = buf[pos++];
+      value += (b % 128) * mult;
+      if (b < 128) return value;
+      mult *= 128;
+    }
+  }
+
+  int unzig(int n) => n.isOdd ? -((n + 1) ~/ 2) : n ~/ 2;
+  // Find the layer.
+  late Uint8List layer;
+  while (pos < bytes.length) {
+    final tag = varint(bytes);
+    final len = varint(bytes);
+    if (tag == 3 * 8 + 2) {
+      layer = Uint8List.sublistView(bytes, pos, pos + len);
+      break;
+    }
+    pos += len;
+  }
+  pos = 0;
+  var extent = 4096;
+  final features = <Uint8List>[];
+  while (pos < layer.length) {
+    final tag = varint(layer);
+    if (tag % 8 == 0) {
+      final v = varint(layer);
+      if (tag ~/ 8 == 5) extent = v;
+      continue;
+    }
+    final len = varint(layer);
+    if (tag ~/ 8 == 2) {
+      features.add(Uint8List.sublistView(layer, pos, pos + len));
+    }
+    pos += len;
+  }
+  final out = <int, List<double>>{};
+  for (final f in features) {
+    pos = 0;
+    var id = 0;
+    var geom = <int>[];
+    while (pos < f.length) {
+      final tag = varint(f);
+      if (tag % 8 == 0) {
+        final v = varint(f);
+        if (tag ~/ 8 == 1) id = v;
+        continue;
+      }
+      final len = varint(f);
+      if (tag ~/ 8 == 4) {
+        final end = pos + len;
+        geom = [];
+        while (pos < end) {
+          geom.add(varint(f));
+        }
+      } else {
+        pos += len;
+      }
+    }
+    var cx = 0, cy = 0;
+    var minX = 1 << 30, minY = 1 << 30, maxX = -(1 << 30), maxY = -(1 << 30);
+    var g = 0;
+    while (g < geom.length) {
+      final cmd = geom[g++];
+      final op = cmd % 8, count = cmd ~/ 8;
+      if (op == 7) continue;
+      for (var c = 0; c < count; c++) {
+        cx += unzig(geom[g++]);
+        cy += unzig(geom[g++]);
+        minX = math.min(minX, cx);
+        minY = math.min(minY, cy);
+        maxX = math.max(maxX, cx);
+        maxY = math.max(maxY, cy);
+      }
+    }
+    out[id] = [
+      minX.toDouble(),
+      minY.toDouble(),
+      maxX.toDouble(),
+      maxY.toDouble(),
+      extent.toDouble()
+    ];
+  }
+  return out;
+}
+
+/// Compares every feature's [CoverageCell.bounds] with its real geometry,
+/// to within one 512 px tile pixel, for the features wholly inside the tile
+/// (edge features are clipped). Returns how many were compared.
+int _checkAgainstGeometry(Uint8List bytes, List<CoverageCell> cells, int z,
+    int x, int y, int gsize) {
+  final geo = _decodeGeometryBoxes(bytes);
+  final n = math.pow(2, z).toDouble();
+  double lonAt(double tx) => tx / n * 360 - 180;
+  double latAt(double ty) =>
+      math.atan(_sinh(math.pi * (1 - 2 * ty / n))) * 180 / math.pi;
+  final pixelLon = (lonAt(x + 1.0) - lonAt(x.toDouble())) / 512;
+  final pixelLat = (latAt(y.toDouble()) - latAt(y + 1.0)) / 512;
+  var checked = 0;
+  for (final c in cells) {
+    final b = c.bounds(gsize);
+    final g = geo[c.id]!;
+    final interior = b[1] > lonAt(x.toDouble()) + pixelLon &&
+        b[1] + b[3] < lonAt(x + 1.0) - pixelLon &&
+        b[0] + b[2] < latAt(y.toDouble()) - pixelLat &&
+        b[0] > latAt(y + 1.0) + pixelLat;
+    if (!interior) continue;
+    checked++;
+    expect(lonAt(x + g[0] / g[4]), closeTo(b[1], pixelLon));
+    expect(lonAt(x + g[2] / g[4]), closeTo(b[1] + b[3], pixelLon));
+    expect(latAt(y + g[3] / g[4]), closeTo(b[0], pixelLat));
+    expect(latAt(y + g[1] / g[4]), closeTo(b[0] + b[2], pixelLat));
+  }
+  return checked;
 }

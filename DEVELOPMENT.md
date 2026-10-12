@@ -1593,7 +1593,7 @@ sat on. The constant body is dE 25.7 from the nearest coverage colour.
 ### Coverage Overlay (vector tiles)
 
 The MeshMapper coverage layer is rendered from the region server's vector tiles
-(`vector_tile.php`, z7–14, overzoom beyond) as a MapLibre source+layer pair. The app is
+(`vector_tile.php`, z2–14, overzoom beyond) as a MapLibre source+layer pair. The app is
 vector-only — every region server must serve `vector_tile.php` (the legacy raster
 `tiles.php` overlay was removed from the app 2026-06). Contract reference:
 `MeshMapper_Server/docs/VECTOR_TILES.md`.
@@ -1601,6 +1601,18 @@ vector-only — every region server must serve `vector_tile.php` (the legacy ras
 - **Styling is client-side**: each cell carries an integer status category `st`; colours
   come from `match` expressions built by `lib/utils/coverage_tile_palette.dart` (kept in
   sync with the server's `dev/cvd_palettes.php`, including all colour-vision palettes).
+- **Tile format 2 (`cf=2`)**: every tile request (overlay, fresh refetch, Smart Pinging)
+  sends `cf=2` (`kCoverageTileFormat` in `lib/utils/mvt_cells.dart`), a promise that the app
+  handles a feature carrying `k` at any zoom. Such a feature is a BLOCK of k by k 300 m cells,
+  whatever gsize was asked for: its rectangle is the 300 m steps times k, and its i/j are block
+  indices (`CoverageCell.bounds`, never the raw grid steps). The server serves blocks at z2 to
+  z6 to every client and, to a `cf=2` client, at z7 to z9 too (Detailed's 100 m cells start at
+  z10). The app never assumes the zoom-to-k table; it reads `k` off each feature. The fill
+  paints from `st` alone, so blocks colour like cells. The session patch filter is
+  `coveragePatchBaseFilter`, "show if it has `k` OR its `i_j` is not patched", so a block whose
+  index happens to equal a patched cell's is never hidden. The patch extraction and Smart
+  Pinging skip blocks (their i/j are not cells of the fine grid; Smart Pinging fails open).
+  Only send a newer `cf` once every reader handles that format.
 - **Coverage Grid preference (`prefs.coverageGridSize`)**: Simplified (300 m, default) or
   Detailed (100 m + blob), mirroring the web's Grid Mode; baked into the tile URL. The
   grid is locked to the chosen preset at every zoom — cells never resize.

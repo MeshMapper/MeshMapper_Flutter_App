@@ -3746,15 +3746,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // The server emits an integer status category per cell (st); colour
       // happens HERE via match expressions, so colour-vision palettes apply
       // without any server param and a tile carries data, not pixels.
+      // cf declares the tile format this build understands (blocks carrying
+      // `k`); only send it while the decoder, the patch filter and the paint
+      // all handle blocks.
       final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize$radioSuffix$recentSuffix';
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize&cf=$kCoverageTileFormat$radioSuffix$recentSuffix';
       debugLog(
           '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
-      // minzoom 7 = the raster's old on-screen range (512px-convention vector
-      // tiles sit one display-zoom lower than 256px raster tiles).
+      // minzoom 2: the server answers z2 and up, zoomed-out tiles as blocks
+      // of 300 m cells (each carrying `k`). The fill paints from `st` alone,
+      // so a block colours exactly like a cell.
       await _mapController!.addSource(
         sourceId,
-        VectorSourceProperties(tiles: [url], minzoom: 7, maxzoom: 14),
+        VectorSourceProperties(tiles: [url], minzoom: 2, maxzoom: 14),
       );
       await _mapController!.addFillLayer(
         sourceId,
@@ -4050,12 +4054,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// GeoJSON FeatureCollection of the session patch: one rectangle per cell,
   /// corners computed from grid indices exactly like the server's tiles.
   Map<String, dynamic> _buildPatchGeoJson(AppStateProvider appState) {
-    final steps = kCoverageGridSteps[appState.preferences.coverageGridSize] ??
-        kCoverageGridSteps[300]!;
+    final gridSize = appState.preferences.coverageGridSize;
     final features = <Map<String, dynamic>>[];
     for (final cell in appState.coveragePatchCells.values) {
-      final lat0 = cell.i * steps[0];
-      final lon0 = cell.j * steps[1];
+      final b = cell.bounds(gridSize);
+      final lat0 = b[0];
+      final lon0 = b[1];
+      final steps = [b[2], b[3]];
       // No feature id: nothing reads it on the patch layer, and 42-bit ids
       // don't survive Android's float32 JSON bridge anyway (see
       // _applyBasePatchFilter).
@@ -4087,33 +4092,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// on the feature id: Android's filter converter parses every JSON number
   /// as float32, which silently rounds the 42-bit ids so an id-based `in`
   /// never matches. Strings cross the bridge untouched on every platform.
+  ///
+  /// A zoomed-out block (a feature carrying `k`) is never hidden: its i/j are
+  /// block indices, so one that happens to equal a patched cell's indices
+  /// would otherwise vanish. See [coveragePatchBaseFilter].
   Future<void> _applyBasePatchFilter(
       AppStateProvider appState, String baseLayerId) async {
     if (_mapController == null || appState.coveragePatchCells.isEmpty) return;
     final keys = [
       for (final cell in appState.coveragePatchCells.values)
-        '${cell.i}_${cell.j}'
+        if (!cell.isBlock) '${cell.i}_${cell.j}'
     ];
     try {
-      await _mapController!.setFilter(baseLayerId, [
-        '!',
-        [
-          'in',
-          [
-            'concat',
-            [
-              'to-string',
-              ['get', 'i']
-            ],
-            '_',
-            [
-              'to-string',
-              ['get', 'j']
-            ],
-          ],
-          ['literal', keys],
-        ],
-      ]);
+      await _mapController!
+          .setFilter(baseLayerId, coveragePatchBaseFilter(keys));
     } catch (e) {
       debugLog('[MAP] Coverage base filter failed: $e');
     }

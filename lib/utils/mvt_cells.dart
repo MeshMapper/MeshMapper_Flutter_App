@@ -2,10 +2,15 @@ import 'dart:typed_data';
 
 /// Minimal decoder for MeshMapper's coverage vector tiles (vector_tile.php) —
 /// just enough of the MVT/protobuf wire format to extract each cell's
-/// `{id, i, j, st}`. Geometry is skipped entirely: a cell's rectangle is
+/// `{id, i, j, st, k}`. Geometry is skipped entirely: a cell's rectangle is
 /// reconstructed from its grid indices (i, j) and the grid step table, which
 /// is byte-identical to what the server encoded (both compute corners from
 /// indices). Contract reference: MeshMapper_Server/docs/VECTOR_TILES.md.
+///
+/// Coverage format 2 (`cf=2` on the request): a feature may carry `k`, which
+/// makes it a BLOCK of k by k 300 m cells whatever gsize was asked for. Its
+/// (i, j) are block indices on the 300 m steps times k. Use
+/// [CoverageCell.bounds] to get a rectangle, never the raw grid steps.
 ///
 /// WEB-SAFE BY DESIGN: feature ids run up to ~2^42 and dart2js truncates
 /// bitwise ops to 32 bits, so varint/zigzag decoding here uses arithmetic
@@ -19,15 +24,76 @@ const Map<int, List<double>> kCoverageGridSteps = {
   100: [0.0009, 0.00128],
 };
 
+/// The coverage tile format this app understands, sent as `cf` on every
+/// vector_tile.php request. 2 = any feature may carry `k` (a block of k by k
+/// 300 m cells), at any zoom. Absent means format 1, today's fine cells.
+const int kCoverageTileFormat = 2;
+
 /// One coverage cell from a decoded tile. `st` is the server's status
 /// category (1=green 2=cyan 3=orange 4=purple 5=grey 6=red).
+///
+/// [k] is null for a plain cell of the requested grid. When set, the feature
+/// is a block of k by k 300 m cells and (i, j) index blocks, not cells.
 class CoverageCell {
   final int id;
   final int i;
   final int j;
   final int st;
-  const CoverageCell(this.id, this.i, this.j, this.st);
+  final int? k;
+  const CoverageCell(this.id, this.i, this.j, this.st, [this.k]);
+
+  /// True when this feature is a zoomed-out block rather than a grid cell.
+  bool get isBlock => k != null;
+
+  /// `[lat0, lon0, latStep, lonStep]` of this feature's rectangle. A block
+  /// always sits on the 300 m steps times k; a plain cell on [gridSize]'s
+  /// steps (falling back to 300 m for an unknown size).
+  List<double> bounds(int gridSize) {
+    final k = this.k;
+    final double latStep;
+    final double lonStep;
+    if (k != null) {
+      final s300 = kCoverageGridSteps[300]!;
+      latStep = s300[0] * k;
+      lonStep = s300[1] * k;
+    } else {
+      final s = kCoverageGridSteps[gridSize] ?? kCoverageGridSteps[300]!;
+      latStep = s[0];
+      lonStep = s[1];
+    }
+    return [i * latStep, j * lonStep, latStep, lonStep];
+  }
 }
+
+/// The base coverage layer's SHOW filter while a session patch exists:
+/// show a feature when it is a block (carries `k`) OR its `"i_j"` is not one
+/// of the patched [keys]. A block's i/j are block indices, so matching it
+/// against a fine cell's key would hide a block that has nothing to do with
+/// the patch. Writing it as `all[!has(k), ...]` instead would hide every
+/// block whenever any patch exists.
+List<Object> coveragePatchBaseFilter(List<String> keys) => [
+      'any',
+      ['has', 'k'],
+      [
+        '!',
+        [
+          'in',
+          [
+            'concat',
+            [
+              'to-string',
+              ['get', 'i']
+            ],
+            '_',
+            [
+              'to-string',
+              ['get', 'j']
+            ],
+          ],
+          ['literal', keys],
+        ],
+      ],
+    ];
 
 class _Reader {
   final Uint8List buf;
@@ -117,16 +183,20 @@ List<CoverageCell> _decodeLayer(_Reader layer) {
         _skip(f, wire);
       }
     }
-    int? i, j, st;
+    int? i, j, st, k;
     for (var t = 0; t + 1 < tags.length; t += 2) {
       final key = tags[t] < keys.length ? keys[tags[t]] : '';
       final value = tags[t + 1] < values.length ? values[tags[t + 1]] : 0;
       if (key == 'i') i = value;
       if (key == 'j') j = value;
       if (key == 'st') st = value;
+      if (key == 'k') k = value;
     }
+    // A block size that is not a positive int cannot be drawn or keyed, so
+    // the feature is dropped like any other unreadable one.
+    if (k != null && k < 1) continue;
     if (i != null && j != null && st != null) {
-      cells.add(CoverageCell(id, i, j, st));
+      cells.add(CoverageCell(id, i, j, st, k));
     }
   }
   return cells;

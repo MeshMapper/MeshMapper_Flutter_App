@@ -92,6 +92,7 @@ void main() {
         'x': '2385',
         'y': '2926',
         'gsize': '300',
+        'cf': '2',
         'f_days': '14',
         'f_types': 'green,cyan',
       });
