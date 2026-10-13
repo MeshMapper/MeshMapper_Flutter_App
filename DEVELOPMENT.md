@@ -491,9 +491,11 @@ untouched. On by default with a 14 day window.
   `discDropEnabled` pattern. A missing or invalid field means not enforced, 14 days
   (`ApiService.enforceSmartPing`, `apiSmartPingDays`).
 - **Data source**: `vector_tile.php?z=13&gsize=<grid>&f_days=<days>&f_types=green,cyan`
-  (`ApiService.fetchRecentCoverageTile`), decoded by `decodeCoverageCells`. The square is the
-  cell of the user's Coverage Grid setting (300 m or 100 m), so what is deferred matches what
-  is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not used.
+  (`ApiService.fetchRecentCoverageTile`, read from the coverage host: the group's own site when
+  the zone is grouped, see Multi-region groups), decoded by `decodeCoverageCells`. The square
+  is the cell of the user's Coverage Grid setting (300 m or 100 m), so what is deferred matches
+  what is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not
+  used.
   The fetch also carries the radio preset filter (`f_freq`, `f_bw`, `f_sf`, see Coverage
   Overlay), and `RecentCoverageService.configure(radioKey:)` drops every loaded tile when the
   preset changes, since a tile fetched under the old preset answers for the wrong layer.
@@ -984,6 +986,7 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
   `MeshMapper_Server/docs/APP_API.md`.
 - **Authentication**: API key in JSON body (NOT query string)
 - **Retry Logic**: Exponential backoff on failures. A 429 storm-brake answer holds the whole queue for the server's `Retry-After` without spending a retry (see Session Heartbeat)
+- **Scheduled uploads can be paused**: `ApiQueueService.pauseScheduledUploads()` cancels the periodic batch timer and the post-enqueue ping flush without touching the queue, remembering which of the two was running (or asked for while the pause held), and `resumeScheduledUploads()` puts back exactly that, plus a flush when anything was enqueued meanwhile. Explicit uploads (`forceUploadWithHoldWait`, `flushQueue`) still run while paused, which is how a group handoff drains the queue under a session it is about to release without a timer starting a batch that would land after the close and answer `bad_session`. `clearOnDisconnect` drops the pause with the timers, so a resume from a handoff that a disconnect superseded restarts nothing. `waitForUploadToFinish()` awaits an upload already on the wire (a `Completer` claimed with `_isUploading`) for at most 15 s: true when idle or once it lands, false at the bound. Both calls are idempotent; logged under `[API QUEUE]`. See Multi-region groups.
 - **Closed keep-alive sockets are replayed once**: every request `ApiService` makes goes through `_send`, which sends it again when the first attempt comes back `ClientException: Connection closed before full header was received`. The server closes an idle connection after 5 seconds while Dart's HttpClient keeps it pooled for 15, so a request made in that gap goes out on a socket that is already gone; a backgrounded app widens the gap further, because a frozen event loop cannot notice the close. Such a request never reaches the server (no access-log entry there), so replaying it changes nothing about what the server did. One replay only, and the per-attempt timeout stays at the call site so the replay gets a full allowance. Without it a single dead socket failed the whole connect on `/auth` and the user had to press Connect again.
 
 ### Update Required Panel
@@ -1108,7 +1111,7 @@ Prevents session timeout during long wardriving sessions by periodically refresh
 - **Storm brake (429)**: a `rate_limited` answer from `/wardrive` carries `Retry-After` (75s by default) and keeps the session valid (server contract: `docs/APP_API.md` Appendix C item 9, "a 429 is not a sign-out"). `ApiService` parses it into one per-session hold, `wardriveBackoff`, that every sender on that door respects: `uploadBatch` returns `UploadResult.held` (no retry spent), `checkSessionValid` skips the post and reports the last known verdict so the ping itself proceeds, and the keepalive reschedules after the hold instead of going quiet. The brake re-arms its penalty on every blocked hit, so one lane knocking through it would keep all of them locked out. Without the keepalive reschedule, a braked session lapsed while the car was stopped (no ping or upload restarted the lane), the next post got a 401 and the app re-minted a fresh session id, which is exactly what the brake must not cause (VLC-20260903-0002). A new session id drops the hold. The hold honours `Retry-After` in full, up to the one hour ceiling `maxWardriveRetryAfter`: the server derives the value from its penalty and re-arms the lockout on every blocked hit, so a client that retries before the penalty has run is braked for the rest of the session, which is why the app never shortens it. The 429 path on the server answers before any session work and does not refresh `expires_at`, so a hold that outlasts the 300 s session TTL lets the session lapse, and the TX pings queued behind wire tags minted under it are dropped when the next `/auth` returns a new session id. The app cannot close that gap without knocking into the open window; it is a server matter (refresh the expiry on a 429, or keep the penalty under the TTL). In practice the brake only trips above 300 posts per 60 s from one session, so a healthy app never sees it. Tests: `test/services/api_service_rate_limit_test.dart`.
 - **Mechanism**: POST to `/wardrive-api.php/wardrive` with `heartbeat: true` flag and optional GPS coordinates
 - **Response**: Returns updated `expires_at`, which schedules the next heartbeat
-- **Expiry recovery**: A live online companion treats only `session_expired` as recoverable. It serializes one replacement `/auth`, preserves the BLE connection and current auto mode, refreshes the region channels, validator, flood scope, capacity, Smart Pinging settings and path widths, then lets the recovered heartbeat lane own its next schedule. A recovered path policy applies the enforced regional width when present and otherwise restores the device firmware width, while retaining the user's trace-width preference. A recovery captures the exact connection and lifecycle generation, blocks new TX, and waits for an on-air TX window to finish its queued old wire tag before cleanup and session swap. Disconnect, zone transfer, Offline Mode, reconnect and disposal invalidate that ownership and wait for the recovery before releasing the current session. A superseded request is distinct from a failed recovery: stale preflights stop without a disconnect, stale heartbeats end quietly, and stale uploads stay held. If replacement configuration cannot be applied, the replacement session is explicitly released before the ordinary fatal path. Stale wire-tagged TX rows are removed before the new session ID is installed; untagged passive observations stay queued. Recovery is refused during disconnect, zone transfer, connection setup and Offline Mode. Other session and auth errors still follow the normal fatal-session path. A scheduled keepalive that comes back `session_expired` while the app is idle does NOT recover: no auto mode running, starting or stopping, no ping in flight, no Manage session open and nothing queued for upload (`sessionIsIdle` in `lib/services/idle_session.dart`, wired as `ApiService.isSessionIdle`). It stops the keepalive timers, leaves the lapsed session in place and logs under `[HEARTBEAT]`. This is the Android case where a stopped mode lets the backgrounded process freeze, the keepalive never fires, and the overdue one comes back expired on resume; recovering there minted a session that never saw a ping (empty sessions on the admin dashboard). The next Start or manual ping recovers it through `checkSessionValid`, which always posts its own heartbeat rather than trusting the stored expiry, and the heartbeat's enabled flag is kept so the recovered session reschedules its keepalive. The Manage sheet's `/repeater` actions (claim, unclaim, neighbour upload) run the same check first, since that door reports an expired session but never recovers one. A keepalive answer is only acted on while its session is still the current one: a failed answer for a session a manual action has since replaced is ignored, so it cannot cancel or retry the replacement's keepalive. The idle disconnect timer is untouched. Upload and preflight recovery are not gated, and a busy app recovers exactly as before.
+- **Expiry recovery**: A live online companion treats only `session_expired` as recoverable. It serializes one replacement `/auth` (a second caller joins the in-flight attempt; while a group handoff holds that slot every caller is instead answered `superseded` at once, `resolveSessionRecoveryJoin`, see Multi-region groups), preserves the BLE connection and current auto mode, and through `_mintAndApplyReplacementSession` (the back half a group handoff shares with it) refreshes the region channels, validator, flood scope, capacity, Smart Pinging settings and path widths, then lets the recovered heartbeat lane own its next schedule. A recovered path policy applies the enforced regional width when present and otherwise restores the device firmware width, while retaining the user's trace-width preference. A recovery captures the exact connection and lifecycle generation, blocks new TX, and waits for an on-air TX window to finish its queued old wire tag before cleanup and session swap. Disconnect, zone transfer, Offline Mode, reconnect and disposal invalidate that ownership and wait for the recovery before releasing the current session. A superseded request is distinct from a failed recovery: stale preflights stop without a disconnect, stale heartbeats end quietly, and stale uploads stay held. If replacement configuration cannot be applied, the replacement session is explicitly released before the ordinary fatal path. Stale wire-tagged TX rows are removed before the new session ID is installed; untagged passive observations stay queued. Recovery is refused during disconnect, zone transfer, connection setup and Offline Mode. Other session and auth errors still follow the normal fatal-session path. A scheduled keepalive that comes back `session_expired` while the app is idle does NOT recover: no auto mode running, starting or stopping, no ping in flight, no Manage session open and nothing queued for upload (`sessionIsIdle` in `lib/services/idle_session.dart`, wired as `ApiService.isSessionIdle`). It stops the keepalive timers, leaves the lapsed session in place and logs under `[HEARTBEAT]`. This is the Android case where a stopped mode lets the backgrounded process freeze, the keepalive never fires, and the overdue one comes back expired on resume; recovering there minted a session that never saw a ping (empty sessions on the admin dashboard). The next Start or manual ping recovers it through `checkSessionValid`, which always posts its own heartbeat rather than trusting the stored expiry, and the heartbeat's enabled flag is kept so the recovered session reschedules its keepalive. The Manage sheet's `/repeater` actions (claim, unclaim, neighbour upload) run the same check first, since that door reports an expired session but never recovers one. A keepalive answer is only acted on while its session is still the current one: a failed answer for a session a manual action has since replaced is ignored, so it cannot cancel or retry the replacement's keepalive. The idle disconnect timer is untouched. Upload and preflight recovery are not gated, and a busy app recovers exactly as before.
 - **Bounding the recovery wait**: ownership is one predicate, `_ownsSessionRecovery(generation, connection, publicKey)`, re-read after every await: not disposed, still the current generation, not in Offline Mode, not connecting, reconnecting or transferring, still at `ConnectionStep.connected`, the same `MeshCoreConnection` instance and the same device public key. The teardown paths bump that generation (`_invalidateLiveSessionRecovery`) and then wait, but only for `sessionRecoveryWaitTimeout` (15 s, through `awaitSessionRecoveryBounded`), after which they carry on and log under `[SESSION]`. Giving up is safe precisely because of the ownership re-read: the recovery finishes on its own and finds it has been superseded. A recovery is two network legs (an `/auth` POST, then the channel and validator work it applies), and an unbounded wait held `disconnect()` and `_startAutoReconnect()` for as long as it liked with the UI already reading Disconnecting and the radio still up. `disconnect()` releases the sign gate and the repeater-admin slot (`abortPendingSign()`, `abortPendingAdmin()`) BEFORE that wait, not after it: a live sign holding the gate through all 15 seconds is exactly what aborting first exists to prevent. A superseded recovery releases the replacement session it already minted through `_releaseRecoveredSession` without being awaited, because that release is a second `/auth` POST that can sit for 30 s, nothing on this path depends on its answer, and the caller that superseded it is blocked on this recovery settling. A recovery that fails for its own reasons still awaits its release before returning `failed`.
 - **Flow**: Auth response sets initial `expires_at` → each wardrive POST or heartbeat updates it → timer reschedules automatically
 
@@ -1592,8 +1595,10 @@ sat on. The constant body is dE 25.7 from the nearest coverage colour.
 
 ### Coverage Overlay (vector tiles)
 
-The MeshMapper coverage layer is rendered from the region server's vector tiles
-(`vector_tile.php`, z2–14, overzoom beyond) as a MapLibre source+layer pair. The app is
+The MeshMapper coverage layer is rendered from the coverage host's vector tiles
+(`vector_tile.php`, z2–14, overzoom beyond) as a MapLibre source+layer pair. The host is
+`AppStateProvider.coverageHostCode`: the zone's own site, or the group's site when the zone
+belongs to a multi-region group (see Multi-region groups). The app is
 vector-only — every region server must serve `vector_tile.php` (the legacy raster
 `tiles.php` overlay was removed from the app 2026-06). Contract reference:
 `MeshMapper_Server/docs/VECTOR_TILES.md`.
@@ -1652,6 +1657,134 @@ vector-only — every region server must serve `vector_tile.php` (the legacy ras
   `lib/providers/app_state_provider.dart` (`_freshenAffectedVectorTiles`),
   `lib/services/api_service.dart` (`freshenVectorTile`),
   `lib/utils/coverage_tile_palette.dart`, `lib/utils/mvt_cells.dart`.
+
+### Multi-region groups
+
+A zone can belong to a multi-region group (Ottawa, Montreal and Quebec City as `ONQC`). The
+`/status` in-zone answer carries `zone.group = {code, name, members}` for a grouped zone and no
+key at all for a standalone one; `/auth` carries the same object, which the app does not need.
+Contract: `MeshMapper_Server/docs/APP_API.md` (sections 2 and 3.1). The app parses it in exactly
+one place, `parseZoneGroup` in `lib/utils/zone_group.dart`: a missing, null or non-map `group`, a
+non-string code, or a code that is not `[A-Z0-9]+` after trim and upper-case all mean "no group",
+so a server that never sends the key (production before the server change, and Offline Mode's
+own auth) leaves the app behaving exactly as before. The name is trimmed (blank to null) and the
+members trimmed and upper-cased. There is no setting: it is on whenever the server says the zone
+is grouped. `AppStateProvider.zoneGroup` parses `_currentZone` on each read, and
+`_noteZoneGroupChange` logs `[APP] Zone group: CODE (N members)` (or `none`) once per change,
+after both `_currentZone = newZone` assignments in the `/status` handler.
+
+- **What follows the group.** Labels: `displayZoneCode` is the group code when there is one,
+  else the zone code, and `shortZoneCode` cuts it for the short labels (`shortZoneLabel`,
+  `kShortZoneLabelMax` = 4: anything longer becomes the first 4 characters and an ellipsis, so
+  `FINLAND` reads `FINL…`). The status bar, the map's GPS chip, the Connection screen chip, the
+  Live Activity, the watch snapshot and Siri's session snapshot all read `shortZoneCode` where
+  they read `zoneCode` before, the two external-surface preflight keys included (they dedupe the
+  displayed payload, so a group arriving on an unchanged member zone must still flush).
+  `displayZoneName` is the group's name when the server sent one, else the zone's. The compact
+  Regional Settings card adds a `Region` row with the full group code beside the member code
+  (`RegionalConfigCard.groupCode`), hidden in Offline Mode. Labels never bump `mapRevision`
+  (Rule 9). Coverage: `coverageHostCode` (group code, else zone code) is the subdomain the
+  coverage overlay's tile template, the post-wardrive `fresh=1` refetch (`_pendingFreshZone`),
+  both coverage taps (`fetchCellCoverage`, `fetchRepeaterCoveragePoints`; `app_coverage.php` is
+  never sent a `zone` in its body) and Smart Pinging's tiles (`_syncRecentCoverage` configures
+  `RecentCoverageService` with it) are read from, because the group's own site
+  (`<code>.meshmapper.net`) merges every member. `MapWidget` keys the overlay on it
+  (`_lastOverlayHostCode`), so a move between two members of one group changes nothing on the
+  map, and leaving the group is an ordinary host change (session patch dropped, overlay rebuilt)
+  through the existing zone watcher. Repeaters and borders are still FETCHED from the member's
+  site (`fetchRepeaters(iata)`, `_fetchBorderPolygons(iata)`; the member already answers for the
+  whole group) but KEYED on `_repeaterContextKey`, which is `coverageHostCode`:
+  `_repeatersLoadedForIata`, `_bordersLoadedForZone`, the in-flight fetch dedupe,
+  `_invalidateRepeatersForContext` and the scope lifecycle's "list still current" check all
+  compare the key, so a move inside the group neither clears nor refetches either list, and two
+  members racing a fetch collapse to one request.
+- **What stays the member.** `zone.code` is still the session's identity everywhere the server
+  reads it: the `/auth` `iata`, `_sessionZoneCode`, every upload, the wire tags, the custom API
+  forward (`iataGetter`) and the offline `iataOverride`, `Repeater.iata` and the Siri repeater
+  entity key, and the host of every `fetchRepeaters` call. Only the labels and the coverage host
+  change. `_sessionGroupCode` (read-only `sessionGroupCode`) is stored beside `_sessionZoneCode`
+  at every site that sets it (connect, the switch to online, the visible transfer, the handoff)
+  and cleared with it.
+- **The hidden handoff.** The server never moves a session between zones (below), so the app
+  still changes session at every border; inside a group the user does not see it. The `/status`
+  in-zone handler classifies a zone change under a live session with the pure
+  `classifyZoneMove(sessionZone, sessionGroup, newZone, newGroup)`: `none` (same zone, or no
+  session), `hiddenHandoff` (another member of the session's own group), `fullTransfer`
+  (anything else: a different group, or no group on either side). The outer gates are the old
+  ones (connected, not Offline Mode, not in zone grace, no transfer in progress), and zone-grace
+  re-entry keeps the visible transfer, grace being a visible state already. A `fullTransfer`
+  awaits `_handleZoneTransfer` exactly as before. A `hiddenHandoff` fires `_startGroupHandoff`
+  unawaited, or logs `[ZONE] Group handoff deferred` and returns when a session swap already
+  holds the recovery slot (a later tick still reads the old session zone, so it lands here again
+  and must not start a second swap; the running one owns the move).
+
+  `_handOffWithinGroup`, in order: stop a scope runner (`ScopeStopEvent.zoneTransfer`, borrowed
+  routes kept), hold new TX (`PingService.setSessionRecoveryInProgress`, the recovery hold, so a
+  send that comes due bows out and re-arms), pause the queue's scheduled uploads
+  (`ApiQueueService.pauseScheduledUploads`, see API Queue System), wait for an on-air TX window
+  to queue its old wire tag (`waitForTxWindow`), flush the RX buffer, drain the queue under the
+  old session (at most 5 rounds of `forceUploadWithHoldWait`, each first awaiting
+  `waitForUploadToFinish` since the queue silently skips a second upload, stopping when a round
+  does not shrink the queue), wait once more for any upload still on the wire (15 s, a `[ZONE]`
+  warning when the bound runs out), release the old session with
+  `disconnect_cause: zone_transfer`, drop the tagged TX the drain left behind
+  (`dropStaleTaggedItems`, called explicitly: the release nulls the held id, so the connect that
+  follows has no previous id to fire `onSessionIdChanged` against), then
+  `_mintAndApplyReplacementSession` with the new member's code. Only after a successful apply do
+  `_sessionZoneCode` and `_sessionGroupCode` move, the keepalive is re-armed with
+  `enableHeartbeat` (the release cancelled its timers and a connect auth never schedules one),
+  the periodic scope repeater refresh is re-armed when Passive or Hybrid is running and the timer
+  is not, and `notifyListeners()` runs. The TX hold and the upload pause are released in a
+  `finally` on every path. It never sets `_isZoneTransferInProgress`, never stops auto-ping, the
+  RX logger, the zone refresh timer or the idle disconnect timer, never clears the borders or the
+  repeater list, and never calls `clearOnDisconnect`: auto-ping keeps its schedule through the
+  swap, so Hybrid does not flip early or late at the border, and the cost is about a second of
+  TX hold.
+
+  The handoff rides the expiry recovery's single in-flight slot (`_liveSessionRecoveryInFlight`,
+  the same `whenComplete` identity clear), so disconnect, auto-reconnect, the Offline Mode hot
+  switch, zone transfer and dispose already supersede it (the generation bump) and wait for it,
+  bounded by `sessionRecoveryWaitTimeout`. Ownership is `_ownsSessionRecovery` plus
+  `!_isInZoneGracePeriod`: zone grace keeps the session and disables the heartbeat without
+  bumping the generation, and its re-entry runs the visible transfer, so a handoff still running
+  then bows out. While the handoff holds the slot `_groupHandoffOwnsRecoverySlot` is set and
+  `_recoverExpiredLiveSession` answers every `session_expired` with `superseded` at once
+  (`resolveSessionRecoveryJoin` in `lib/services/session_recovery_join.dart`): the drain upload
+  is itself a lane that can ask, and handing it the handoff's own future made the two wait on
+  each other for good. The upload comes back held with no retry spent, the keepalive and the
+  preflight bow out, and the handoff mints the replacement itself. The results are the
+  recovery's: `recovered`, `superseded` (something else owns the cleanup; a session minted
+  meanwhile is released unawaited) or `failed`, which never leaves a minted session behind (an
+  apply failure releases it, awaited). On `failed`, `_startGroupHandoff` falls back to the
+  visible `_handleZoneTransfer` when `groupHandoffNeedsFallback` holds (still connected, not
+  Offline Mode, not in grace, the phone still in the member the handoff was for, and
+  `_sessionZoneCode` still the old member, which is why the code moves only after the apply). A
+  throw out of the handoff is caught there and treated as `failed`, since nothing awaits the
+  method.
+- **Server side.** `/wardrive` (online only) no longer moves a session between regions. A
+  batch's zone is its newest item's; when it lands outside the session's own zone the server
+  stores the WHOLE batch under the session's own zone and answers 200 in three cases: in a zone
+  of the same enabled group at any distance, in another zone within 50 km of the session's zone,
+  or in no zone at all within 50 km. Farther away it answers 403 `outside_zone` with the session
+  kept (the app's zone grace path). `/status` always answers the true zone, so the transfer
+  trigger is unchanged. What the handoff relies on: the queue is drained under the old session
+  first (those batches stick to the old zone, which is what makes the drain lossless even though
+  the newest ping lies in the member just entered), and the old session is released BEFORE the
+  new `/auth` (a still-live old row would double count the driver against a full group).
+  `disconnect_cause: zone_transfer` rides every zone-move release, visible or hidden, is
+  whitelisted server-side and shows as "Zone transfer" under Session Endings. See
+  `MeshMapper_Server/docs/APP_API.md`: the Border crossings paragraph under the `/wardrive`
+  errors, the `outside_zone` row, and the `disconnect_cause` row in section 3.3.
+- **Accepted residual**: a batch POSTed under the old session that lands at the server after
+  the release answers `bad_session`, the fatal path, the same window the visible transfer always
+  had; the paused timers and the awaited drain narrow it to a batch another lane put out during
+  the release POST itself.
+- Logged under `[ZONE]` (the handoff), `[APP]` (the group), `[SESSION]` (the joiner rule),
+  `[API QUEUE]` (the pause and the in-flight wait) and `[MAP]` (the overlay host). Tests:
+  `test/utils/zone_group_test.dart` (parsing, the short label, the move classifier, the fallback
+  rule), `test/services/session_recovery_join_test.dart`,
+  `test/services/api_queue_upload_pause_test.dart`,
+  `test/widgets/regional_config_card_test.dart`.
 
 ### Coverage Connection Lines (tap-to-inspect)
 
@@ -2427,6 +2560,7 @@ debugError('[API] Failed to post batch: $error');
 | `[SCAN]` | BLE device scanning |
 | `[WAKELOCK]` | Wake lock acquisition/release |
 | `[WATCH]` | WatchConnectivity bridge: availability, snapshot delivery, wrist commands |
+| `[ZONE]` | Zone checks, the visible zone transfer and the hidden handoff between members of a region group |
 | `[LIVE ACTIVITY]` | ActivityKit bridge: sync, end, authorization failures, one line per publish and per held window |
 | `[ACCOUNT]` | MyMeshMapper portal sign-in and companion device linking |
 
@@ -2646,6 +2780,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/recent_coverage_service.dart` - Smart Pinging lookup: recently covered cells from filtered z13 tiles
 - `lib/services/airborne_release.dart` - Pure builder for the airborne session-end text and release telemetry
 - `lib/services/disconnect_alert_decision.dart` - Pure staleness rule for the disconnect alert, so a beep delayed by a suspended process is never played
+- `lib/services/session_recovery_join.dart` - Pure rule for what a `session_expired` does while a recovery, or a group handoff, already holds the recovery slot
 - `lib/services/api_queue_service.dart` - Persistent upload queue
 - `lib/services/device_model_service.dart` - Device catalog cache, launch and connect-time refresh, unknown-device outbox
 - `lib/services/device_model_matcher.dart` - Shared identity sanitization, normalization and exact catalog match
@@ -2688,6 +2823,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/meshcore/packet_validator.dart` - Packet validation and carpeater filtering
 - `lib/services/meshcore/regional_carpeater_filter.dart` - The region's shared CARpeater list: own-key exclusion, hop-prefix and full-key matching
 - `lib/utils/public_key.dart` - Full public key normalization (upper-case 64 hex)
+- `lib/utils/zone_group.dart` - The zone's multi-region group: `parseZoneGroup`, the short label, the zone-move classifier and the handoff fallback rule
 - `lib/utils/repeater_marker_style.dart` - Repeater marker geometry, the five-state colour registry, and the cluster dominant/presence expressions
 - `lib/utils/cluster_spread.dart` - The zoom that pulls a repeater cluster apart, deciding zoom-vs-spread on tap
 - `lib/utils/repeater_marker_painter.dart` - Draws the repeater chip, the cluster badge disc and its presence dots
