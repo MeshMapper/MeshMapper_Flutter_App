@@ -90,6 +90,7 @@ import '../services/scope_discovery/scope_discovery_rules.dart';
 import '../services/scope_discovery/scope_lifecycle.dart';
 import '../services/scope_discovery/scope_provider_support.dart';
 import '../services/scope_discovery/scope_runner.dart';
+import '../services/session_recovery_join.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_claim_unclaim.dart';
 import '../services/repeater_admin/repeater_claims_cache.dart';
@@ -614,6 +615,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   int _sessionRecoveryGeneration = 0;
   Future<SessionRecoveryResult>? _liveSessionRecoveryInFlight;
+
+  /// True while a group handoff holds [_liveSessionRecoveryInFlight]. A
+  /// session_expired arriving then is answered superseded instead of being
+  /// handed the handoff's own future (see [resolveSessionRecoveryJoin]).
+  bool _groupHandoffOwnsRecoverySlot = false;
 
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
@@ -7258,7 +7264,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Returns true if session is valid, false if expired (triggers disconnect)
   Future<SessionRecoveryResult> _recoverExpiredLiveSession() {
     final inFlight = _liveSessionRecoveryInFlight;
-    if (inFlight != null) return inFlight;
+    switch (resolveSessionRecoveryJoin(
+      groupHandoffOwnsSlot: _groupHandoffOwnsRecoverySlot,
+      recoveryInFlight: inFlight != null,
+    )) {
+      case SessionRecoveryJoin.supersededByHandoff:
+        // The handoff's own drain is one of the lanes that can ask here, and
+        // the in-flight future is the handoff: joining it would deadlock
+        // both. Every lane reads superseded as "ended quietly" (the upload
+        // comes back held with no retry spent), and the handoff mints the
+        // replacement session itself.
+        debugLog('[SESSION] session_expired during a group handoff: the '
+            'handoff mints the replacement');
+        return Future.value(SessionRecoveryResult.superseded);
+      case SessionRecoveryJoin.joinInFlight:
+        return inFlight!;
+      case SessionRecoveryJoin.startNew:
+        break;
+    }
 
     final generation = _sessionRecoveryGeneration;
     late final Future<SessionRecoveryResult> recovery;
@@ -7325,104 +7348,124 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return SessionRecoveryResult.superseded;
       }
 
-      final deviceName = _isAnonymousRenamed
-          ? 'Anonymous'
-          : (connection.selfInfo?.name ??
-              connectedDeviceName?.replaceFirst('MeshCore-', ''));
-      if (deviceName == null || deviceName.isEmpty) {
-        debugWarn(
-            '[SESSION] Refusing expired-session recovery without a device name');
-        return SessionRecoveryResult.failed;
-      }
-
-      final position = _currentPosition!;
-      final model = connection.deviceModel?.manufacturer ??
-          connection.deviceInfo?.manufacturer ??
-          'Unknown';
-      debugLog(
-          '[SESSION] Re-authenticating live companion after session expiry');
-      Map<String, dynamic>? result;
-      try {
-        result = await _apiService.requestAuth(
-          reason: 'connect',
-          publicKey: publicKey,
-          who: deviceName,
-          appVersion: _appVersion,
-          power: _preferences.powerLevel,
-          iataCode: zoneCode ?? _preferences.iataCode,
-          model: model,
-          radioFreq: connection.selfInfo?.radioConfigApi,
-          lat: position.latitude,
-          lon: position.longitude,
-          accuracyMeters: position.accuracy,
-          shouldStoreSession: () =>
-              _ownsSessionRecovery(generation, connection, publicKey),
-        );
-      } catch (e) {
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          debugLog('[SESSION] Stale re-authentication failure ignored');
-          return SessionRecoveryResult.superseded;
-        }
-        debugError('[SESSION] Live re-authentication failed: $e');
-        return SessionRecoveryResult.failed;
-      }
-      final replacementSessionId = result?['session_id'] as String?;
-      if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-        // Superseded: a disconnect or a reconnect took over and is blocked on
-        // this recovery settling. The release is a second /auth POST that can
-        // sit for 30 s, and nothing here depends on its answer, so it is fired
-        // and left to log its own failure.
-        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-        return SessionRecoveryResult.superseded;
-      }
-      if (result == null || result['success'] != true) {
-        debugWarn('[SESSION] Live re-authentication was not accepted');
-        return SessionRecoveryResult.failed;
-      }
-      if (replacementSessionId == null ||
-          _apiService.sessionId != replacementSessionId) {
-        // The session was minted but not stored, which only happens when
-        // ownership went away during the POST. Same superseded case, same
-        // unawaited release.
-        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-        return SessionRecoveryResult.superseded;
-      }
-
-      try {
-        if (result['type'] is String) _authType = result['type'] as String;
-        _syncZoneCapacityFromAuth(result);
-        final applied = await _applyRecoveredSessionConfiguration(
-          connection,
-          () => _ownsSessionRecovery(generation, connection, publicKey),
-        );
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-          return SessionRecoveryResult.superseded;
-        }
-        if (!applied) {
-          await _releaseRecoveredSession(publicKey, replacementSessionId);
-          if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-            return SessionRecoveryResult.superseded;
-          }
-          return SessionRecoveryResult.failed;
-        }
-      } catch (e) {
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-          return SessionRecoveryResult.superseded;
-        }
-        debugError('[SESSION] Failed to apply replacement session: $e');
-        await _releaseRecoveredSession(publicKey, replacementSessionId);
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          return SessionRecoveryResult.superseded;
-        }
-        return SessionRecoveryResult.failed;
-      }
-      notifyListeners();
-      return SessionRecoveryResult.recovered;
+      final result = await _mintAndApplyReplacementSession(
+        connection: connection,
+        publicKey: publicKey,
+        iataCode: zoneCode ?? _preferences.iataCode,
+        owns: () => _ownsSessionRecovery(generation, connection, publicKey),
+        tag: '[SESSION]',
+        what: 'expired-session recovery',
+      );
+      if (result == SessionRecoveryResult.recovered) notifyListeners();
+      return result;
     } finally {
       pingService.setSessionRecoveryInProgress(false);
     }
+  }
+
+  /// Mints a replacement session for the live companion in [iataCode] and
+  /// applies its answer (channels, validator, flood scope, zone policies,
+  /// path hash mode): the back half shared by an expired-session recovery
+  /// and a group handoff. [owns] is re-read after every await; once it reads
+  /// false the caller's successor owns the cleanup, and any session minted
+  /// here is released without being awaited (that release is a second /auth
+  /// POST that can sit for 30 s, and the successor is blocked on this
+  /// settling). `failed` never leaves a minted session behind. [tag] and
+  /// [what] name the caller in the logs.
+  Future<SessionRecoveryResult> _mintAndApplyReplacementSession({
+    required MeshCoreConnection connection,
+    required String publicKey,
+    required String? iataCode,
+    required bool Function() owns,
+    required String tag,
+    required String what,
+  }) async {
+    final deviceName = _isAnonymousRenamed
+        ? 'Anonymous'
+        : (connection.selfInfo?.name ??
+            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    if (deviceName == null || deviceName.isEmpty) {
+      debugWarn('$tag Refusing $what without a device name');
+      return SessionRecoveryResult.failed;
+    }
+    final position = _currentPosition;
+    if (position == null) {
+      debugWarn('$tag Refusing $what without a position');
+      return SessionRecoveryResult.failed;
+    }
+
+    final model = connection.deviceModel?.manufacturer ??
+        connection.deviceInfo?.manufacturer ??
+        'Unknown';
+    debugLog('$tag Re-authenticating live companion for $what');
+    Map<String, dynamic>? result;
+    try {
+      result = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: publicKey,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: iataCode,
+        model: model,
+        radioFreq: connection.selfInfo?.radioConfigApi,
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyMeters: position.accuracy,
+        shouldStoreSession: owns,
+      );
+    } catch (e) {
+      if (!owns()) {
+        debugLog('$tag Stale re-authentication failure ignored');
+        return SessionRecoveryResult.superseded;
+      }
+      debugError('$tag Live re-authentication failed: $e');
+      return SessionRecoveryResult.failed;
+    }
+    final replacementSessionId = result?['session_id'] as String?;
+    if (!owns()) {
+      unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+      return SessionRecoveryResult.superseded;
+    }
+    if (result == null || result['success'] != true) {
+      debugWarn('$tag Live re-authentication was not accepted: '
+          '${result?['reason'] ?? 'no answer'}');
+      return SessionRecoveryResult.failed;
+    }
+    if (replacementSessionId == null ||
+        _apiService.sessionId != replacementSessionId) {
+      // The session was minted but not stored, which only happens when
+      // ownership went away during the POST. Same superseded case, same
+      // unawaited release.
+      unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+      return SessionRecoveryResult.superseded;
+    }
+
+    try {
+      if (result['type'] is String) _authType = result['type'] as String;
+      _syncZoneCapacityFromAuth(result);
+      final applied =
+          await _applyRecoveredSessionConfiguration(connection, owns);
+      if (!owns()) {
+        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+        return SessionRecoveryResult.superseded;
+      }
+      if (!applied) {
+        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        if (!owns()) return SessionRecoveryResult.superseded;
+        return SessionRecoveryResult.failed;
+      }
+    } catch (e) {
+      if (!owns()) {
+        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+        return SessionRecoveryResult.superseded;
+      }
+      debugError('$tag Failed to apply replacement session: $e');
+      await _releaseRecoveredSession(publicKey, replacementSessionId);
+      if (!owns()) return SessionRecoveryResult.superseded;
+      return SessionRecoveryResult.failed;
+    }
+    return SessionRecoveryResult.recovered;
   }
 
   Future<void> _releaseRecoveredSession(
@@ -7534,8 +7577,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _startGroupHandoff(
       String newZoneCode, String newZoneName) async {
     final generation = _sessionRecoveryGeneration;
+    // Set before the handoff starts (its first statements run synchronously)
+    // and cleared with the slot, so no session_expired can join it.
+    _groupHandoffOwnsRecoverySlot = true;
     late final Future<SessionRecoveryResult> handoff;
     handoff = _handOffWithinGroup(generation, newZoneCode).whenComplete(() {
+      _groupHandoffOwnsRecoverySlot = false;
       if (identical(_liveSessionRecoveryInFlight, handoff)) {
         _liveSessionRecoveryInFlight = null;
       }
@@ -7606,6 +7653,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // changes, as it does for the visible transfer.
     _scopeLifecycle.onEvent(ScopeStopEvent.zoneTransfer);
     pingService.setSessionRecoveryInProgress(true);
+    // The queue's own timers must not start a batch under the session this
+    // is about to release: a batch that lands after the server closed it
+    // answers bad_session, which ends the connection. Explicit drains below
+    // still run. Resumed in the finally on every path.
+    _apiQueueService.pauseScheduledUploads();
     try {
       // A TX already sent carries the old wire tag until its listening
       // window queues it. Nothing below may run before it reaches the queue.
@@ -7614,12 +7666,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Everything queued so far belongs to the old session: TX items carry
       // its wire tags, which the server only accepts under that session.
+      // Each round first waits for an upload already on the wire, since the
+      // queue silently skips a second one. If the old session has lapsed the
+      // drain comes back held (its session_expired is answered superseded,
+      // see _recoverExpiredLiveSession), nothing shrinks, and the loop moves
+      // on to release and mint, which is right for a lapsed session.
       await _rxLogger?.flushAllBatches(trigger: 'zone_handoff');
       if (!owns()) return SessionRecoveryResult.superseded;
-      var stalls = 0;
       for (var round = 0;
           round < 5 && _apiQueueService.queueSize > 0;
           round++) {
+        await _apiQueueService.waitForUploadToFinish();
+        if (!owns()) return SessionRecoveryResult.superseded;
         final before = _apiQueueService.queueSize;
         try {
           await _apiQueueService.forceUploadWithHoldWait();
@@ -7628,17 +7686,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           break;
         }
         if (!owns()) return SessionRecoveryResult.superseded;
-        if (_apiQueueService.queueSize < before) continue;
-        // A round that moved nothing is usually an upload already in flight
-        // (the queue skips a second one). Give it a moment and try once
-        // more, so the session is not released under a batch still on its
-        // way; a second stall means those items are waiting out a retry.
-        if (++stalls >= 2) break;
-        await Future<void>.delayed(const Duration(seconds: 1));
-        if (!owns()) return SessionRecoveryResult.superseded;
+        if (_apiQueueService.queueSize >= before) break;
       }
       debugLog('[ZONE] Group handoff drained, '
           '${_apiQueueService.queueSize} item(s) left');
+      // Nothing of ours is on the wire past this point: the timers are held
+      // and the drain was awaited. A batch another lane put out is waited
+      // for (bounded) so it is answered before the session closes.
+      if (!await _apiQueueService.waitForUploadToFinish()) {
+        debugWarn('[ZONE] Group handoff releasing with an upload still on '
+            'the wire');
+      }
+      if (!owns()) return SessionRecoveryResult.superseded;
 
       if (_apiService.hasSession) {
         try {
@@ -7659,85 +7718,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _apiQueueService.dropStaleTaggedItems();
       if (!owns()) return SessionRecoveryResult.superseded;
 
-      final deviceName = _isAnonymousRenamed
-          ? 'Anonymous'
-          : (connection.selfInfo?.name ??
-              connectedDeviceName?.replaceFirst('MeshCore-', ''));
-      if (deviceName == null || deviceName.isEmpty) {
-        debugWarn('[ZONE] Group handoff has no device name to authenticate');
-        return SessionRecoveryResult.failed;
-      }
-      final position = _currentPosition;
-      if (position == null) {
-        debugWarn('[ZONE] Group handoff has no position to authenticate');
-        return SessionRecoveryResult.failed;
-      }
-      Map<String, dynamic>? result;
-      try {
-        result = await _apiService.requestAuth(
-          reason: 'connect',
-          publicKey: publicKey,
-          who: deviceName,
-          appVersion: _appVersion,
-          power: _preferences.powerLevel,
-          iataCode: newZoneCode,
-          model: connection.deviceModel?.manufacturer ??
-              connection.deviceInfo?.manufacturer ??
-              'Unknown',
-          radioFreq: connection.selfInfo?.radioConfigApi,
-          lat: position.latitude,
-          lon: position.longitude,
-          accuracyMeters: position.accuracy,
-          shouldStoreSession: owns,
-        );
-      } catch (e) {
-        if (!owns()) return SessionRecoveryResult.superseded;
-        debugError('[ZONE] Group handoff auth failed: $e');
-        return SessionRecoveryResult.failed;
-      }
-      final newSessionId = result?['session_id'] as String?;
-      if (!owns()) {
-        // Whoever superseded this is blocked on it settling; the release is
-        // a second POST nothing here depends on, so it is not awaited.
-        unawaited(_releaseRecoveredSession(publicKey, newSessionId));
-        return SessionRecoveryResult.superseded;
-      }
-      if (result == null || result['success'] != true || newSessionId == null) {
-        debugWarn('[ZONE] Group handoff auth not accepted: '
-            '${result?['reason'] ?? 'no answer'}');
-        return SessionRecoveryResult.failed;
-      }
-      if (_apiService.sessionId != newSessionId) {
-        // Minted but not stored, which only happens when ownership went away
-        // during the POST. Same superseded case, same unawaited release.
-        unawaited(_releaseRecoveredSession(publicKey, newSessionId));
-        return SessionRecoveryResult.superseded;
-      }
-
-      try {
-        if (result['type'] is String) _authType = result['type'] as String;
-        _syncZoneCapacityFromAuth(result);
-        final applied =
-            await _applyRecoveredSessionConfiguration(connection, owns);
-        if (!owns()) {
-          unawaited(_releaseRecoveredSession(publicKey, newSessionId));
-          return SessionRecoveryResult.superseded;
-        }
-        if (!applied) {
-          await _releaseRecoveredSession(publicKey, newSessionId);
-          if (!owns()) return SessionRecoveryResult.superseded;
-          return SessionRecoveryResult.failed;
-        }
-      } catch (e) {
-        if (!owns()) {
-          unawaited(_releaseRecoveredSession(publicKey, newSessionId));
-          return SessionRecoveryResult.superseded;
-        }
-        debugError('[ZONE] Group handoff could not apply the new session: $e');
-        await _releaseRecoveredSession(publicKey, newSessionId);
-        if (!owns()) return SessionRecoveryResult.superseded;
-        return SessionRecoveryResult.failed;
-      }
+      final minted = await _mintAndApplyReplacementSession(
+        connection: connection,
+        publicKey: publicKey,
+        iataCode: newZoneCode,
+        owns: owns,
+        tag: '[ZONE]',
+        what: 'group handoff',
+      );
+      if (minted != SessionRecoveryResult.recovered) return minted;
 
       // Only now does the session belong to the new member: a failure above
       // leaves the old code in place, which is what lets the caller fall
@@ -7765,6 +7754,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return SessionRecoveryResult.recovered;
     } finally {
+      _apiQueueService.resumeScheduledUploads();
       pingService.setSessionRecoveryInProgress(false);
     }
   }

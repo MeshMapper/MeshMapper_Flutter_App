@@ -282,7 +282,15 @@ class ApiQueueService {
   StreamSubscription<NetworkState>? _networkStateSubscription;
   late bool _lastIsConstrained;
   bool _isUploading = false;
+  Completer<void>? _uploadInFlight;
   bool _isRecovering = false;
+
+  // Scheduled-upload pause (see pauseScheduledUploads). The two flags
+  // remember what the pause interrupted, or what asked for a timer while it
+  // held, so the resume puts back exactly that.
+  bool _scheduledUploadsPaused = false;
+  bool _batchTimerOwed = false;
+  bool _pingFlushOwed = false;
 
   // In-memory fallback when Hive is corrupted/unavailable
   final List<ApiQueueItem> _memoryQueue = [];
@@ -1072,6 +1080,10 @@ class ApiQueueService {
   }
 
   void _schedulePingFlush() {
+    if (_scheduledUploadsPaused) {
+      _pingFlushOwed = true;
+      return;
+    }
     final timeout =
         _lastIsConstrained ? _pingFlushTimeoutConstrained : _pingFlushTimeout;
     _pingFlushTimer?.cancel();
@@ -1086,6 +1098,10 @@ class ApiQueueService {
   }
 
   void _startBatchTimer() {
+    if (_scheduledUploadsPaused) {
+      _batchTimerOwed = true;
+      return;
+    }
     final constrained = _lastIsConstrained;
     final timeout = constrained ? _batchTimeoutConstrained : _batchTimeout;
     _batchTimer?.cancel();
@@ -1155,6 +1171,7 @@ class ApiQueueService {
     // select and upload the same items. Released in `finally` so every
     // return path below (including the early ones) clears it.
     _isUploading = true;
+    _uploadInFlight = Completer<void>();
 
     try {
       await _dropDisallowedScopesItems();
@@ -1328,7 +1345,71 @@ class ApiQueueService {
       // Retry later
     } finally {
       _isUploading = false;
+      final done = _uploadInFlight;
+      _uploadInFlight = null;
+      if (done != null && !done.isCompleted) done.complete();
     }
+  }
+
+  /// True while a batch upload is on the wire.
+  bool get isUploading => _isUploading;
+
+  /// Waits for an upload already in flight to finish, for at most [limit].
+  /// True when no upload is running by then; false when the bound ran out
+  /// with it still on the wire. A caller about to release the session uses
+  /// this so a batch POSTed under that session is answered before the server
+  /// closes it: the answer to a batch that lands after the close is
+  /// `bad_session`, which ends the connection.
+  Future<bool> waitForUploadToFinish({
+    Duration limit = const Duration(seconds: 15),
+  }) async {
+    final inFlight = _uploadInFlight;
+    if (inFlight == null) return true;
+    try {
+      await inFlight.future.timeout(limit);
+      return true;
+    } on TimeoutException {
+      debugWarn('[API QUEUE] Upload still in flight after ${limit.inSeconds}s');
+      return false;
+    }
+  }
+
+  /// True while [pauseScheduledUploads] holds the timers.
+  bool get scheduledUploadsPaused => _scheduledUploadsPaused;
+
+  /// Holds the scheduled uploads (the periodic batch timer and the
+  /// post-enqueue ping flush) without touching the queue, so no timer can
+  /// start a batch under a session the caller is about to release. Explicit
+  /// uploads ([forceUploadWithHoldWait], [flushQueue]) still run, which is
+  /// how a group handoff drains the queue while holding this. Idempotent.
+  void pauseScheduledUploads() {
+    if (_scheduledUploadsPaused) return;
+    _scheduledUploadsPaused = true;
+    _batchTimerOwed = _batchTimer != null;
+    _pingFlushOwed = _pingFlushTimer?.isActive ?? false;
+    _batchTimer?.cancel();
+    _batchTimer = null;
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = null;
+    debugLog('[API QUEUE] Scheduled uploads paused');
+  }
+
+  /// Undoes [pauseScheduledUploads]: the batch timer comes back when it was
+  /// running at the pause (or was asked for during it), and a ping flush is
+  /// scheduled when one was pending or anything was enqueued meanwhile.
+  /// Idempotent, and a no-op after [clearOnDisconnect] took the timers down.
+  void resumeScheduledUploads() {
+    if (!_scheduledUploadsPaused) return;
+    _scheduledUploadsPaused = false;
+    final restartBatch = _batchTimerOwed;
+    final flush = _pingFlushOwed || queueSize > 0 || _rxBuffer.isNotEmpty;
+    _batchTimerOwed = false;
+    _pingFlushOwed = false;
+    if (restartBatch) _startBatchTimer();
+    if (flush) _schedulePingFlush();
+    debugLog('[API QUEUE] Scheduled uploads resumed'
+        '${restartBatch ? ', batch timer restarted' : ''}'
+        '${flush ? ', ping flush scheduled' : ''}');
   }
 
   /// Force upload all queued items
@@ -1360,11 +1441,16 @@ class ApiQueueService {
   Future<void> clearOnDisconnect() async {
     _bumpGeneration();
 
-    // Stop timers to prevent upload attempts without session
+    // Stop timers to prevent upload attempts without session. A pause still
+    // held by a handoff this disconnect superseded is dropped with them, so
+    // its resume restarts nothing.
     _batchTimer?.cancel();
     _batchTimer = null;
     _pingFlushTimer?.cancel();
     _pingFlushTimer = null;
+    _scheduledUploadsPaused = false;
+    _batchTimerOwed = false;
+    _pingFlushOwed = false;
     debugLog('[API QUEUE] Timers stopped on disconnect');
 
     final count = queueSize + _rxBuffer.length;
