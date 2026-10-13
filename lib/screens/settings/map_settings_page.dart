@@ -187,38 +187,43 @@ class MapSettingsPage extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
+      // Scrolls: a sheet is capped at 9/16 of the screen, which cuts off the
+      // last options on a short Android screen. Same for every picker here.
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Map Marker Style',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            RadioGroup<String>(
-              groupValue: appState.preferences.markerStyle,
-              onChanged: (v) {
-                if (v != null) {
-                  appState.updatePreferences(
-                      appState.preferences.copyWith(markerStyle: v));
-                }
-                Navigator.pop(context);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final (value, label, icon) in options)
-                    RadioListTile<String>(
-                      secondary: Icon(icon),
-                      title: Text(label),
-                      value: value,
-                    ),
-                ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('Map Marker Style',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              RadioGroup<String>(
+                groupValue: appState.preferences.markerStyle,
+                onChanged: (v) {
+                  if (v != null) {
+                    appState.updatePreferences(
+                        appState.preferences.copyWith(markerStyle: v));
+                  }
+                  Navigator.pop(context);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final (value, label, icon) in options)
+                      RadioListTile<String>(
+                        secondary: Icon(icon),
+                        title: Text(label),
+                        value: value,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -240,37 +245,40 @@ class MapSettingsPage extends StatelessWidget {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('GPS Marker',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            RadioGroup<String>(
-              groupValue: appState.preferences.gpsMarkerStyle,
-              onChanged: (v) {
-                if (v != null) {
-                  appState.updatePreferences(
-                      appState.preferences.copyWith(gpsMarkerStyle: v));
-                }
-                Navigator.pop(context);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final (value, label, icon) in options)
-                    RadioListTile<String>(
-                      secondary: icon,
-                      title: Text(label),
-                      value: value,
-                    ),
-                ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('GPS Marker',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              RadioGroup<String>(
+                groupValue: appState.preferences.gpsMarkerStyle,
+                onChanged: (v) {
+                  if (v != null) {
+                    appState.updatePreferences(
+                        appState.preferences.copyWith(gpsMarkerStyle: v));
+                  }
+                  Navigator.pop(context);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final (value, label, icon) in options)
+                      RadioListTile<String>(
+                        secondary: icon,
+                        title: Text(label),
+                        value: value,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -300,39 +308,42 @@ class MapSettingsPage extends StatelessWidget {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Grid Mode',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            RadioGroup<int>(
-              groupValue: appState.preferences.coverageGridSize,
-              onChanged: (v) {
-                if (v != null) {
-                  appState.updatePreferences(
-                      appState.preferences.copyWith(coverageGridSize: v));
-                }
-                Navigator.pop(context);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final (value, label, subtitle) in options)
-                    RadioListTile<int>(
-                      secondary: const Icon(Icons.grid_on),
-                      title: Text(label),
-                      subtitle:
-                          Text(subtitle, style: const TextStyle(fontSize: 12)),
-                      value: value,
-                    ),
-                ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('Grid Mode',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              RadioGroup<int>(
+                groupValue: appState.preferences.coverageGridSize,
+                onChanged: (v) {
+                  if (v != null) {
+                    appState.updatePreferences(
+                        appState.preferences.copyWith(coverageGridSize: v));
+                  }
+                  Navigator.pop(context);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final (value, label, subtitle) in options)
+                      RadioListTile<int>(
+                        secondary: const Icon(Icons.grid_on),
+                        title: Text(label),
+                        subtitle: Text(subtitle,
+                            style: const TextStyle(fontSize: 12)),
+                        value: value,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -345,22 +356,22 @@ class MapSettingsPage extends StatelessWidget {
       (
         'protanopia',
         'Protanopia',
-        'Red-blind — difficulty distinguishing red and green'
+        'Red-blind: difficulty distinguishing red and green'
       ),
       (
         'deuteranopia',
         'Deuteranopia',
-        'Green-blind — difficulty distinguishing red and green'
+        'Green-blind: difficulty distinguishing red and green'
       ),
       (
         'tritanopia',
         'Tritanopia',
-        'Blue-blind — difficulty distinguishing blue and yellow'
+        'Blue-blind: difficulty distinguishing blue and yellow'
       ),
       (
         'achromatopsia',
         'Achromatopsia',
-        'Total color blindness — sees in greyscale'
+        'Total color blindness, sees in greyscale'
       ),
     ];
     showModalBottomSheet(
@@ -369,36 +380,39 @@ class MapSettingsPage extends StatelessWidget {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Color Vision',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            RadioGroup<String>(
-              groupValue: appState.preferences.colorVisionType,
-              onChanged: (v) {
-                if (v != null) appState.setColorVisionType(v);
-                Navigator.pop(context);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final (value, label, subtitle) in options)
-                    RadioListTile<String>(
-                      secondary: const Icon(Icons.visibility),
-                      title: Text(label),
-                      subtitle:
-                          Text(subtitle, style: const TextStyle(fontSize: 12)),
-                      value: value,
-                    ),
-                ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('Color Vision',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              RadioGroup<String>(
+                groupValue: appState.preferences.colorVisionType,
+                onChanged: (v) {
+                  if (v != null) appState.setColorVisionType(v);
+                  Navigator.pop(context);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final (value, label, subtitle) in options)
+                      RadioListTile<String>(
+                        secondary: const Icon(Icons.visibility),
+                        title: Text(label),
+                        subtitle: Text(subtitle,
+                            style: const TextStyle(fontSize: 12)),
+                        value: value,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
