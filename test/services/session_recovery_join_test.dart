@@ -33,4 +33,40 @@ void main() {
       SessionRecoveryJoin.startNew,
     );
   });
+
+  group('sessionCheckWaitsForHandoff', () {
+    test('the check waits for a handoff that holds the slot', () {
+      expect(
+        sessionCheckWaitsForHandoff(
+            groupHandoffOwnsSlot: true, recoveryInFlight: true),
+        isTrue,
+        reason: 'the held id is null between the release and the mint, '
+            'which the check would read as "session has ended"',
+      );
+    });
+
+    test('an ordinary recovery is not waited for', () {
+      expect(
+        sessionCheckWaitsForHandoff(
+            groupHandoffOwnsSlot: false, recoveryInFlight: true),
+        isFalse,
+        reason: 'it keeps the old id until its mint lands, and the check '
+            'joins it through session_expired',
+      );
+    });
+
+    test('nothing in flight means nothing to wait for', () {
+      expect(
+        sessionCheckWaitsForHandoff(
+            groupHandoffOwnsSlot: false, recoveryInFlight: false),
+        isFalse,
+      );
+      expect(
+        sessionCheckWaitsForHandoff(
+            groupHandoffOwnsSlot: true, recoveryInFlight: false),
+        isFalse,
+        reason: 'the slot is already clear, so the check runs at once',
+      );
+    });
+  });
 }

@@ -200,4 +200,42 @@ void main() {
       expect(rule(connected: false, zoneCode: null), GroupHandoffFollowUp.none);
     });
   });
+
+  group('reconnectBackstopOutcome', () {
+    ReconnectBackstopOutcome rule({
+      bool superseded = false,
+      bool minted = true,
+      bool linkUp = true,
+    }) =>
+        reconnectBackstopOutcome(
+          superseded: superseded,
+          minted: minted,
+          linkUp: linkUp,
+        );
+
+    test('a minted session over a live link restores auto-ping', () {
+      expect(rule(), ReconnectBackstopOutcome.restore);
+    });
+
+    test('no session over a live link ends through the live-link path', () {
+      expect(rule(minted: false), ReconnectBackstopOutcome.abandonOnLiveLink,
+          reason: 'the dead-link abandon never closes the transport or '
+              'deletes the channel');
+    });
+
+    test('a link lost during the mint goes back to auto-reconnect', () {
+      expect(rule(linkUp: false), ReconnectBackstopOutcome.handBackToReconnect,
+          reason: 'a session minted over a dead link is kept by the '
+              'reconnect, never restored on it');
+      expect(rule(minted: false, linkUp: false),
+          ReconnectBackstopOutcome.handBackToReconnect,
+          reason: 'the next reconnect auths on its own');
+    });
+
+    test('a superseding owner is honoured whatever the link did', () {
+      expect(rule(superseded: true), ReconnectBackstopOutcome.superseded);
+      expect(rule(superseded: true, minted: false, linkUp: false),
+          ReconnectBackstopOutcome.superseded);
+    });
+  });
 }

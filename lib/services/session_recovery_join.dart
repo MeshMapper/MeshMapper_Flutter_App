@@ -27,3 +27,18 @@ SessionRecoveryJoin resolveSessionRecoveryJoin({
   if (recoveryInFlight) return SessionRecoveryJoin.joinInFlight;
   return SessionRecoveryJoin.startNew;
 }
+
+/// Whether the session check a Start or a manual ping runs first
+/// (`AppStateProvider._checkSessionBeforeAction`) waits for the in-flight
+/// session swap before it asks. Only a group handoff: it releases the old
+/// session before it mints the new one, and for those two round trips the
+/// held id is null, which `checkSessionValid` answers `no_session`, so a
+/// tap, a Start or a Siri/watch Start landing there was refused with
+/// "session has ended" for a session that was only moving. An ordinary
+/// expiry recovery keeps the old id in place until its mint lands, and the
+/// check joins it through `session_expired` anyway.
+bool sessionCheckWaitsForHandoff({
+  required bool groupHandoffOwnsSlot,
+  required bool recoveryInFlight,
+}) =>
+    groupHandoffOwnsSlot && recoveryInFlight;

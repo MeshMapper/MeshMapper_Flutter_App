@@ -123,3 +123,41 @@ GroupHandoffFollowUp groupHandoffFollowUp({
   }
   return GroupHandoffFollowUp.transfer;
 }
+
+/// How `_reacquireSessionAfterReconnect`, the backstop for a reconnect that
+/// lands online with no session (a group handoff superseded in its
+/// release-to-mint gap), ends once its mint has answered.
+enum ReconnectBackstopOutcome {
+  /// A session was minted and the link is still up: restore auto-ping.
+  restore,
+
+  /// Something else (disconnect, cancel, Offline Mode, dispose) took over
+  /// during the mint and owns the cleanup: return quietly.
+  superseded,
+
+  /// The link dropped during the mint. The reconnect's own BLE listener
+  /// ignores a drop while a reconnect is flagged and the reconnect timers
+  /// are already cancelled, so nothing else notices: hand back to the
+  /// ordinary auto-reconnect rather than restore auto-ping on a dead link.
+  handBackToReconnect,
+
+  /// No session could be had and the radio is still connected: end the
+  /// session through the live-link path (channel deleted while BLE is up,
+  /// transport closed), never the dead-link abandon.
+  abandonOnLiveLink,
+}
+
+/// Pure rule for [ReconnectBackstopOutcome]. A superseding owner is honoured
+/// whatever the link did; past that the link decides before the mint does,
+/// since a session minted over a link that is already gone is no use until
+/// the next reconnect re-auths anyway.
+ReconnectBackstopOutcome reconnectBackstopOutcome({
+  required bool superseded,
+  required bool minted,
+  required bool linkUp,
+}) {
+  if (superseded) return ReconnectBackstopOutcome.superseded;
+  if (!linkUp) return ReconnectBackstopOutcome.handBackToReconnect;
+  if (minted) return ReconnectBackstopOutcome.restore;
+  return ReconnectBackstopOutcome.abandonOnLiveLink;
+}

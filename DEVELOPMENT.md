@@ -1740,10 +1740,21 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   gate reads `hasApiSession || _groupHandoffOwnsRecoverySlot`, never show the two round trips as
   "Passive only" with no session; a handoff that ends without a session forgets them in full
   through `ApiService.clearSession`, and a release the server did not confirm is a `[ZONE]`
-  warning, since `requestAuth` answers null rather than throwing), drop the tagged TX the drain left behind
-  (`dropStaleTaggedItems`, called explicitly: the release nulls the held id, so the connect that
-  follows has no previous id to fire `onSessionIdChanged` against), then
-  `_mintAndApplyReplacementSession` with the new member's code. Only after a successful apply do
+  warning, since `requestAuth` answers null rather than throwing), run the session-replaced work
+  (`_onSessionReplaced`, the one body `onSessionIdChanged` runs: `dropStaleTaggedItems` for the
+  tagged TX the drain left behind, and `RecentCoverageService.clearDeferred` so the squares
+  reported under the old session are owed again under the new one, which the server credits per
+  session id; called explicitly, since the release nulls the held id and the connect that follows
+  has no previous id to fire the hook against), then `_mintAndApplyReplacementSession` with the
+  new member's code. The handoff has no Stage 2 register leg: a region group shares all
+  companions, so a radio registered in one member is registered in every member and
+  `unknown_device` cannot answer the mint. A Start or a manual ping (the Siri and watch lanes
+  included, which go through `toggleAutoPing` and `sendPing`) that lands in the release-to-mint
+  gap waits for the handoff in `_checkSessionBeforeAction` (bounded by
+  `sessionRecoveryWaitTimeout`; the pure `sessionCheckWaitsForHandoff`) before its session
+  check, since `checkSessionValid` answers `no_session` there; the handoff never reaches that
+  check while it holds the slot (the capacity remap runs after the slot clears), so the wait is
+  never on itself. Only after a successful apply do
   `_sessionZoneCode` and `_sessionGroupCode` move, the keepalive is re-armed with
   `enableHeartbeat` (the release cancelled its timers and a connect auth never schedules one),
   the periodic scope repeater refresh is re-armed when Passive or Hybrid is running and the timer
@@ -1792,8 +1803,23 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   `_onReconnectSuccess` keeps a backstop for the one state that must never persist (connected,
   online, no session): `_reacquireSessionAfterReconnect` mints through
   `_mintAndApplyReplacementSession`, re-arms the session zone, the zone refresh timer and the
-  keepalive, and abandons the reconnect as today when it cannot, all before auto-ping is
-  restored; a reconnect that holds its session is unchanged. On the API side a release only
+  keepalive, all before auto-ping is restored; a reconnect that holds its session is unchanged.
+  How the backstop ends is the pure `reconnectBackstopOutcome` (`lib/utils/zone_group.dart`).
+  When it cannot get a session with the radio still connected (no zone to re-join, or a failed
+  mint) it ends through `disconnect()`, the path a failed visible transfer's auth takes: the
+  channel deleted while BLE is still up (Rule 8), the radio's name and path mode restored, the
+  transport closed. `_abandonAutoReconnect` assumes a dead link and does none of that, so taken
+  there it showed Disconnected with the radio still connected and the channel still on it. The
+  abandon's alert is kept (dated to the drop) and the reason goes to the error log
+  (`_abandonReconnectOnLiveLink`). After its mint the backstop also re-reads the transport
+  (`CompanionTransport.connectionStatus`), because the step does not change on a transport drop
+  and the BLE listener leaves a drop alone while `_isAutoReconnecting` is set, with the reconnect
+  timers already cancelled: a link lost during that POST hands back to `_startAutoReconnect`
+  with the auto-ping state captured at the original drop carried over
+  (`_restartAutoReconnectAfterBackstop`), whatever the mint answered, rather than restoring
+  auto-ping on a dead link; a session it minted is preserved by the reconnect as usual. A
+  superseding owner (disconnect, cancel, Offline Mode, dispose) is honoured whatever the link
+  did. On the API side a release only
   forgets the session it released, so a stale release answer landing after a reconnect's connect
   auth cannot null the new session.
 - **Server side.** `/wardrive` (online only) no longer moves a session between regions. A

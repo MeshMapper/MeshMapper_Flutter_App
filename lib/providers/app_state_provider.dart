@@ -3557,10 +3557,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // those pings honestly instead of uploading claims the server will skip
     // while reporting success.
     _apiService.onSessionIdChanged = (previousSessionId, newSessionId) async {
-      await _apiQueueService.dropStaleTaggedItems();
-      // The server credits one deferred square per session id, so a square
-      // reported under the old session is owed again under the new one.
-      _recentCoverage.clearDeferred();
+      await _onSessionReplaced();
     };
 
     _apiService.onSessionExpiredRecovery = _recoverExpiredLiveSession;
@@ -6880,7 +6877,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// way a live session is replaced (`_mintAndApplyReplacementSession`, the
   /// recovery's and the handoff's back half), then re-arms what the connect
   /// path's session branch arms: session zone, zone refresh timer, keepalive.
-  /// False means the reconnect was abandoned (or superseded) here.
+  /// False means the reconnect ended here (or was superseded): with the
+  /// radio still connected, through the live-link path; with the link gone,
+  /// by handing back to the ordinary auto-reconnect.
   Future<bool> _reacquireSessionAfterReconnect() async {
     final connection = _meshCoreConnection;
     final publicKey = _devicePublicKey;
@@ -6890,8 +6889,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         zone == null ||
         zone.isEmpty) {
       debugError('[CONN] Reconnected without an API session and no zone to '
-          're-join: abandoning');
-      _abandonAutoReconnect();
+          're-join: ending the session');
+      await _abandonReconnectOnLiveLink(
+          'no region to re-join after reconnecting');
       return false;
     }
     debugWarn('[CONN] Reconnected without an API session: re-acquiring one '
@@ -6915,12 +6915,32 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       tag: '[CONN]',
       what: 'reconnect',
     );
-    if (result == SessionRecoveryResult.superseded) return false;
-    if (result != SessionRecoveryResult.recovered) {
-      debugError('[CONN] Could not re-acquire a session after reconnect: '
-          'abandoning');
-      _abandonAutoReconnect();
-      return false;
+    // The step does not change on a transport drop, and the BLE listener
+    // leaves a drop alone while _isAutoReconnecting is set (an attempt's own
+    // failure is the usual cause), so a link lost during the POST above is
+    // read off the transport itself rather than off owns().
+    final linkUp =
+        _activeTransport?.connectionStatus == ConnectionStatus.connected;
+    switch (reconnectBackstopOutcome(
+      superseded: result == SessionRecoveryResult.superseded,
+      minted: result == SessionRecoveryResult.recovered,
+      linkUp: linkUp,
+    )) {
+      case ReconnectBackstopOutcome.superseded:
+        return false;
+      case ReconnectBackstopOutcome.handBackToReconnect:
+        debugWarn('[CONN] Link dropped while re-acquiring a session after '
+            'reconnect (mint ${result.name}): reconnecting again');
+        await _restartAutoReconnectAfterBackstop();
+        return false;
+      case ReconnectBackstopOutcome.abandonOnLiveLink:
+        debugError('[CONN] Could not re-acquire a session after reconnect: '
+            'ending the session');
+        await _abandonReconnectOnLiveLink(
+            'could not re-acquire a session after reconnecting');
+        return false;
+      case ReconnectBackstopOutcome.restore:
+        break;
     }
     _sessionZoneCode = zone;
     _sessionGroupCode = zoneGroupCode;
@@ -6934,6 +6954,45 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     debugLog('[CONN] Session re-acquired after reconnect in $zone');
     return true;
+  }
+
+  /// Ends a reconnect that landed with the radio connected but no session,
+  /// the way a failed visible transfer's auth does: through `disconnect()`,
+  /// which deletes the channel while BLE is still up (Rule 8), restores the
+  /// radio's name and path mode, and closes the transport.
+  /// `_abandonAutoReconnect` assumes a dead link and does none of that, so
+  /// taken here it showed Disconnected with the radio still connected and
+  /// the channel still on it, and a later Connect could stumble on the open
+  /// link. The abandon's alert is kept, dated to the drop as there, and the
+  /// reason goes to the error log so the user learns why the session ended.
+  Future<void> _abandonReconnectOnLiveLink(String why) async {
+    if (_autoPingWasEnabled) {
+      _playDisconnectAlert(_reconnectStartedAt ?? DateTime.now());
+    }
+    logError('Disconnected: $why', severity: ErrorSeverity.error);
+    await disconnect();
+  }
+
+  /// Hands a reconnect whose link dropped during the session backstop back
+  /// to the ordinary auto-reconnect. The BLE listener already saw the drop
+  /// and, with `_isAutoReconnecting` still set, left it to an attempt that
+  /// was no longer running, and `_onReconnectSuccess` cancelled the reconnect
+  /// timers before the backstop ran, so nothing else restarts it. The
+  /// auto-ping state captured at the original drop is carried over:
+  /// `_startAutoReconnect` reads it from `_autoPingEnabled`, which the
+  /// backstop never got as far as restoring.
+  Future<void> _restartAutoReconnectAfterBackstop() async {
+    final wasAutoPing = _autoPingWasEnabled;
+    final previousMode = _autoModeBeforeReconnect;
+    _isAutoReconnecting = false;
+    _reconnectAttempt = 0;
+    await _startAutoReconnect();
+    // The airborne branch inside abandons at once and has already cleared
+    // this state; only a reconnect that is actually running takes it back.
+    if (_isAutoReconnecting) {
+      _autoPingWasEnabled = wasAutoPing;
+      _autoModeBeforeReconnect = previousMode;
+    }
   }
 
   /// Cancel auto-reconnect (called from UI cancel button)
@@ -7876,10 +7935,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!owns()) return withoutSession(SessionRecoveryResult.superseded);
       }
       // The release cleared the held session id, so the connect below has
-      // no previous id to compare and never fires onSessionIdChanged. Drop
-      // the tagged TX the drain left behind here instead: their tags only
-      // re-derive under the session just released.
-      await _apiQueueService.dropStaleTaggedItems();
+      // no previous id to compare and never fires onSessionIdChanged. Run
+      // the session-replaced work here instead: the tagged TX the drain left
+      // behind only re-derive under the session just released, and the
+      // deferred squares reported under it are owed again under the new one.
+      await _onSessionReplaced();
       if (!owns()) return withoutSession(SessionRecoveryResult.superseded);
 
       final minted = await _mintAndApplyReplacementSession(
@@ -7923,8 +7983,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Everything a new session id makes stale. One definition, two callers:
+  /// `onSessionIdChanged` (a connect auth that replaced a held id) and the
+  /// group handoff, whose keepPolicy release nulls the id first so that hook
+  /// never fires for it. A wire tag only re-derives under the session that
+  /// minted it, so the tagged TX still queued are dropped rather than
+  /// uploaded as claims the server would skip while reporting success; and
+  /// the server credits one deferred square per session id, so a square
+  /// reported under the old session is owed again under the new one.
+  Future<void> _onSessionReplaced() async {
+    await _apiQueueService.dropStaleTaggedItems();
+    _recentCoverage.clearDeferred();
+  }
+
   Future<bool> _checkSessionBeforeAction() async {
     _lastSessionCheckFailureReason = null;
+    // A group handoff has released the old session and not yet stored the
+    // new one for two round trips, and checkSessionValid answers no_session
+    // in that gap: a tap, a Start or a Siri/watch Start landing there was
+    // refused with "session has ended" for a session that was only moving.
+    // Wait for the handoff (bounded, as every other waiter on that slot is)
+    // and check the session it minted. The handoff never reaches this
+    // method while it holds the slot (its remap runs after the slot is
+    // cleared), so the wait cannot be on itself.
+    if (sessionCheckWaitsForHandoff(
+      groupHandoffOwnsSlot: _groupHandoffOwnsRecoverySlot,
+      recoveryInFlight: _liveSessionRecoveryInFlight != null,
+    )) {
+      debugLog('[SESSION] Session check waiting for the group handoff');
+      try {
+        await _waitForLiveSessionRecovery();
+      } catch (e) {
+        debugWarn('[SESSION] Handoff failed while the session check waited '
+            'for it, checking anyway: $e');
+      }
+    }
     final pos = _gpsService.lastPosition;
     final result = await _apiService.checkSessionValid(
       lat: pos?.latitude,
