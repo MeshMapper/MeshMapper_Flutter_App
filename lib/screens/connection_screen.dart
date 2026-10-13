@@ -783,6 +783,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     final channelsCard = RegionalConfigCard(
       zoneName: appState.offlineMode ? null : appState.zoneName,
       zoneCode: appState.offlineMode ? null : appState.zoneCode,
+      groupCode: appState.offlineMode ? null : appState.zoneGroupCode,
       channels: appState.offlineMode ? [] : appState.regionalChannels,
       scope: appState.offlineMode ? null : appState.scope,
       isOfflineMode: appState.offlineMode,
@@ -1568,8 +1569,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       locationColor = Colors.blue;
     } else if (appState.inZone == true) {
       locationIcon = Icons.location_on;
-      locationText = appState.zoneName ?? 'Unknown';
-      iataCode = appState.zoneCode;
+      locationText = appState.displayZoneName ?? 'Unknown';
+      iataCode = appState.shortZoneCode;
       locationColor = Colors.green;
     } else if (appState.inZone == false) {
       locationIcon = Icons.location_off;

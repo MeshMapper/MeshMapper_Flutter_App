@@ -5,6 +5,11 @@ import 'package:flutter/material.dart';
 class RegionalConfigCard extends StatelessWidget {
   final String? zoneName;
   final String? zoneCode;
+
+  /// Full code of the region group the zone belongs to, or null when the
+  /// zone stands alone. The compact card shows it beside the member
+  /// [zoneCode] in a Region row.
+  final String? groupCode;
   final List<String> channels;
   final String? scope;
   final bool isOfflineMode;
@@ -14,6 +19,7 @@ class RegionalConfigCard extends StatelessWidget {
     super.key,
     this.zoneName,
     this.zoneCode,
+    this.groupCode,
     this.channels = const [],
     this.scope,
     this.isOfflineMode = false,
@@ -155,6 +161,15 @@ class RegionalConfigCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
+
+            // Region row: the group's full code and the member zone
+            if (!isOfflineMode && groupCode != null) ...[
+              _buildCompactRow(context, 'Region', [
+                _buildChannelChip(context, groupCode!, isDefault: true),
+                if (zoneCode != null) _buildChannelChip(context, zoneCode!),
+              ]),
+              const SizedBox(height: 8),
+            ],
 
             // Scope row
             _buildCompactRow(context, 'Scope', [

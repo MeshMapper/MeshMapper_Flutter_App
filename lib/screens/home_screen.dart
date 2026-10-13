@@ -370,7 +370,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (appState.inZone == true && appState.zoneCode != null) {
           if (!appState.isConnected) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'You\'re in an authorized zone. Connect to a device to start wardriving.',
               Icons.flight,
               Colors.grey
@@ -381,7 +381,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // deliberate regional setting (blue).
           if (appState.floodDisabled) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'Your regional admin has turned off flood traffic here, so Active and Hybrid modes are unavailable. The zone is not full. Passive and Trace modes still work.',
               Icons.flight,
               Colors.blue
@@ -389,14 +389,14 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           if (!appState.txAllowed) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive mode works.',
               Icons.flight,
               Colors.red
             );
           }
           return (
-            '${appState.zoneName ?? appState.zoneCode} Zone',
+            '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
             'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
             Icons.flight,
             Colors.green
@@ -854,7 +854,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ? Colors.green
                         : Colors.red)
                 : Colors.grey;
-            text = appState.zoneCode!;
+            text = appState.shortZoneCode!;
           } else if (appState.inZone == false) {
             icon = Icons.flight;
             color = Colors.orange;
