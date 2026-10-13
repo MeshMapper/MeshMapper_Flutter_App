@@ -7351,7 +7351,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final result = await _mintAndApplyReplacementSession(
         connection: connection,
         publicKey: publicKey,
-        iataCode: zoneCode ?? _preferences.iataCode,
+        // The zone the session belongs to, not the zone the phone is in: a
+        // recovery that ran while a handoff was deferred behind it would
+        // otherwise mint in the new member with _sessionZoneCode still on the
+        // old one, and the next tick's handoff would release that fresh
+        // session and mint again.
+        iataCode: _sessionZoneCode ?? zoneCode ?? _preferences.iataCode,
         owns: () => _ownsSessionRecovery(generation, connection, publicKey),
         tag: '[SESSION]',
         what: 'expired-session recovery',
@@ -7434,11 +7439,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (replacementSessionId == null ||
         _apiService.sessionId != replacementSessionId) {
-      // The session was minted but not stored, which only happens when
-      // ownership went away during the POST. Same superseded case, same
-      // unawaited release.
+      // Ownership held through the POST (checked just above), so a success
+      // answer with no session id, or one the store did not take, is a
+      // malformed answer rather than a lost race: a failure, with any id the
+      // server did mint released. The lost-ownership case stays superseded.
+      debugWarn('$tag Re-authentication answered success without a usable '
+          'session id');
       unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-      return SessionRecoveryResult.superseded;
+      return SessionRecoveryResult.failed;
     }
 
     try {
@@ -7599,18 +7607,64 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       result = SessionRecoveryResult.failed;
     }
     if (_isDisposed) return;
+    if (result == SessionRecoveryResult.recovered) {
+      await _remapAutoModeAfterHandoff(newZoneCode);
+      return;
+    }
+    // To the zone the phone is in NOW: a later tick may have moved it past
+    // the member this handoff was for, and a session is owed wherever it is.
+    final fallbackZone = zoneCode;
     if (groupHandoffNeedsFallback(
       failed: result == SessionRecoveryResult.failed,
       connected: isConnected,
       offlineMode: _preferences.offlineMode,
       inZoneGracePeriod: _isInZoneGracePeriod,
-      zoneCode: zoneCode,
+      zoneCode: fallbackZone,
       sessionZoneCode: _sessionZoneCode,
-      newZoneCode: newZoneCode,
     )) {
+      final fallbackName = _currentZone?['name'] as String? ?? 'Unknown';
       debugWarn('[ZONE] Group handoff failed, falling back to a full '
-          'zone transfer');
-      await _handleZoneTransfer(newZoneCode, newZoneName);
+          'zone transfer to $fallbackZone');
+      await _handleZoneTransfer(fallbackZone!, fallbackName);
+    }
+  }
+
+  /// A hidden handoff that lands in a member with no TX capacity cannot
+  /// leave Active or Hybrid transmitting into refusals. This is the one case
+  /// a handoff changes what is on screen: the mode is switched the way the
+  /// visible transfer's restore resolves it (`_resolveAutoModeForZone`,
+  /// Passive when the member allows RX), with a line in the error log that
+  /// says why. Runs once the handoff has settled, so the TX hold is released
+  /// and the recovery slot is free for the session check a start makes.
+  Future<void> _remapAutoModeAfterHandoff(String newZoneCode) async {
+    if (_apiService.txAllowed || !_autoPingEnabled || _pingService == null) {
+      return;
+    }
+    final current = _autoMode;
+    if (current != AutoMode.active && current != AutoMode.hybrid) return;
+    final resolved = _resolveAutoModeForZone(current);
+    if (resolved == current) {
+      debugWarn('[ZONE] $newZoneCode allows neither TX nor RX; '
+          '${current.name} mode left running');
+      return;
+    }
+    final resolvedName =
+        '${resolved.name[0].toUpperCase()}${resolved.name.substring(1)}';
+    debugLog('[ZONE] $newZoneCode is at TX capacity: switching '
+        '${current.name} mode to ${resolved.name}');
+    logError(
+        'TX stopped: $newZoneCode, the region you drove into, is at Active '
+        'Wardrive capacity. Switched to $resolvedName mode.',
+        severity: ErrorSeverity.warning,
+        autoSwitch: false);
+    // The switch goes through the ordinary mode start, which the shared
+    // cooldown would refuse; the visible transfer's restore clears it the
+    // same way.
+    _cooldownTimer.stop();
+    _pingService!.clearCooldown();
+    final switched = await toggleAutoPing(resolved);
+    if (!switched) {
+      debugWarn('[ZONE] Mode switch to ${resolved.name} was refused');
     }
   }
 
@@ -7700,14 +7754,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!owns()) return SessionRecoveryResult.superseded;
 
       if (_apiService.hasSession) {
-        try {
-          await _apiService.requestAuth(
-            reason: 'disconnect',
-            publicKey: publicKey,
-            extras: const {'disconnect_cause': 'zone_transfer'},
-          );
-        } catch (e) {
-          debugError('[ZONE] Group handoff release failed: $e');
+        // keepPolicy: the UI reads txAllowed, the channels and the enforce
+        // flags on every notify, and a plain release zeroes them for the two
+        // round trips until the mint stores its answer (the Active button
+        // vanished and the status bar read "at capacity"). The mint
+        // overwrites every kept field; a handoff that ends without a session
+        // clears them in full below. requestAuth never throws (a failed POST
+        // answers null), so the answer is checked rather than caught.
+        final released = await _apiService.requestAuth(
+          reason: 'disconnect',
+          publicKey: publicKey,
+          extras: const {'disconnect_cause': 'zone_transfer'},
+          keepPolicy: true,
+        );
+        if (released == null || released['success'] != true) {
+          debugWarn('[ZONE] Group handoff release not confirmed: '
+              '${released?['reason'] ?? 'no answer'}');
         }
         if (!owns()) return SessionRecoveryResult.superseded;
       }
@@ -7726,7 +7788,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         tag: '[ZONE]',
         what: 'group handoff',
       );
-      if (minted != SessionRecoveryResult.recovered) return minted;
+      if (minted != SessionRecoveryResult.recovered) {
+        // The release kept the zone policy for a mint that did not come.
+        // With no session to follow, forget it in full, as a plain release
+        // would have. A successor that already minted its own session keeps
+        // it (hasSession), and one still minting overwrites every field.
+        if (!_apiService.hasSession) _apiService.clearSession();
+        return minted;
+      }
 
       // Only now does the session belong to the new member: a failure above
       // leaves the old code in place, which is what lets the caller fall
@@ -9724,9 +9793,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       gridSize: _preferences.coverageGridSize,
       days: smartPingDays,
       radioKey: radioFilterKey,
+      // A group handoff has no session for its two round trips; the lookup
+      // keeps its tiles, marks and banked ping through that gap.
       enabled: !sessionEnded &&
           smartPingEnabled &&
-          hasApiSession &&
+          (hasApiSession || _groupHandoffOwnsRecoverySlot) &&
           !_preferences.offlineMode,
     );
     final p = _currentPosition;

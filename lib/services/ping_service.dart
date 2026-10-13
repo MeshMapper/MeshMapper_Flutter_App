@@ -121,6 +121,16 @@ class PingService {
   bool _pingInProgress = false;
   bool _sessionRecoveryInProgress = false;
 
+  /// Set when an auto TX (an Active tick or Hybrid's TX leg) bowed out at
+  /// the recovery hold. The bow-out re-arms the lane at a full interval so
+  /// it cannot die; when the hold releases, that leg is pulled in to
+  /// [heldTxReleaseDelay] instead, so a TX due during a session swap goes
+  /// out about a second after it rather than an interval later.
+  bool _txHeldByRecovery = false;
+
+  /// How long after the recovery hold releases a TX it held goes out.
+  static const Duration heldTxReleaseDelay = Duration(seconds: 1);
+
   /// Which auto session a send belongs to. Bumped by [forceDisableAutoPing],
   /// the one stop that clears [_pingInProgress] out from under a send that is
   /// still suspended on its fresh fix. Each lane captures it before that fetch
@@ -371,6 +381,17 @@ class PingService {
   void setSessionRecoveryInProgress(bool value) {
     _sessionRecoveryInProgress = value;
     debugLog('[SESSION] TX ${value ? 'held for session recovery' : 'released after session recovery'}');
+    if (value) return;
+    final held = _txHeldByRecovery;
+    _txHeldByRecovery = false;
+    if (!held) return;
+    // A ping in flight will schedule its own next; the bow-out's full
+    // interval stays as the backstop for anything else.
+    if (!_autoPingEnabled || _passiveModeEnabled || _pingInProgress) return;
+    debugLog('[SESSION] Re-arming the TX held by the recovery in '
+        '${heldTxReleaseDelay.inSeconds}s');
+    _rescheduleAutoLane(
+        delayMs: heldTxReleaseDelay.inMilliseconds, heldTxLeg: true);
   }
 
   /// Wait until a transmitted TX has been queued with its original wire tag.
@@ -807,7 +828,10 @@ class PingService {
       // provider only releases the gate in a finally, so a tick that lands
       // during recovery would end the lane for the rest of the session with
       // the mode flags still reading enabled. Manual pings arm nothing.
-      if (!manual) _rescheduleAutoLane();
+      if (!manual) {
+        _txHeldByRecovery = true;
+        _rescheduleAutoLane();
+      }
       return false;
     }
 
@@ -843,6 +867,7 @@ class PingService {
           // while this is still true latches as pending with no window to
           // drain it. This lane is auto-only, so no manual check is needed.
           _pingInProgress = false;
+          _txHeldByRecovery = true;
           _rescheduleAutoLane();
           return false;
         }
@@ -1374,18 +1399,24 @@ class PingService {
   /// early with nothing armed ends the lane for the rest of the session while
   /// the mode flags still read enabled. Hybrid or Active is chosen exactly as
   /// the validation skip path chooses it.
-  void _rescheduleAutoLane() {
+  ///
+  /// [delayMs] replaces the interval (the held-TX re-arm). [heldTxLeg] names
+  /// the leg: in Hybrid the TX leg that bowed out is the one that runs, so
+  /// the alternation is unchanged (the timer callback had already flipped
+  /// the flag to discovery when it dispatched the TX).
+  void _rescheduleAutoLane({int? delayMs, bool heldTxLeg = false}) {
     if (!_autoPingEnabled || _passiveModeEnabled) return;
     if (_hybridModeEnabled) {
-      _scheduleNextHybridPing();
+      if (heldTxLeg) _nextPingIsDiscovery = false;
+      _scheduleNextHybridPing(delayMs: delayMs);
     } else {
-      _scheduleNextAutoPing();
+      _scheduleNextAutoPing(delayMs: delayMs);
     }
   }
 
   /// Schedule next auto ping after interval
   /// Reference: scheduleNextAutoPing() in wardrive.js
-  void _scheduleNextAutoPing() {
+  void _scheduleNextAutoPing({int? delayMs}) {
     if (!_autoPingEnabled || _passiveModeEnabled) {
       debugLog(
           '[ACTIVE MODE] Not scheduling next auto ping - auto mode not running or Passive Mode');
@@ -1397,12 +1428,12 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
 
-    debugLog(
-        '[ACTIVE MODE] Scheduling next auto ping in ${_autoPingIntervalMs}ms');
+    final waitMs = delayMs ?? _autoPingIntervalMs;
+    debugLog('[ACTIVE MODE] Scheduling next auto ping in ${waitMs}ms');
 
     // Start countdown display (with skip reason if applicable)
     // The AutoPingTimer in countdown_timer_service.dart handles the display
-    onAutoPingScheduled?.call(_autoPingIntervalMs, _skipReason);
+    onAutoPingScheduled?.call(waitMs, _skipReason);
 
     // That callback runs synchronously and can stop auto mode (the idle
     // auto-stop hangs off it), which cancels _autoTimer. Re-check so we don't
@@ -1414,7 +1445,7 @@ class PingService {
     }
 
     // Schedule the next ping
-    _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+    _autoTimer = Timer(Duration(milliseconds: waitMs), () {
       debugLog('[ACTIVE MODE] Auto ping timer fired');
 
       // Guard: connection may have dropped since timer was scheduled
@@ -1530,6 +1561,7 @@ class PingService {
     _autoPingEnabled = true;
     _passiveModeEnabled = passiveMode;
     _hybridModeEnabled = hybridMode;
+    _txHeldByRecovery = false;
     _targetedModeEnabled = targetedMode;
     _nextPingIsDiscovery = true; // Always start hybrid with discovery
 
@@ -1801,6 +1833,7 @@ class PingService {
     _sendEpoch++;
     cancelScopeRunner('force disable');
     _pingInProgress = false;
+    _txHeldByRecovery = false;
     if (!_txWindowFinalizing) {
       _cancelPendingTxWindow();
       _completeTxWindowGate();
@@ -2353,7 +2386,7 @@ class PingService {
 
   /// Schedule next hybrid ping (alternates discovery ↔ TX)
   /// Uses user-configured interval for both ping types
-  void _scheduleNextHybridPing() {
+  void _scheduleNextHybridPing({int? delayMs}) {
     if (!_autoPingEnabled || !_hybridModeEnabled) return;
 
     _autoTimer?.cancel();
@@ -2364,7 +2397,7 @@ class PingService {
     final listenMs = _nextPingIsDiscovery
         ? _discoveryListeningWindow.inMilliseconds
         : _rxListeningWindow.inMilliseconds;
-    final waitMs =
+    final waitMs = delayMs ??
         (_autoPingIntervalMs - listenMs).clamp(1000, _autoPingIntervalMs);
 
     final isNextDisc = _nextPingIsDiscovery;

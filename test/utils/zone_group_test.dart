@@ -166,7 +166,6 @@ void main() {
       bool inZoneGracePeriod = false,
       String? zoneCode = 'YUL',
       String? sessionZoneCode = 'YOW',
-      String newZoneCode = 'YUL',
     }) =>
         groupHandoffNeedsFallback(
           failed: failed,
@@ -175,12 +174,15 @@ void main() {
           inZoneGracePeriod: inZoneGracePeriod,
           zoneCode: zoneCode,
           sessionZoneCode: sessionZoneCode,
-          newZoneCode: newZoneCode,
         );
 
-    test('a failed handoff on a live session still in the member falls back',
-        () {
+    test('a failed handoff on a live session falls back', () {
       expect(rule(), isTrue);
+    });
+
+    test('a phone already in a third member still falls back, to that zone',
+        () {
+      expect(rule(zoneCode: 'YQB'), isTrue);
     });
 
     test('a handoff that did not fail never falls back', () {
@@ -193,10 +195,9 @@ void main() {
       expect(rule(inZoneGracePeriod: true), isFalse);
     });
 
-    test('a phone that moved on, or a session already on the member, stops',
-        () {
-      expect(rule(zoneCode: 'SEA'), isFalse);
+    test('no zone known, or a session already on this zone, stops', () {
       expect(rule(zoneCode: null), isFalse);
+      expect(rule(zoneCode: ''), isFalse);
       expect(rule(sessionZoneCode: 'YUL'), isFalse);
     });
   });

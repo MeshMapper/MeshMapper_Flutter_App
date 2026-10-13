@@ -1111,7 +1111,10 @@ Prevents session timeout during long wardriving sessions by periodically refresh
 - **Storm brake (429)**: a `rate_limited` answer from `/wardrive` carries `Retry-After` (75s by default) and keeps the session valid (server contract: `docs/APP_API.md` Appendix C item 9, "a 429 is not a sign-out"). `ApiService` parses it into one per-session hold, `wardriveBackoff`, that every sender on that door respects: `uploadBatch` returns `UploadResult.held` (no retry spent), `checkSessionValid` skips the post and reports the last known verdict so the ping itself proceeds, and the keepalive reschedules after the hold instead of going quiet. The brake re-arms its penalty on every blocked hit, so one lane knocking through it would keep all of them locked out. Without the keepalive reschedule, a braked session lapsed while the car was stopped (no ping or upload restarted the lane), the next post got a 401 and the app re-minted a fresh session id, which is exactly what the brake must not cause (VLC-20260903-0002). A new session id drops the hold. The hold honours `Retry-After` in full, up to the one hour ceiling `maxWardriveRetryAfter`: the server derives the value from its penalty and re-arms the lockout on every blocked hit, so a client that retries before the penalty has run is braked for the rest of the session, which is why the app never shortens it. The 429 path on the server answers before any session work and does not refresh `expires_at`, so a hold that outlasts the 300 s session TTL lets the session lapse, and the TX pings queued behind wire tags minted under it are dropped when the next `/auth` returns a new session id. The app cannot close that gap without knocking into the open window; it is a server matter (refresh the expiry on a 429, or keep the penalty under the TTL). In practice the brake only trips above 300 posts per 60 s from one session, so a healthy app never sees it. Tests: `test/services/api_service_rate_limit_test.dart`.
 - **Mechanism**: POST to `/wardrive-api.php/wardrive` with `heartbeat: true` flag and optional GPS coordinates
 - **Response**: Returns updated `expires_at`, which schedules the next heartbeat
-- **Expiry recovery**: A live online companion treats only `session_expired` as recoverable. It serializes one replacement `/auth` (a second caller joins the in-flight attempt; while a group handoff holds that slot every caller is instead answered `superseded` at once, `resolveSessionRecoveryJoin`, see Multi-region groups), preserves the BLE connection and current auto mode, and through `_mintAndApplyReplacementSession` (the back half a group handoff shares with it) refreshes the region channels, validator, flood scope, capacity, Smart Pinging settings and path widths, then lets the recovered heartbeat lane own its next schedule. A recovered path policy applies the enforced regional width when present and otherwise restores the device firmware width, while retaining the user's trace-width preference. A recovery captures the exact connection and lifecycle generation, blocks new TX, and waits for an on-air TX window to finish its queued old wire tag before cleanup and session swap. Disconnect, zone transfer, Offline Mode, reconnect and disposal invalidate that ownership and wait for the recovery before releasing the current session. A superseded request is distinct from a failed recovery: stale preflights stop without a disconnect, stale heartbeats end quietly, and stale uploads stay held. If replacement configuration cannot be applied, the replacement session is explicitly released before the ordinary fatal path. Stale wire-tagged TX rows are removed before the new session ID is installed; untagged passive observations stay queued. Recovery is refused during disconnect, zone transfer, connection setup and Offline Mode. Other session and auth errors still follow the normal fatal-session path. A scheduled keepalive that comes back `session_expired` while the app is idle does NOT recover: no auto mode running, starting or stopping, no ping in flight, no Manage session open and nothing queued for upload (`sessionIsIdle` in `lib/services/idle_session.dart`, wired as `ApiService.isSessionIdle`). It stops the keepalive timers, leaves the lapsed session in place and logs under `[HEARTBEAT]`. This is the Android case where a stopped mode lets the backgrounded process freeze, the keepalive never fires, and the overdue one comes back expired on resume; recovering there minted a session that never saw a ping (empty sessions on the admin dashboard). The next Start or manual ping recovers it through `checkSessionValid`, which always posts its own heartbeat rather than trusting the stored expiry, and the heartbeat's enabled flag is kept so the recovered session reschedules its keepalive. The Manage sheet's `/repeater` actions (claim, unclaim, neighbour upload) run the same check first, since that door reports an expired session but never recovers one. A keepalive answer is only acted on while its session is still the current one: a failed answer for a session a manual action has since replaced is ignored, so it cannot cancel or retry the replacement's keepalive. The idle disconnect timer is untouched. Upload and preflight recovery are not gated, and a busy app recovers exactly as before.
+- **Expiry recovery**: A live online companion treats only `session_expired` as recoverable. It serializes one replacement `/auth` (a second caller joins the in-flight attempt; while a group handoff holds that slot every caller is instead answered `superseded` at once, `resolveSessionRecoveryJoin`, see Multi-region groups), preserves the BLE connection and current auto mode, and through `_mintAndApplyReplacementSession` (the back half a group handoff shares with it; a success
+  answer with no usable session id while ownership held is a failure, not a superseded request)
+  for `_sessionZoneCode`, the zone the session belongs to (else the current zone, so a recovery
+  that ran while a handoff was deferred behind it never mints in a member the session is not in) refreshes the region channels, validator, flood scope, capacity, Smart Pinging settings and path widths, then lets the recovered heartbeat lane own its next schedule. A recovered path policy applies the enforced regional width when present and otherwise restores the device firmware width, while retaining the user's trace-width preference. A recovery captures the exact connection and lifecycle generation, blocks new TX, and waits for an on-air TX window to finish its queued old wire tag before cleanup and session swap. Disconnect, zone transfer, Offline Mode, reconnect and disposal invalidate that ownership and wait for the recovery before releasing the current session. A superseded request is distinct from a failed recovery: stale preflights stop without a disconnect, stale heartbeats end quietly, and stale uploads stay held. If replacement configuration cannot be applied, the replacement session is explicitly released before the ordinary fatal path. Stale wire-tagged TX rows are removed before the new session ID is installed; untagged passive observations stay queued. Recovery is refused during disconnect, zone transfer, connection setup and Offline Mode. Other session and auth errors still follow the normal fatal-session path. A scheduled keepalive that comes back `session_expired` while the app is idle does NOT recover: no auto mode running, starting or stopping, no ping in flight, no Manage session open and nothing queued for upload (`sessionIsIdle` in `lib/services/idle_session.dart`, wired as `ApiService.isSessionIdle`). It stops the keepalive timers, leaves the lapsed session in place and logs under `[HEARTBEAT]`. This is the Android case where a stopped mode lets the backgrounded process freeze, the keepalive never fires, and the overdue one comes back expired on resume; recovering there minted a session that never saw a ping (empty sessions on the admin dashboard). The next Start or manual ping recovers it through `checkSessionValid`, which always posts its own heartbeat rather than trusting the stored expiry, and the heartbeat's enabled flag is kept so the recovered session reschedules its keepalive. The Manage sheet's `/repeater` actions (claim, unclaim, neighbour upload) run the same check first, since that door reports an expired session but never recovers one. A keepalive answer is only acted on while its session is still the current one: a failed answer for a session a manual action has since replaced is ignored, so it cannot cancel or retry the replacement's keepalive. The idle disconnect timer is untouched. Upload and preflight recovery are not gated, and a busy app recovers exactly as before.
 - **Bounding the recovery wait**: ownership is one predicate, `_ownsSessionRecovery(generation, connection, publicKey)`, re-read after every await: not disposed, still the current generation, not in Offline Mode, not connecting, reconnecting or transferring, still at `ConnectionStep.connected`, the same `MeshCoreConnection` instance and the same device public key. The teardown paths bump that generation (`_invalidateLiveSessionRecovery`) and then wait, but only for `sessionRecoveryWaitTimeout` (15 s, through `awaitSessionRecoveryBounded`), after which they carry on and log under `[SESSION]`. Giving up is safe precisely because of the ownership re-read: the recovery finishes on its own and finds it has been superseded. A recovery is two network legs (an `/auth` POST, then the channel and validator work it applies), and an unbounded wait held `disconnect()` and `_startAutoReconnect()` for as long as it liked with the UI already reading Disconnecting and the radio still up. `disconnect()` releases the sign gate and the repeater-admin slot (`abortPendingSign()`, `abortPendingAdmin()`) BEFORE that wait, not after it: a live sign holding the gate through all 15 seconds is exactly what aborting first exists to prevent. A superseded recovery releases the replacement session it already minted through `_releaseRecoveredSession` without being awaited, because that release is a second `/auth` POST that can sit for 30 s, nothing on this path depends on its answer, and the caller that superseded it is blocked on this recovery settling. A recovery that fails for its own reasons still awaits its release before returning `failed`.
 - **Flow**: Auth response sets initial `expires_at` → each wardrive POST or heartbeat updates it → timer reschedules automatically
 
@@ -1691,9 +1694,10 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   (`<code>.meshmapper.net`) merges every member. `MapWidget` keys the overlay on it
   (`_lastOverlayHostCode`), so a move between two members of one group changes nothing on the
   map, and leaving the group is an ordinary host change (session patch dropped, overlay rebuilt)
-  through the existing zone watcher. Repeaters and borders are still FETCHED from the member's
-  site (`fetchRepeaters(iata)`, `_fetchBorderPolygons(iata)`; the member already answers for the
-  whole group) but KEYED on `_repeaterContextKey`, which is `coverageHostCode`:
+  through the existing zone watcher. Repeaters are still FETCHED from the member's site
+  (`fetchRepeaters(iata)`; the member already answers for the whole group) and the borders from
+  the central `/border` endpoint, keyed on the phone's position (`_fetchBorderPolygons`), but
+  both are KEYED on `_repeaterContextKey`, which is `coverageHostCode`:
   `_repeatersLoadedForIata`, `_bordersLoadedForZone`, the in-flight fetch dedupe,
   `_invalidateRepeatersForContext` and the scope lifecycle's "list still current" check all
   compare the key, so a move inside the group neither clears nor refetches either list, and two
@@ -1719,15 +1723,24 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   and must not start a second swap; the running one owns the move).
 
   `_handOffWithinGroup`, in order: stop a scope runner (`ScopeStopEvent.zoneTransfer`, borrowed
-  routes kept), hold new TX (`PingService.setSessionRecoveryInProgress`, the recovery hold, so a
-  send that comes due bows out and re-arms), pause the queue's scheduled uploads
+  routes kept), hold new TX (`PingService.setSessionRecoveryInProgress`, the recovery hold: a TX that comes
+  due bows out and re-arms a full interval as the backstop, and once the hold releases the
+  service pulls that very leg in to `heldTxReleaseDelay`, 1 s, Hybrid's alternation kept since
+  the TX leg that bowed out is the one that runs), pause the queue's scheduled uploads
   (`ApiQueueService.pauseScheduledUploads`, see API Queue System), wait for an on-air TX window
   to queue its old wire tag (`waitForTxWindow`), flush the RX buffer, drain the queue under the
   old session (at most 5 rounds of `forceUploadWithHoldWait`, each first awaiting
   `waitForUploadToFinish` since the queue silently skips a second upload, stopping when a round
   does not shrink the queue), wait once more for any upload still on the wire (15 s, a `[ZONE]`
   warning when the bound runs out), release the old session with
-  `disconnect_cause: zone_transfer`, drop the tagged TX the drain left behind
+  `disconnect_cause: zone_transfer` and `keepPolicy: true` (the id, wire key, counter, expiry,
+  storm-brake hold and keepalive timers go; `txAllowed`, `rxAllowed`, the channels and scopes and
+  the enforce, hop-width, Smart Pinging and scope-discovery terms stay for the mint to overwrite,
+  so the ping buttons, the status bar and the Smart Pinging lookup, whose `_syncRecentCoverage`
+  gate reads `hasApiSession || _groupHandoffOwnsRecoverySlot`, never show the two round trips as
+  "Passive only" with no session; a handoff that ends without a session forgets them in full
+  through `ApiService.clearSession`, and a release the server did not confirm is a `[ZONE]`
+  warning, since `requestAuth` answers null rather than throwing), drop the tagged TX the drain left behind
   (`dropStaleTaggedItems`, called explicitly: the release nulls the held id, so the connect that
   follows has no previous id to fire `onSessionIdChanged` against), then
   `_mintAndApplyReplacementSession` with the new member's code. Only after a successful apply do
@@ -1735,11 +1748,15 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   `enableHeartbeat` (the release cancelled its timers and a connect auth never schedules one),
   the periodic scope repeater refresh is re-armed when Passive or Hybrid is running and the timer
   is not, and `notifyListeners()` runs. The TX hold and the upload pause are released in a
-  `finally` on every path. It never sets `_isZoneTransferInProgress`, never stops auto-ping, the
+  `finally` on every path. Back in `_startGroupHandoff`, a `recovered` handoff into a member
+  with no TX capacity while Active or Hybrid runs is remapped the way the visible transfer's
+  restore is (`_remapAutoModeAfterHandoff` through `_resolveAutoModeForZone`, Passive when RX is
+  allowed, the shared cooldown cleared first), with a `[ZONE]` line and a warning in the error
+  log: the one case a hidden handoff changes what is on screen. It never sets `_isZoneTransferInProgress`, never stops auto-ping, the
   RX logger, the zone refresh timer or the idle disconnect timer, never clears the borders or the
   repeater list, and never calls `clearOnDisconnect`: auto-ping keeps its schedule through the
   swap, so Hybrid does not flip early or late at the border, and the cost is about a second of
-  TX hold.
+  TX hold: a TX due during it goes out about a second after the release, not an interval later.
 
   The handoff rides the expiry recovery's single in-flight slot (`_liveSessionRecoveryInFlight`,
   the same `whenComplete` identity clear), so disconnect, auto-reconnect, the Offline Mode hot
@@ -1757,8 +1774,10 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   meanwhile is released unawaited) or `failed`, which never leaves a minted session behind (an
   apply failure releases it, awaited). On `failed`, `_startGroupHandoff` falls back to the
   visible `_handleZoneTransfer` when `groupHandoffNeedsFallback` holds (still connected, not
-  Offline Mode, not in grace, the phone still in the member the handoff was for, and
-  `_sessionZoneCode` still the old member, which is why the code moves only after the apply). A
+  Offline Mode, not in grace, a zone known, and `_sessionZoneCode` not that zone, which is why
+  the code moves only after the apply); the transfer goes to the zone the phone is in NOW, so a
+  phone a later tick already moved into a third member is not left without a session until the
+  next tick. A
   throw out of the handoff is caught there and treated as `failed`, since nothing awaits the
   method.
 - **Server side.** `/wardrive` (online only) no longer moves a session between regions. A
@@ -1784,6 +1803,7 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   `test/utils/zone_group_test.dart` (parsing, the short label, the move classifier, the fallback
   rule), `test/services/session_recovery_join_test.dart`,
   `test/services/api_queue_upload_pause_test.dart`,
+  `test/services/api_service_keep_policy_test.dart`, `test/services/ping_service_held_tx_test.dart`,
   `test/widgets/regional_config_card_test.dart`.
 
 ### Coverage Connection Lines (tap-to-inspect)

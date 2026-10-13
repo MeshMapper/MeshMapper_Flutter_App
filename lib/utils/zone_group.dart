@@ -87,11 +87,14 @@ ZoneMove classifyZoneMove({
 }
 
 /// After a hidden handoff ends `failed`: whether to fall back to the visible
-/// zone transfer. The session must still be live, the phone still in the
-/// member the handoff was for, that member not yet the session's own, and
-/// none of the states that run their own transfer (zone grace) or forbid one
-/// (Offline Mode) in force. A handoff that was superseded never gets here:
-/// whatever superseded it owns the cleanup.
+/// zone transfer, which then goes to the CURRENT zone. The session must
+/// still be live, a zone known, that zone not yet the session's own (a
+/// failed handoff left `_sessionZoneCode` on the old member), and none of
+/// the states that run their own transfer (zone grace) or forbid one
+/// (Offline Mode) in force. The phone may well be in a third member by now
+/// (a later tick moved the zone while the handoff ran): the transfer goes
+/// there, since a session is owed wherever the phone is. A handoff that was
+/// superseded never gets here: whatever superseded it owns the cleanup.
 bool groupHandoffNeedsFallback({
   required bool failed,
   required bool connected,
@@ -99,11 +102,11 @@ bool groupHandoffNeedsFallback({
   required bool inZoneGracePeriod,
   required String? zoneCode,
   required String? sessionZoneCode,
-  required String newZoneCode,
 }) =>
     failed &&
     connected &&
     !offlineMode &&
     !inZoneGracePeriod &&
-    zoneCode == newZoneCode &&
-    sessionZoneCode != newZoneCode;
+    zoneCode != null &&
+    zoneCode.isNotEmpty &&
+    sessionZoneCode != zoneCode;

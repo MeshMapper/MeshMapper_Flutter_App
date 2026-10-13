@@ -727,6 +727,7 @@ class ApiService {
   /// @param offlineMode Set to true when uploading offline session data
   /// @param skipSessionStore When true, does not write to shared _sessionId/_txAllowed/etc. Caller manages session locally.
   /// @param sessionId Explicit session ID for disconnect. When provided, disconnect uses this instead of _sessionId and skips _clearSession().
+  /// @param keepPolicy On a disconnect release that a connect for the same radio follows at once (a group handoff): clear the session itself but keep the zone policy the UI reads, see [_clearSession].
   /// @returns Map with success, session_id, tx_allowed, rx_allowed, expires_at, reason, message
   Future<Map<String, dynamic>?> requestAuth({
     required String reason,
@@ -746,6 +747,7 @@ class ApiService {
     bool Function()? shouldStoreSession,
     String? sessionId,
     Map<String, dynamic>? extras,
+    bool keepPolicy = false,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -1038,7 +1040,7 @@ class ApiService {
         // Only clear shared session when no explicit sessionId was provided
         // (explicit sessionId means caller manages its own session lifecycle)
         if (sessionId == null) {
-          _clearSession();
+          _clearSession(keepPolicy: keepPolicy);
         }
       }
 
@@ -1709,36 +1711,55 @@ class ApiService {
   }
 
   /// Clear session data and cancel all timers
-  void _clearSession() {
+  /// Forgets the session. With [keepPolicy] only the session itself goes
+  /// (id, wire key, counter, expiry, storm-brake hold, keepalive timers) and
+  /// the zone policy stays: `txAllowed`, `rxAllowed`, the channels and
+  /// scopes, the enforce flags, the minimum interval, the hop width, the
+  /// Smart Pinging and scope discovery terms. A group handoff releases with
+  /// that and mints again at once; the connect branch overwrites every one of
+  /// those fields on success, so nothing stale can outlive the mint, and the
+  /// UI (the ping buttons, the status bar, the Smart Pinging lookup) does not
+  /// read the release-to-mint gap as "Passive only" with no session.
+  void _clearSession({bool keepPolicy = false}) {
     _sessionId = null;
     _wireKey = null;
     _pingCounter = 0;
-    _txAllowed = false;
-    _rxAllowed = false;
     _sessionExpiresAt = null;
-    _channels = [];
-    _scopes = [];
-    _enforceHybrid = false;
-    _enforceDiscDrop = false;
-    _floodDisabled = false;
-    _minModeInterval = 15;
-    _apiHopBytes = 1;
-    _enforceSmartPing = false;
-    _apiSmartPingDays = 14;
-    final scopeWasOffered = _scopeDiscoveryOffered;
-    final scopeWasEnforced = _enforceScopeDiscovery;
-    _scopeDiscoveryOffered = false;
-    _enforceScopeDiscovery = false;
-    _apiScopeRefreshDays = 14;
-    if (scopeWasOffered || scopeWasEnforced) onScopeDiscoveryChanged?.call();
+    if (!keepPolicy) {
+      _txAllowed = false;
+      _rxAllowed = false;
+      _channels = [];
+      _scopes = [];
+      _enforceHybrid = false;
+      _enforceDiscDrop = false;
+      _floodDisabled = false;
+      _minModeInterval = 15;
+      _apiHopBytes = 1;
+      _enforceSmartPing = false;
+      _apiSmartPingDays = 14;
+      final scopeWasOffered = _scopeDiscoveryOffered;
+      final scopeWasEnforced = _enforceScopeDiscovery;
+      _scopeDiscoveryOffered = false;
+      _enforceScopeDiscovery = false;
+      _apiScopeRefreshDays = 14;
+      if (scopeWasOffered || scopeWasEnforced) onScopeDiscoveryChanged?.call();
+    }
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     _heartbeatRetryCount = 0;
     _wardriveBlockedUntil = null;
-    debugLog('[API] Session cleared');
+    debugLog(keepPolicy
+        ? '[API] Session cleared, zone policy kept for the mint'
+        : '[API] Session cleared');
   }
+
+  /// Forgets the session and its zone policy in full. For a caller that
+  /// released with `keepPolicy` and then could not mint: with no session to
+  /// follow, the kept policy would otherwise outlive the session it came
+  /// with.
+  void clearSession() => _clearSession();
 
   /// Legacy: Check if we have a slot (compatibility with old code)
   bool get hasSlot => hasSession;
