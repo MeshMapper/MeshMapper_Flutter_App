@@ -101,6 +101,7 @@ import '../utils/geo_validation.dart';
 import '../utils/repeater_collision.dart';
 import '../utils/ping_colors.dart';
 import '../utils/radio_filter.dart' as radio_filter;
+import '../utils/zone_group.dart';
 import '../services/wakelock_service.dart';
 import '../utils/debug_logger_io.dart';
 
@@ -740,6 +741,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Zone transfer state — tracks session zone for zone-to-zone detection
   String? _sessionZoneCode;
+  // The group that zone belonged to when the session was minted, or null.
+  String? _sessionGroupCode;
   bool _isZoneTransferInProgress = false;
   String? _zoneTransferFrom;
   String? _zoneTransferTo;
@@ -1383,6 +1386,37 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get zoneName => _currentZone?['name'] as String?;
   String? get zoneCode => _currentZone?['code'] as String?;
 
+  /// The multi-region group the current zone belongs to, or null.
+  ZoneGroup? get zoneGroup => parseZoneGroup(_currentZone);
+  String? get zoneGroupCode => zoneGroup?.code;
+
+  /// Full code to show for the zone: the group's when there is one.
+  String? get displayZoneCode => zoneGroupCode ?? zoneCode;
+
+  /// [displayZoneCode] cut for the short labels (chips, status bar,
+  /// Live Activity, watch, Siri).
+  String? get shortZoneCode {
+    final code = displayZoneCode;
+    return code == null ? null : shortZoneLabel(code);
+  }
+
+  /// Name to show for the zone: the group's when the server sent one.
+  String? get displayZoneName => zoneGroup?.name ?? zoneName;
+
+  /// Subdomain coverage is read from (`<code>.meshmapper.net`): the group's
+  /// own site merges every member. Repeaters and borders stay on the member.
+  String? get coverageHostCode => zoneGroupCode ?? zoneCode;
+
+  /// Logs the group once per change, so a drive across a group's members
+  /// does not repeat it on every zone check.
+  void _noteZoneGroupChange(String? previous) {
+    final group = zoneGroup;
+    if (group?.code == previous) return;
+    debugLog(group == null
+        ? '[APP] Zone group: none'
+        : '[APP] Zone group: ${group.code} (${group.members.length} members)');
+  }
+
   /// MapWidget handshake: whether the coverage overlay is currently on the
   /// map. Gates the post-wardrive fresh-tile flow — no overlay, no fetches.
   void reportVectorOverlayActive(bool active) {
@@ -1701,6 +1735,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       '${(_zoneGraceSecondsRemaining % 60).toString().padLeft(2, '0')}';
 
   // Zone transfer getters
+  /// The group the session's zone belonged to when the session was minted,
+  /// or null. Compared against [zoneGroupCode] on every zone check.
+  String? get sessionGroupCode => _sessionGroupCode;
   bool get isZoneTransferInProgress => _isZoneTransferInProgress;
   String? get zoneTransferFrom => _zoneTransferFrom;
   String? get zoneTransferTo => _zoneTransferTo;
@@ -5867,6 +5904,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _sessionZoneCode = zoneCode;
+      _sessionGroupCode = zoneGroupCode;
 
       if (!_preferences.offlineMode) {
         _startZoneRefreshTimer();
@@ -7084,6 +7122,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Clear zone transfer state
     _sessionZoneCode = null;
+    _sessionGroupCode = null;
     _isZoneTransferInProgress = false;
     _zoneTransferFrom = null;
     _zoneTransferTo = null;
@@ -8688,6 +8727,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Track session zone for zone-to-zone transfer detection
       _sessionZoneCode = zoneCode;
+      _sessionGroupCode = zoneGroupCode;
 
       // Smart Pinging follows the new session and zone.
       _syncRecentCoverage();
@@ -10278,7 +10318,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             newZoneCode != _sessionZoneCode &&
             !_isInZoneGracePeriod &&
             !_isZoneTransferInProgress) {
+          final previousGroup = zoneGroupCode;
           _currentZone = newZone;
+          _noteZoneGroupChange(previousGroup);
           _invalidateRepeatersForContext();
           _nearestZone = null;
           _syncRecentCoverage();
@@ -10286,7 +10328,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
 
+        final previousGroup = zoneGroupCode;
         _currentZone = newZone;
+        _noteZoneGroupChange(previousGroup);
         _invalidateRepeatersForContext();
         _nearestZone = null;
         // The lookup is keyed on the zone, so re-sync whenever it moves.
@@ -10839,6 +10883,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 11. Auth succeeded — update session zone code
       _sessionZoneCode = newZoneCode;
+      _sessionGroupCode = zoneGroupCode;
       debugLog('[ZONE] Auth succeeded for zone $newZoneCode');
 
       if (result['type'] != null) {
