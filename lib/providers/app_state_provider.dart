@@ -7527,6 +7527,248 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
+  /// Runs a hidden handoff through the same single slot a session-expiry
+  /// recovery uses, so disconnect, auto-reconnect, Offline Mode and dispose
+  /// already supersede it and wait for it (bounded), and a session_expired
+  /// arriving meanwhile joins it instead of starting a second swap.
+  Future<void> _startGroupHandoff(
+      String newZoneCode, String newZoneName) async {
+    final generation = _sessionRecoveryGeneration;
+    late final Future<SessionRecoveryResult> handoff;
+    handoff = _handOffWithinGroup(generation, newZoneCode).whenComplete(() {
+      if (identical(_liveSessionRecoveryInFlight, handoff)) {
+        _liveSessionRecoveryInFlight = null;
+      }
+    });
+    _liveSessionRecoveryInFlight = handoff;
+    SessionRecoveryResult result;
+    try {
+      result = await handoff;
+    } catch (e) {
+      // Nothing awaits this method (the status handler fires it and moves
+      // on), so a throw here would be an unhandled error. The TX hold is
+      // released by the handoff's own finally; treat it as a failure.
+      debugError('[ZONE] Group handoff threw: $e');
+      result = SessionRecoveryResult.failed;
+    }
+    if (_isDisposed) return;
+    if (groupHandoffNeedsFallback(
+      failed: result == SessionRecoveryResult.failed,
+      connected: isConnected,
+      offlineMode: _preferences.offlineMode,
+      inZoneGracePeriod: _isInZoneGracePeriod,
+      zoneCode: zoneCode,
+      sessionZoneCode: _sessionZoneCode,
+      newZoneCode: newZoneCode,
+    )) {
+      debugWarn('[ZONE] Group handoff failed, falling back to a full '
+          'zone transfer');
+      await _handleZoneTransfer(newZoneCode, newZoneName);
+    }
+  }
+
+  /// Moves a live session to another member of its own region group without
+  /// the user seeing it: hold new TX, let an on-air TX queue its old wire
+  /// tag, upload everything queued under the old session, release it, open
+  /// a session in [newZoneCode], and apply that answer the way a session
+  /// recovery does. Auto-ping keeps its schedule; a send that comes due
+  /// meanwhile bows out and re-arms (the recovery hold).
+  ///
+  /// `failed` means the caller should fall back to the visible transfer.
+  /// `superseded` means something else (disconnect, reconnect, Offline Mode,
+  /// zone grace, dispose) took over and owns the cleanup.
+  Future<SessionRecoveryResult> _handOffWithinGroup(
+      int generation, String newZoneCode) async {
+    final connection = _meshCoreConnection;
+    final publicKey = _devicePublicKey;
+    final pingService = _pingService;
+    final oldZone = _sessionZoneCode;
+    if (connection == null ||
+        publicKey == null ||
+        pingService == null ||
+        _currentPosition == null ||
+        _isInZoneGracePeriod ||
+        !_ownsSessionRecovery(generation, connection, publicKey)) {
+      debugWarn('[ZONE] Refusing group handoff outside a live session');
+      return SessionRecoveryResult.superseded;
+    }
+    // Zone grace keeps the session, clears the queue and disables the
+    // heartbeat without bumping the recovery generation, and its re-entry
+    // runs the visible transfer, so a handoff still running then belongs
+    // to it.
+    bool owns() =>
+        _ownsSessionRecovery(generation, connection, publicKey) &&
+        !_isInZoneGracePeriod;
+
+    debugLog('[ZONE] Group handoff: $oldZone -> $newZoneCode '
+        '(group $_sessionGroupCode)');
+    // A scope runner holding the radio lease stops before the session
+    // changes, as it does for the visible transfer.
+    _scopeLifecycle.onEvent(ScopeStopEvent.zoneTransfer);
+    pingService.setSessionRecoveryInProgress(true);
+    try {
+      // A TX already sent carries the old wire tag until its listening
+      // window queues it. Nothing below may run before it reaches the queue.
+      await pingService.waitForTxWindow();
+      if (!owns()) return SessionRecoveryResult.superseded;
+
+      // Everything queued so far belongs to the old session: TX items carry
+      // its wire tags, which the server only accepts under that session.
+      await _rxLogger?.flushAllBatches(trigger: 'zone_handoff');
+      if (!owns()) return SessionRecoveryResult.superseded;
+      var stalls = 0;
+      for (var round = 0;
+          round < 5 && _apiQueueService.queueSize > 0;
+          round++) {
+        final before = _apiQueueService.queueSize;
+        try {
+          await _apiQueueService.forceUploadWithHoldWait();
+        } catch (e) {
+          debugError('[ZONE] Group handoff drain failed: $e');
+          break;
+        }
+        if (!owns()) return SessionRecoveryResult.superseded;
+        if (_apiQueueService.queueSize < before) continue;
+        // A round that moved nothing is usually an upload already in flight
+        // (the queue skips a second one). Give it a moment and try once
+        // more, so the session is not released under a batch still on its
+        // way; a second stall means those items are waiting out a retry.
+        if (++stalls >= 2) break;
+        await Future<void>.delayed(const Duration(seconds: 1));
+        if (!owns()) return SessionRecoveryResult.superseded;
+      }
+      debugLog('[ZONE] Group handoff drained, '
+          '${_apiQueueService.queueSize} item(s) left');
+
+      if (_apiService.hasSession) {
+        try {
+          await _apiService.requestAuth(
+            reason: 'disconnect',
+            publicKey: publicKey,
+            extras: const {'disconnect_cause': 'zone_transfer'},
+          );
+        } catch (e) {
+          debugError('[ZONE] Group handoff release failed: $e');
+        }
+        if (!owns()) return SessionRecoveryResult.superseded;
+      }
+      // The release cleared the held session id, so the connect below has
+      // no previous id to compare and never fires onSessionIdChanged. Drop
+      // the tagged TX the drain left behind here instead: their tags only
+      // re-derive under the session just released.
+      await _apiQueueService.dropStaleTaggedItems();
+      if (!owns()) return SessionRecoveryResult.superseded;
+
+      final deviceName = _isAnonymousRenamed
+          ? 'Anonymous'
+          : (connection.selfInfo?.name ??
+              connectedDeviceName?.replaceFirst('MeshCore-', ''));
+      if (deviceName == null || deviceName.isEmpty) {
+        debugWarn('[ZONE] Group handoff has no device name to authenticate');
+        return SessionRecoveryResult.failed;
+      }
+      final position = _currentPosition;
+      if (position == null) {
+        debugWarn('[ZONE] Group handoff has no position to authenticate');
+        return SessionRecoveryResult.failed;
+      }
+      Map<String, dynamic>? result;
+      try {
+        result = await _apiService.requestAuth(
+          reason: 'connect',
+          publicKey: publicKey,
+          who: deviceName,
+          appVersion: _appVersion,
+          power: _preferences.powerLevel,
+          iataCode: newZoneCode,
+          model: connection.deviceModel?.manufacturer ??
+              connection.deviceInfo?.manufacturer ??
+              'Unknown',
+          radioFreq: connection.selfInfo?.radioConfigApi,
+          lat: position.latitude,
+          lon: position.longitude,
+          accuracyMeters: position.accuracy,
+          shouldStoreSession: owns,
+        );
+      } catch (e) {
+        if (!owns()) return SessionRecoveryResult.superseded;
+        debugError('[ZONE] Group handoff auth failed: $e');
+        return SessionRecoveryResult.failed;
+      }
+      final newSessionId = result?['session_id'] as String?;
+      if (!owns()) {
+        // Whoever superseded this is blocked on it settling; the release is
+        // a second POST nothing here depends on, so it is not awaited.
+        unawaited(_releaseRecoveredSession(publicKey, newSessionId));
+        return SessionRecoveryResult.superseded;
+      }
+      if (result == null || result['success'] != true || newSessionId == null) {
+        debugWarn('[ZONE] Group handoff auth not accepted: '
+            '${result?['reason'] ?? 'no answer'}');
+        return SessionRecoveryResult.failed;
+      }
+      if (_apiService.sessionId != newSessionId) {
+        // Minted but not stored, which only happens when ownership went away
+        // during the POST. Same superseded case, same unawaited release.
+        unawaited(_releaseRecoveredSession(publicKey, newSessionId));
+        return SessionRecoveryResult.superseded;
+      }
+
+      try {
+        if (result['type'] is String) _authType = result['type'] as String;
+        _syncZoneCapacityFromAuth(result);
+        final applied =
+            await _applyRecoveredSessionConfiguration(connection, owns);
+        if (!owns()) {
+          unawaited(_releaseRecoveredSession(publicKey, newSessionId));
+          return SessionRecoveryResult.superseded;
+        }
+        if (!applied) {
+          await _releaseRecoveredSession(publicKey, newSessionId);
+          if (!owns()) return SessionRecoveryResult.superseded;
+          return SessionRecoveryResult.failed;
+        }
+      } catch (e) {
+        if (!owns()) {
+          unawaited(_releaseRecoveredSession(publicKey, newSessionId));
+          return SessionRecoveryResult.superseded;
+        }
+        debugError('[ZONE] Group handoff could not apply the new session: $e');
+        await _releaseRecoveredSession(publicKey, newSessionId);
+        if (!owns()) return SessionRecoveryResult.superseded;
+        return SessionRecoveryResult.failed;
+      }
+
+      // Only now does the session belong to the new member: a failure above
+      // leaves the old code in place, which is what lets the caller fall
+      // back to the visible transfer.
+      _sessionZoneCode = newZoneCode;
+      _sessionGroupCode = zoneGroupCode;
+      // The release cancelled the keepalive timers with the old session and
+      // a connect auth never schedules one itself, so re-arm the lane the way
+      // the visible transfer does; it schedules from the new expires_at.
+      _apiService.enableHeartbeat(
+        gpsProvider: () {
+          final pos = _gpsService.lastPosition;
+          if (pos == null) return null;
+          return (lat: pos.latitude, lon: pos.longitude);
+        },
+      );
+      // The scope stop above ended the periodic repeater refresh while the
+      // mode kept running. The new auth usually re-arms it through the gate
+      // change; this covers the case where the gate never flipped.
+      if (_isPassiveOrHybridModeRunning &&
+          !_scopeLifecycle.repeaterRefreshTimerRunning) {
+        _startScopeRepeaterRefreshForRunningMode();
+      }
+      debugLog('[ZONE] Group handoff complete: $oldZone -> $newZoneCode');
+      notifyListeners();
+      return SessionRecoveryResult.recovered;
+    } finally {
+      pingService.setSessionRecoveryInProgress(false);
+    }
+  }
+
   Future<bool> _checkSessionBeforeAction() async {
     _lastSessionCheckFailureReason = null;
     final pos = _gpsService.lastPosition;
@@ -10324,12 +10566,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final newZoneCode = newZone?['code'] as String? ?? '';
         final newZoneName = newZone?['name'] ?? 'Unknown';
 
-        // Detect zone-to-zone transition during active session
+        // Detect zone-to-zone transition during active session. A move to
+        // another member of the session's own region group is handed off
+        // without the user seeing it; anything else is the visible transfer.
+        final move = classifyZoneMove(
+          sessionZone: _sessionZoneCode,
+          sessionGroup: _sessionGroupCode,
+          newZone: newZoneCode,
+          newGroup: parseZoneGroup(newZone)?.code,
+        );
         if (isConnected &&
             !_preferences.offlineMode &&
-            _sessionZoneCode != null &&
-            newZoneCode.isNotEmpty &&
-            newZoneCode != _sessionZoneCode &&
+            move != ZoneMove.none &&
             !_isInZoneGracePeriod &&
             !_isZoneTransferInProgress) {
           final previousGroup = zoneGroupCode;
@@ -10338,6 +10586,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _invalidateRepeatersForContext();
           _nearestZone = null;
           _syncRecentCoverage();
+          if (move == ZoneMove.hiddenHandoff) {
+            // A later tick while the handoff runs still reads the old
+            // session zone, so it lands here again and must not start a
+            // second swap; the running one owns the move.
+            if (_liveSessionRecoveryInFlight != null) {
+              debugLog('[ZONE] Group handoff deferred: a session swap is '
+                  'already running');
+              return;
+            }
+            unawaited(_startGroupHandoff(newZoneCode, newZoneName));
+            return;
+          }
           await _handleZoneTransfer(newZoneCode, newZoneName);
           return;
         }
@@ -10768,6 +11028,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           await _apiService.requestAuth(
             reason: 'disconnect',
             publicKey: _devicePublicKey!,
+            extras: const {'disconnect_cause': 'zone_transfer'},
           );
           debugLog('[ZONE] Old session released');
         } catch (e) {

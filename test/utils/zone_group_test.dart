@@ -157,4 +157,47 @@ void main() {
           ZoneMove.fullTransfer);
     });
   });
+
+  group('groupHandoffNeedsFallback', () {
+    bool rule({
+      bool failed = true,
+      bool connected = true,
+      bool offlineMode = false,
+      bool inZoneGracePeriod = false,
+      String? zoneCode = 'YUL',
+      String? sessionZoneCode = 'YOW',
+      String newZoneCode = 'YUL',
+    }) =>
+        groupHandoffNeedsFallback(
+          failed: failed,
+          connected: connected,
+          offlineMode: offlineMode,
+          inZoneGracePeriod: inZoneGracePeriod,
+          zoneCode: zoneCode,
+          sessionZoneCode: sessionZoneCode,
+          newZoneCode: newZoneCode,
+        );
+
+    test('a failed handoff on a live session still in the member falls back',
+        () {
+      expect(rule(), isTrue);
+    });
+
+    test('a handoff that did not fail never falls back', () {
+      expect(rule(failed: false), isFalse);
+    });
+
+    test('a session that is gone, offline or in zone grace owns itself', () {
+      expect(rule(connected: false), isFalse);
+      expect(rule(offlineMode: true), isFalse);
+      expect(rule(inZoneGracePeriod: true), isFalse);
+    });
+
+    test('a phone that moved on, or a session already on the member, stops',
+        () {
+      expect(rule(zoneCode: 'SEA'), isFalse);
+      expect(rule(zoneCode: null), isFalse);
+      expect(rule(sessionZoneCode: 'YUL'), isFalse);
+    });
+  });
 }

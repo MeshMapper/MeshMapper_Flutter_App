@@ -85,3 +85,25 @@ ZoneMove classifyZoneMove({
   }
   return ZoneMove.fullTransfer;
 }
+
+/// After a hidden handoff ends `failed`: whether to fall back to the visible
+/// zone transfer. The session must still be live, the phone still in the
+/// member the handoff was for, that member not yet the session's own, and
+/// none of the states that run their own transfer (zone grace) or forbid one
+/// (Offline Mode) in force. A handoff that was superseded never gets here:
+/// whatever superseded it owns the cleanup.
+bool groupHandoffNeedsFallback({
+  required bool failed,
+  required bool connected,
+  required bool offlineMode,
+  required bool inZoneGracePeriod,
+  required String? zoneCode,
+  required String? sessionZoneCode,
+  required String newZoneCode,
+}) =>
+    failed &&
+    connected &&
+    !offlineMode &&
+    !inZoneGracePeriod &&
+    zoneCode == newZoneCode &&
+    sessionZoneCode != newZoneCode;
