@@ -1447,6 +1447,18 @@ the app shows as "This region does not support claiming yet."
   `mains`, and `displayPreset` renders the tag as `910.525 MHz · 62.5 kHz · SF7`, falling
   back to the raw string when it is not three numeric slots. Covered by
   `test/models/repeater_site_details_test.dart`.
+- **Scopes** (`Repeater.scopes`, `RepeaterScope` in `lib/models/repeater_scope.dart`): the
+  list's `scopes` array, one entry per scope name with when each source last confirmed it
+  (seen forwarding, reported to an observer, uploaded by a wardriver's app), plus the four
+  `default_scope*` fields read together. All optional: an older server sends none and the
+  row is left out. The detail sheet's Scopes row (`RepeaterScopeChips`,
+  `lib/widgets/repeater_scope_chips.dart`) shows one chip per scope, ordered by the pure
+  `repeaterScopeChips` (the default first with a gold star, then more sources, then name),
+  folded after 4 behind "+N more"; tapping a chip says where it came from. `*` means no
+  scope set and reads "Not set", never "all". A default state of `unknown` shows a starred
+  `?`. Ported from the web popup's chip strip so both answer alike. The web's "never
+  replied" row is left out: the list carries no probe counts. Display only, no
+  `mapRevision` bump. Covered by `test/models/repeater_scopes_test.dart`.
 - **The detail sheet's facts card scrolls inside a cap** (`_repeaterCardMaxHeightFraction`,
   32% of screen height) so a fully populated repeater cannot grow the sheet past its normal
   opening height and scroll the close button away. Its ID chip is drawn by the map's own
@@ -2884,6 +2896,8 @@ All API endpoints may return maintenance mode:
 - `lib/screens/watch_diagnostics_screen.dart` - Watch transport diagnostics (Settings)
 - `lib/services/meshcore/packet_validator.dart` - Packet validation and carpeater filtering
 - `lib/services/meshcore/regional_carpeater_filter.dart` - The region's shared CARpeater list: own-key exclusion, hop-prefix and full-key matching
+- `lib/models/repeater_scope.dart` - A repeater's confirmed scopes and default from the repeater list, and the detail sheet's chip order
+- `lib/widgets/repeater_scope_chips.dart` - The repeater detail sheet's Scopes chip row
 - `lib/utils/public_key.dart` - Full public key normalization (upper-case 64 hex)
 - `lib/utils/zone_group.dart` - The zone's multi-region group: `parseZoneGroup`, the short label, the zone-move classifier and the handoff fallback rule
 - `lib/utils/repeater_marker_style.dart` - Repeater marker geometry, the five-state colour registry, and the cluster dominant/presence expressions

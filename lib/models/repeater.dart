@@ -1,5 +1,7 @@
 import 'package:intl/intl.dart';
 
+import 'repeater_scope.dart';
+
 /// Represents a repeater from the MeshMapper API.
 /// Used to display repeater markers on the map.
 class Repeater {
@@ -89,6 +91,31 @@ class Repeater {
   /// or a repeater this feature has not reached yet.
   final int? scopesCheckedAt;
 
+  /// The scopes the server has confirmed for this repeater, one entry per
+  /// name with the time each source last confirmed it. Empty when the server
+  /// knows none or predates the field. Shown as the detail sheet's Scopes row
+  /// through [repeaterScopeChips]; never logged.
+  final List<RepeaterScope> scopes;
+
+  /// The repeater's default scope, read together: [defaultScopeState] is
+  /// `named` (with [defaultScope] set), `none` (the default is `*`),
+  /// `unknown` (an advert default the map has not confirmed yet) or null
+  /// (never learned, or an older server). [defaultScopeAt] is when it was
+  /// learned and [defaultScopeSrc] how (`advert` or `reported`).
+  final String? defaultScope;
+  final String? defaultScopeState;
+  final int? defaultScopeAt;
+  final String? defaultScopeSrc;
+
+  /// The Scopes row's chips, in display order. Empty means no row.
+  List<RepeaterScopeChip> get scopeChips => repeaterScopeChips(
+        scopes: scopes,
+        defaultScope: defaultScope,
+        defaultScopeState: defaultScopeState,
+        defaultScopeAt: defaultScopeAt,
+        defaultScopeSrc: defaultScopeSrc,
+      );
+
   /// The site details an administrator fills in about their installation.
   /// Every one is additive, optional and free text the server does not
   /// validate, so they are null on most repeaters and on any server that
@@ -142,6 +169,11 @@ class Repeater {
     this.backbone = false,
     this.backboneShare,
     this.scopesCheckedAt,
+    this.scopes = const [],
+    this.defaultScope,
+    this.defaultScopeState,
+    this.defaultScopeAt,
+    this.defaultScopeSrc,
     this.hardware,
     this.antenna,
     this.heightMeters,
@@ -212,6 +244,13 @@ class Repeater {
             ? rawScopesCheckedAt.toInt()
             : null;
 
+    final rawDefaultScopeAt = json['default_scope_at'];
+    final defaultScopeAt = rawDefaultScopeAt is num && rawDefaultScopeAt.isFinite
+        ? rawDefaultScopeAt.toInt()
+        : rawDefaultScopeAt is String
+            ? int.tryParse(rawDefaultScopeAt.trim())
+            : null;
+
     final rawHopBytes = json['hop_bytes'];
     final hopBytes = rawHopBytes is num
         ? rawHopBytes.toInt()
@@ -264,6 +303,11 @@ class Repeater {
       backbone: backbone,
       backboneShare: backboneShare,
       scopesCheckedAt: scopesCheckedAt,
+      scopes: RepeaterScope.listFromJson(json['scopes']),
+      defaultScope: text('default_scope'),
+      defaultScopeState: text('default_scope_state'),
+      defaultScopeAt: defaultScopeAt,
+      defaultScopeSrc: text('default_scope_src'),
       hardware: text('hardware'),
       antenna: text('antenna'),
       heightMeters: heightMeters,
@@ -296,6 +340,12 @@ class Repeater {
       if (backbone) 'backbone': 1,
       if (backboneShare != null) 'backbone_share': backboneShare,
       if (scopesCheckedAt != null) 'scopes_checked_at': scopesCheckedAt,
+      if (scopes.isNotEmpty)
+        'scopes': scopes.map((s) => s.toJson()).toList(),
+      if (defaultScope != null) 'default_scope': defaultScope,
+      if (defaultScopeState != null) 'default_scope_state': defaultScopeState,
+      if (defaultScopeAt != null) 'default_scope_at': defaultScopeAt,
+      if (defaultScopeSrc != null) 'default_scope_src': defaultScopeSrc,
       // Same rule for the site details: absent means "not filled in", so an
       // unset one must not come back as an explicit null.
       if (hardware != null) 'hardware': hardware,
@@ -450,6 +500,11 @@ class Repeater {
     bool? backbone,
     double? backboneShare,
     int? scopesCheckedAt,
+    List<RepeaterScope>? scopes,
+    String? defaultScope,
+    String? defaultScopeState,
+    int? defaultScopeAt,
+    String? defaultScopeSrc,
     String? hardware,
     String? antenna,
     double? heightMeters,
@@ -477,6 +532,11 @@ class Repeater {
         backbone: backbone ?? this.backbone,
         backboneShare: backboneShare ?? this.backboneShare,
         scopesCheckedAt: scopesCheckedAt ?? this.scopesCheckedAt,
+        scopes: scopes ?? this.scopes,
+        defaultScope: defaultScope ?? this.defaultScope,
+        defaultScopeState: defaultScopeState ?? this.defaultScopeState,
+        defaultScopeAt: defaultScopeAt ?? this.defaultScopeAt,
+        defaultScopeSrc: defaultScopeSrc ?? this.defaultScopeSrc,
         hardware: hardware ?? this.hardware,
         antenna: antenna ?? this.antenna,
         heightMeters: heightMeters ?? this.heightMeters,

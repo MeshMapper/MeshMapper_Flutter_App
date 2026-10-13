@@ -41,6 +41,7 @@ import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
 import 'repeater_admin_sheet.dart';
 import 'repeater_id_chip.dart';
+import 'repeater_scope_chips.dart';
 import 'rx_path_chain.dart';
 
 /// Satellite style as inline MapLibre style JSON (ArcGIS raster source).
@@ -10990,6 +10991,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         Icons.radio,
                         Text(repeater.displayPreset!,
                             style: const TextStyle(fontSize: 13)),
+                      ),
+                    // The scopes the server has confirmed for this repeater.
+                    // Absent when it knows none or predates the field.
+                    if (repeater.scopeChips.isNotEmpty)
+                      _repRow(
+                        context,
+                        Icons.sell_outlined,
+                        RepeaterScopeChips(chips: repeater.scopeChips),
                       ),
                     // Administrators (repeater administrators feature)
                     _repRow(
