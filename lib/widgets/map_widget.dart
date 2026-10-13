@@ -721,11 +721,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   _MinimizedInfoPopup? _minimizedInfoPopup;
 
   // MapLibre style and overlay tracking.
-  // Tracks the zone code we last rendered the coverage overlay for. When the
-  // zone check succeeds after the style has already loaded (e.g. first check
-  // failed with gps_inaccurate and a later retry succeeded), _addCoverageOverlay
-  // would otherwise never re-run and the coverage layer would stay missing.
-  String? _lastOverlayZoneCode;
+  // Tracks the coverage host (the region or group code) we last rendered the
+  // coverage overlay for. When the zone check succeeds after the style has
+  // already loaded (e.g. first check failed with gps_inaccurate and a later
+  // retry succeeded), _addCoverageOverlay would otherwise never re-run and the
+  // coverage layer would stay missing.
+  String? _lastOverlayHostCode;
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
   // the current preference in _onCoverageOpacityNotify to detect slider
   // changes and apply them live via _applyCoverageOverlayOpacity (no layer
@@ -1169,7 +1170,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (!_showMeshMapperOverlay) return;
     final appState = context.read<AppStateProvider>();
     if (!appState.preferences.mapTilesEnabled) return;
-    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) return;
+    if (appState.coverageHostCode == null ||
+        appState.coverageHostCode!.isEmpty) {
+      return;
+    }
     debugLog('[MAP] Recovering coverage overlay after app resume');
     _addCoverageOverlay(appState);
   }
@@ -2296,16 +2300,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // onStyleLoadedCallback → _onStyleLoaded re-registers images, rebuilds
     // cluster layers, re-adds the coverage overlay, and re-syncs annotations.
 
-    // Detect zoneCode or overlay-pref changes → schedule a SINGLE coalesced
-    // refresh; the _coverageRefreshScheduled flag ensures at most one refresh
-    // is queued per frame even when both change together.
+    // Detect coverage host (region or group code) or overlay-pref changes →
+    // schedule a SINGLE coalesced refresh; the _coverageRefreshScheduled flag
+    // ensures at most one refresh is queued per frame even when both change
+    // together. A move between two members of the same group keeps the host,
+    // so nothing here fires for it.
     //
-    // The zoneCode watcher is needed because _addCoverageOverlay only runs
+    // The host watcher is needed because _addCoverageOverlay only runs
     // during _onStyleLoaded — if the first zone check failed with
-    // gps_inaccurate, the style loads with zoneCode=null and the overlay is
-    // skipped. When a later retry sets the zone, nothing else would trigger
-    // the coverage layer.
-    final zoneChanged = appState.zoneCode != _lastOverlayZoneCode &&
+    // gps_inaccurate, the style loads with coverageHostCode=null and the
+    // overlay is skipped. When a later retry sets the zone, nothing else
+    // would trigger the coverage layer.
+    final zoneChanged = appState.coverageHostCode != _lastOverlayHostCode &&
         _isMapReady &&
         _styleLoaded;
     // Grid size is baked into the tile URL and the CVD palette into the layer
@@ -2342,8 +2348,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     if (zoneChanged || overlayPrefChanged || radioChanged) {
       if (zoneChanged) {
-        _lastOverlayZoneCode = appState.zoneCode;
-        // The session patch belongs to the old region's grid.
+        _lastOverlayHostCode = appState.coverageHostCode;
+        // The session patch belongs to the old region's (or group's) grid.
         appState.clearCoveragePatch();
       }
       if (overlayPrefChanged) {
@@ -2639,7 +2645,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
     final appState = context.read<AppStateProvider>();
-    final zone = appState.zoneCode;
+    final zone = appState.coverageHostCode;
     if (zone == null || zone.isEmpty) return;
 
     final gridSize = appState.preferences.coverageGridSize;
@@ -3381,12 +3387,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // Re-add coverage overlay AFTER cluster layers exist so _addCoverageOverlay
       // can target the bottom repeater layer as its belowLayerId reference. This
-      // keeps the insertion point consistent with the zoneCode watcher path —
+      // keeps the insertion point consistent with the host watcher path:
       // both end up with raster at the bottom of the repeater stack, not above it.
       if (!_canContinueStyleRestore()) return;
       await _refreshCoverageOverlay(appState);
       if (!_canContinueStyleRestore()) return;
-      _lastOverlayZoneCode = appState.zoneCode;
+      _lastOverlayHostCode = appState.coverageHostCode;
 
       // Regional boundary layer — style reload wipes custom sources/layers.
       // Reset the signature so the build()-driven watcher will repaint even
@@ -3697,14 +3703,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       debugLog('[MAP] Coverage overlay add skipped: mapTilesEnabled=false');
       return;
     }
-    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) {
-      debugLog(
-          '[MAP] Coverage overlay add skipped: zoneCode=${appState.zoneCode}');
+    if (appState.coverageHostCode == null ||
+        appState.coverageHostCode!.isEmpty) {
+      debugLog('[MAP] Coverage overlay add skipped: '
+          'coverageHostCode=${appState.coverageHostCode}');
       return;
     }
 
     final prefs = appState.preferences;
-    final zone = appState.zoneCode!.toLowerCase();
+    // The region's site, or the group's when the zone belongs to one: the
+    // group's site merges every member's coverage.
+    final zone = appState.coverageHostCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
     final recentDays = appState.coverageOverlayDays;
     // Display every recent result. Only the Smart Pinging lookup filters types.
@@ -6871,8 +6880,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         tooltip: 'Map Style: ${mapStyle.label}',
         onPressed: () => _cycleMapStyle(appState),
       ),
-      // MeshMapper overlay toggle (only show when zone code available)
-      if (appState.zoneCode != null)
+      // MeshMapper overlay toggle (only show when a coverage host is known)
+      if (appState.coverageHostCode != null)
         _buildControlButton(
           icon: Icons.layers,
           tooltip: _showMeshMapperOverlay
@@ -11032,7 +11041,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     // nothing to retry against: fetchRepeaterCoveragePoints
                     // answers null without making a request, so a Retry button
                     // would just loop on the same answer. Say why instead.
-                    final hasZone = (appState.zoneCode ?? '').isNotEmpty;
+                    final hasZone =
+                        (appState.coverageHostCode ?? '').isNotEmpty;
                     // Pop with our own token: the result handler treats every
                     // other value, a bare pop included, as a real close and
                     // tears the selection down.

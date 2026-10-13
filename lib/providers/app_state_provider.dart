@@ -1404,8 +1404,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get displayZoneName => zoneGroup?.name ?? zoneName;
 
   /// Subdomain coverage is read from (`<code>.meshmapper.net`): the group's
-  /// own site merges every member. Repeaters and borders stay on the member.
+  /// own site merges every member. Repeaters and borders are still fetched
+  /// from the member's site (which already answers for the whole group) but
+  /// are keyed on this code, see [_repeaterContextKey].
   String? get coverageHostCode => zoneGroupCode ?? zoneCode;
+
+  /// The context the repeater list and the borders are keyed on: the group
+  /// when the zone belongs to one, else the zone. A move between two members
+  /// of the same group keeps the key, so neither list is cleared or refetched
+  /// for it. Leaving the group changes the key and clears both, as a plain
+  /// zone change always did.
+  String? get _repeaterContextKey => coverageHostCode;
 
   /// Logs the group once per change, so a drive across a group's members
   /// does not repeat it on every zone check.
@@ -1434,8 +1443,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? _coveragePatchCells
           : const {};
 
-  /// Drop the session patch — the cells belong to one region + grid preset
-  /// (called on zone change and when the Grid Mode preference changes).
+  /// Drop the session patch: the cells belong to one region or group plus
+  /// grid preset (called on a coverage host change and when the Grid Mode
+  /// preference changes).
   void clearCoveragePatch() {
     _coveragePatchCells.clear();
     _coveragePatchVersion++;
@@ -1450,13 +1460,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// the z14 tile. attempt 1 fires +7s after upload; attempt 2 (+10s) runs
   /// only when attempt 1 saw no changed tiles (ingestion can lag the post).
   Future<void> _freshenAffectedVectorTiles({required int attempt}) async {
-    final zone = zoneCode;
+    final zone = coverageHostCode;
     if (zone == null ||
         zone != _pendingFreshZone ||
         _pendingFreshCoords.isEmpty) {
-      // Zone changed since the coords were queued: they belong to the OLD
-      // region's grid — freshening them against the new region's server
-      // would be pure wasted renders.
+      // Coverage host changed since the coords were queued: they belong to
+      // the OLD region's (or group's) grid, so freshening them against the
+      // new host's server would be pure wasted renders.
       _pendingFreshCoords.clear();
       return;
     }
@@ -1775,15 +1785,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get repeaterCount => _repeaters.length;
 
   /// Lazy tap-to-inspect: fetch raw coverage points for a clicked map cell from
-  /// the current zone's app endpoint. Returns `[]` when there is no zone or on
-  /// failure. The caller aggregates these into a GRID SUMMARY (read-only — no
-  /// state mutation, so no `notifyListeners`).
+  /// the coverage host's app endpoint (the region's, or the group's when the
+  /// zone belongs to one). Returns `[]` when there is no zone or on failure.
+  /// The caller aggregates these into a GRID SUMMARY (read-only: no state
+  /// mutation, so no `notifyListeners`).
   Future<List<Map<String, dynamic>>> fetchCellCoverage({
     required double lat,
     required double lon,
     required double radiusMeters,
   }) {
-    final zone = zoneCode;
+    final zone = coverageHostCode;
     if (zone == null || zone.isEmpty) {
       return Future.value(const <Map<String, dynamic>>[]);
     }
@@ -1796,7 +1807,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Lazy tap-to-inspect: fetch the coverage points referencing a repeater
-  /// (hex-prefix superset) from the current zone's app endpoint. The caller
+  /// (hex-prefix superset) from the coverage host's app endpoint (the
+  /// region's, or the group's when the zone belongs to one). The caller
   /// aggregates these into the repeater's BIDIR/TX/RX/DISC/DEAD totals + max
   /// range.
   ///
@@ -1808,7 +1820,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<List<Map<String, dynamic>>?> fetchRepeaterCoveragePoints({
     required String prefix,
   }) {
-    final zone = zoneCode;
+    final zone = coverageHostCode;
     if (zone == null || zone.isEmpty) {
       debugWarn('[COVERAGE] repeater points requested with no zone, '
           'reporting unavailable rather than empty');
@@ -1922,9 +1934,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? smartPingDays
           : null;
 
-  /// A patch must come from the same region, grid, preset and time filter.
+  /// A patch must come from the same region or group, grid, preset and time
+  /// filter.
   String get coverageOverlayContext =>
-      '$zoneCode|${_preferences.coverageGridSize}|$radioFilterKey|$coverageOverlayDays';
+      '$coverageHostCode|${_preferences.coverageGridSize}|$radioFilterKey|$coverageOverlayDays';
 
   bool get discDropEnabled =>
       _preferences.discDropEnabled || _apiService.enforceDiscDrop;
@@ -3674,7 +3687,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             alreadyPending: _pendingFreshCoords.length);
         _pendingFreshCoords.addAll(refresh.coords);
         if (refresh.armsRefresh) {
-          _pendingFreshZone = zoneCode;
+          _pendingFreshZone = coverageHostCode;
           _vectorFreshTimer?.cancel();
           _vectorFreshTimer = Timer(const Duration(seconds: 7), () {
             _freshenAffectedVectorTiles(attempt: 1);
@@ -9474,7 +9487,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// forever, and the release call can fail, leaving hasApiSession stale.
   void _syncRecentCoverage({bool sessionEnded = false}) {
     _recentCoverage.configure(
-      zone: zoneCode,
+      // The region's site, or the group's: the same tiles the overlay paints.
+      zone: coverageHostCode,
       gridSize: _preferences.coverageGridSize,
       days: smartPingDays,
       radioKey: radioFilterKey,
@@ -11067,10 +11081,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Ruling 10: the connect-time, mode-start and periodic repeater refresh
-  /// for scope discovery. A list that lands after the zone or the radio
-  /// preset moved is dropped. Only one refresh runs at a time; a call while
-  /// one is already in flight is a no-op.
+  /// for scope discovery. A list that lands after the context (the zone, or
+  /// its group) or the radio preset moved is dropped. Only one refresh runs
+  /// at a time; a call while one is already in flight is a no-op.
+  ///
+  /// The fetch goes to the member's site ([iata]); the list is keyed on
+  /// [_repeaterContextKey], so a move between members of one group neither
+  /// discards an in-flight answer nor reads as a new zone for the map.
   Future<void> _refreshRepeatersForScopes(String iata) async {
+    final key = _repeaterContextKey;
+    if (key == null) return;
     if (_scopeRepeaterRefreshInFlight) {
       debugLog('[SCOPES] Repeater list refresh for zone $iata skipped: '
           'one is already in flight');
@@ -11082,17 +11102,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final preset = radioFilterKey;
       final fetched = await _scopeLifecycle.resultIfStillCurrent(
         fetch: _apiService.fetchRepeaters(iata),
-        zone: iata,
+        zone: key,
         preset: preset,
-        currentZone: () => zoneCode,
+        currentZone: () => _repeaterContextKey,
         currentPreset: () => radioFilterKey,
       );
       if (_isDisposed) return;
       final refreshedState = _repeaterListState.afterFetch(
         fetched: fetched,
-        requestedZone: iata,
+        requestedZone: key,
         requestedPreset: preset,
-        currentZone: zoneCode,
+        currentZone: _repeaterContextKey,
         currentPreset: radioFilterKey,
         now: DateTime.now(),
       );
@@ -11101,7 +11121,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Wanted for its scope stamps: when nothing the map draws moved, the
       // map is not rebuilt for it (Rule 9).
       final mapChanged = !_repeatersLoaded ||
-          _repeatersLoadedForIata != iata ||
+          _repeatersLoadedForIata != key ||
           scopeRefreshChangesMap(_repeaters, refreshed);
       _repeaterListState = refreshedState;
       _repeaterConflictHexIds = rcConflictHexIds(_repeaters);
@@ -11264,10 +11284,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await box.flush();
   }
 
-  /// Drop a list as soon as its region or preset ceases to be valid.
-  /// Same-context failures leave the existing list untouched.
+  /// Drop a list as soon as its context (the region, or its group) or preset
+  /// ceases to be valid. Same-context failures leave the existing list
+  /// untouched.
   void _invalidateRepeatersForContext() {
-    final retained = _repeaterListState.forContext(zoneCode, radioFilterKey);
+    final retained =
+        _repeaterListState.forContext(_repeaterContextKey, radioFilterKey);
     if (identical(retained, _repeaterListState)) return;
     _repeaterListState = retained;
     _repeaterConflictHexIds = const {};
@@ -11276,12 +11298,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Fetch repeaters when a zone is discovered, including before connection.
+  ///
+  /// The fetch goes to the member's site ([iata], which already answers for
+  /// the whole group); the list is keyed on [_repeaterContextKey], so a move
+  /// between members of one group finds the list already loaded.
   Future<void> _fetchRepeatersForZone(String iata) async {
     if (_isDisposed || zoneCode != iata) return;
+    final key = _repeaterContextKey;
+    if (key == null) return;
     _invalidateRepeatersForContext();
-    if (_repeatersLoaded && _repeatersLoadedForIata == iata) return;
+    if (_repeatersLoaded && _repeatersLoadedForIata == key) return;
     final preset = radioFilterKey;
-    final request = (iata, preset);
+    final request = (key, preset);
     if (!_repeaterLoadsInFlight.add(request)) return;
 
     debugLog('[MAP] Fetching repeaters for zone: $iata');
@@ -11290,9 +11318,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_isDisposed) return;
       final refreshed = _repeaterListState.afterFetch(
         fetched: fetchedRepeaters,
-        requestedZone: iata,
+        requestedZone: key,
         requestedPreset: preset,
-        currentZone: zoneCode,
+        currentZone: _repeaterContextKey,
         currentPreset: radioFilterKey,
         now: DateTime.now(),
       );
@@ -11314,10 +11342,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Fetch regional boundary polygons for the current zone.
-  /// Called after a successful zone check; idempotent per IATA so the
-  /// /border endpoint is only hit once per zone transition.
+  /// Called after a successful zone check; idempotent per context (the
+  /// zone, or its group, see [_repeaterContextKey]) so the /border endpoint
+  /// is only hit once per zone transition. `/border` already returns every
+  /// member of a group, so a move between members keeps the polygons.
   Future<void> _fetchBorderPolygons(String iata) async {
-    if (_bordersLoadedForZone == iata) return;
+    final key = _repeaterContextKey;
+    if (key == null || _bordersLoadedForZone == key) return;
     if (_bordersFetchInProgress) return;
     if (_currentPosition == null) return;
 
@@ -11330,7 +11361,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       if (result != null && result.isNotEmpty) {
         _regionBorders = result;
-        _bordersLoadedForZone = iata;
+        _bordersLoadedForZone = key;
         debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
         notifyListeners();
       } else {

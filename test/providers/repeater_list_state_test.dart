@@ -91,4 +91,20 @@ void main() {
     expect(state.preset, isNull);
     expect(state.loadedAt, now);
   });
+
+  test('a list keyed on the group survives a move between members', () {
+    final loaded = const RepeaterListState().afterFetch(
+      fetched: [repeater],
+      requestedZone: 'ONQC',
+      requestedPreset: null,
+      currentZone: 'ONQC',
+      currentPreset: null,
+      now: DateTime(2026, 10, 12),
+    );
+    expect(loaded.repeaters, isNotEmpty);
+    // YOW -> YUL inside ONQC: the context key stays ONQC.
+    expect(identical(loaded.forContext('ONQC', null), loaded), isTrue);
+    // Leaving the group clears it, as today.
+    expect(loaded.forContext('SEA', null).repeaters, isEmpty);
+  });
 }
