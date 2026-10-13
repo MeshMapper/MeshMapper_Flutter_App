@@ -1402,8 +1402,10 @@ class PingService {
   ///
   /// [delayMs] replaces the interval (the held-TX re-arm). [heldTxLeg] names
   /// the leg: in Hybrid the TX leg that bowed out is the one that runs, so
-  /// the alternation is unchanged (the timer callback had already flipped
-  /// the flag to discovery when it dispatched the TX).
+  /// the alternation is unchanged. The flag is forced because the two
+  /// bow-out sites disagree on it: at the gate before the send it still
+  /// reads TX, while after the fresh fix the timer callback has already
+  /// flipped it to discovery when it dispatched the TX.
   void _rescheduleAutoLane({int? delayMs, bool heldTxLeg = false}) {
     if (!_autoPingEnabled || _passiveModeEnabled) return;
     if (_hybridModeEnabled) {

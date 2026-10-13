@@ -1039,8 +1039,17 @@ class ApiService {
       } else if (reason == 'disconnect') {
         // Only clear shared session when no explicit sessionId was provided
         // (explicit sessionId means caller manages its own session lifecycle)
+        // A release only forgets the session it released. A new session
+        // stored while this POST was out (a reconnect's connect auth landing
+        // inside a handoff's release) must not be nulled by the old one's
+        // answer.
         if (sessionId == null) {
-          _clearSession(keepPolicy: keepPolicy);
+          if (_sessionId == null || _sessionId == payload['session_id']) {
+            _clearSession(keepPolicy: keepPolicy);
+          } else {
+            debugLog('[API] Release answered for a session already replaced, '
+                'keeping the new one');
+          }
         }
       }
 

@@ -86,27 +86,40 @@ ZoneMove classifyZoneMove({
   return ZoneMove.fullTransfer;
 }
 
-/// After a hidden handoff ends `failed`: whether to fall back to the visible
-/// zone transfer, which then goes to the CURRENT zone. The session must
-/// still be live, a zone known, that zone not yet the session's own (a
-/// failed handoff left `_sessionZoneCode` on the old member), and none of
-/// the states that run their own transfer (zone grace) or forbid one
-/// (Offline Mode) in force. The phone may well be in a third member by now
-/// (a later tick moved the zone while the handoff ran): the transfer goes
-/// there, since a session is owed wherever the phone is. A handoff that was
-/// superseded never gets here: whatever superseded it owns the cleanup.
-bool groupHandoffNeedsFallback({
+/// What `_startGroupHandoff` does once a hidden handoff has settled
+/// `failed`. A failed handoff has released the old session, and a connected
+/// online radio must not sit without one: uploads would throw "no
+/// session_id" and the keepalive is gone.
+enum GroupHandoffFollowUp {
+  /// Nothing: the handoff did not fail, or something that owns its own
+  /// session (a disconnect, Offline Mode, zone grace) is in charge.
+  none,
+
+  /// Re-mint through the visible transfer in the zone the phone is in NOW:
+  /// the member the handoff was for, a third member a later tick moved it to,
+  /// or the old member it moved back into (the transfer just auths in its
+  /// target).
+  transfer,
+
+  /// No zone to re-join: end the session the way a failed visible transfer
+  /// does.
+  disconnect,
+}
+
+/// Pure rule for [GroupHandoffFollowUp]. A handoff that was superseded never
+/// gets here: whatever superseded it owns the cleanup.
+GroupHandoffFollowUp groupHandoffFollowUp({
   required bool failed,
   required bool connected,
   required bool offlineMode,
   required bool inZoneGracePeriod,
   required String? zoneCode,
-  required String? sessionZoneCode,
-}) =>
-    failed &&
-    connected &&
-    !offlineMode &&
-    !inZoneGracePeriod &&
-    zoneCode != null &&
-    zoneCode.isNotEmpty &&
-    sessionZoneCode != zoneCode;
+}) {
+  if (!failed || !connected || offlineMode || inZoneGracePeriod) {
+    return GroupHandoffFollowUp.none;
+  }
+  if (zoneCode == null || zoneCode.isEmpty) {
+    return GroupHandoffFollowUp.disconnect;
+  }
+  return GroupHandoffFollowUp.transfer;
+}

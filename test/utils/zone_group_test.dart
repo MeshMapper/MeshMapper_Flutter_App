@@ -158,47 +158,46 @@ void main() {
     });
   });
 
-  group('groupHandoffNeedsFallback', () {
-    bool rule({
+  group('groupHandoffFollowUp', () {
+    GroupHandoffFollowUp rule({
       bool failed = true,
       bool connected = true,
       bool offlineMode = false,
       bool inZoneGracePeriod = false,
       String? zoneCode = 'YUL',
-      String? sessionZoneCode = 'YOW',
     }) =>
-        groupHandoffNeedsFallback(
+        groupHandoffFollowUp(
           failed: failed,
           connected: connected,
           offlineMode: offlineMode,
           inZoneGracePeriod: inZoneGracePeriod,
           zoneCode: zoneCode,
-          sessionZoneCode: sessionZoneCode,
         );
 
-    test('a failed handoff on a live session falls back', () {
-      expect(rule(), isTrue);
-    });
-
-    test('a phone already in a third member still falls back, to that zone',
+    test('a failed handoff on a live session re-mints in the current zone',
         () {
-      expect(rule(zoneCode: 'YQB'), isTrue);
+      expect(rule(), GroupHandoffFollowUp.transfer);
+      expect(rule(zoneCode: 'YQB'), GroupHandoffFollowUp.transfer,
+          reason: 'a third member a later tick moved into');
+      expect(rule(zoneCode: 'YOW'), GroupHandoffFollowUp.transfer,
+          reason: 'the old member the phone moved back into');
     });
 
-    test('a handoff that did not fail never falls back', () {
-      expect(rule(failed: false), isFalse);
+    test('a failed handoff with no zone to re-join ends the session', () {
+      expect(rule(zoneCode: null), GroupHandoffFollowUp.disconnect);
+      expect(rule(zoneCode: ''), GroupHandoffFollowUp.disconnect);
+    });
+
+    test('a handoff that did not fail needs nothing', () {
+      expect(rule(failed: false), GroupHandoffFollowUp.none);
+      expect(rule(failed: false, zoneCode: null), GroupHandoffFollowUp.none);
     });
 
     test('a session that is gone, offline or in zone grace owns itself', () {
-      expect(rule(connected: false), isFalse);
-      expect(rule(offlineMode: true), isFalse);
-      expect(rule(inZoneGracePeriod: true), isFalse);
-    });
-
-    test('no zone known, or a session already on this zone, stops', () {
-      expect(rule(zoneCode: null), isFalse);
-      expect(rule(zoneCode: ''), isFalse);
-      expect(rule(sessionZoneCode: 'YUL'), isFalse);
+      expect(rule(connected: false), GroupHandoffFollowUp.none);
+      expect(rule(offlineMode: true), GroupHandoffFollowUp.none);
+      expect(rule(inZoneGracePeriod: true), GroupHandoffFollowUp.none);
+      expect(rule(connected: false, zoneCode: null), GroupHandoffFollowUp.none);
     });
   });
 }

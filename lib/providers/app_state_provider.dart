@@ -6738,7 +6738,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog(
               '[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
           _lastReconnectWasBondError = false;
-          _onReconnectSuccess();
+          await _onReconnectSuccess();
         } else if (_isAutoReconnecting) {
           // Connection failed but didn't throw - try again
           debugLog(
@@ -6808,12 +6808,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Called when auto-reconnect succeeds
-  void _onReconnectSuccess() {
+  Future<void> _onReconnectSuccess() async {
     // Cancel timers
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
+
+    // The connect workflow's step 6 POSTs /auth on every reconnect (the
+    // server reuses a live session, else mints one), so an online reconnect
+    // lands with a session and this branch is not taken. It is the backstop
+    // for the one state that must never persist: connected, online, and no
+    // session (a group handoff superseded in its release-to-mint gap). Ends
+    // as the abandon path does when the session cannot be had, before the
+    // reconnect state below is cleared so that path sees it as today.
+    if (!_preferences.offlineMode && !_apiService.hasSession) {
+      if (!await _reacquireSessionAfterReconnect()) return;
+    }
 
     final wasAutoPing = _autoPingWasEnabled;
     final previousMode = _autoModeBeforeReconnect;
@@ -6863,6 +6874,66 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     notifyListeners();
+  }
+
+  /// Re-acquires an API session for a reconnected radio that has none, the
+  /// way a live session is replaced (`_mintAndApplyReplacementSession`, the
+  /// recovery's and the handoff's back half), then re-arms what the connect
+  /// path's session branch arms: session zone, zone refresh timer, keepalive.
+  /// False means the reconnect was abandoned (or superseded) here.
+  Future<bool> _reacquireSessionAfterReconnect() async {
+    final connection = _meshCoreConnection;
+    final publicKey = _devicePublicKey;
+    final zone = zoneCode;
+    if (connection == null ||
+        publicKey == null ||
+        zone == null ||
+        zone.isEmpty) {
+      debugError('[CONN] Reconnected without an API session and no zone to '
+          're-join: abandoning');
+      _abandonAutoReconnect();
+      return false;
+    }
+    debugWarn('[CONN] Reconnected without an API session: re-acquiring one '
+        'in $zone');
+    // _ownsSessionRecovery reads !_isAutoReconnecting, which is still set
+    // here on purpose (the abandon path reads the reconnect state), so the
+    // ownership test is the reconnect's own.
+    bool owns() =>
+        !_isDisposed &&
+        _isAutoReconnecting &&
+        !_userRequestedDisconnect &&
+        !_preferences.offlineMode &&
+        _connectionStep == ConnectionStep.connected &&
+        identical(_meshCoreConnection, connection) &&
+        _devicePublicKey == publicKey;
+    final result = await _mintAndApplyReplacementSession(
+      connection: connection,
+      publicKey: publicKey,
+      iataCode: zone,
+      owns: owns,
+      tag: '[CONN]',
+      what: 'reconnect',
+    );
+    if (result == SessionRecoveryResult.superseded) return false;
+    if (result != SessionRecoveryResult.recovered) {
+      debugError('[CONN] Could not re-acquire a session after reconnect: '
+          'abandoning');
+      _abandonAutoReconnect();
+      return false;
+    }
+    _sessionZoneCode = zone;
+    _sessionGroupCode = zoneGroupCode;
+    _startZoneRefreshTimer();
+    _apiService.enableHeartbeat(
+      gpsProvider: () {
+        final pos = _gpsService.lastPosition;
+        if (pos == null) return null;
+        return (lat: pos.latitude, lon: pos.longitude);
+      },
+    );
+    debugLog('[CONN] Session re-acquired after reconnect in $zone');
+    return true;
   }
 
   /// Cancel auto-reconnect (called from UI cancel button)
@@ -7611,21 +7682,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _remapAutoModeAfterHandoff(newZoneCode);
       return;
     }
-    // To the zone the phone is in NOW: a later tick may have moved it past
-    // the member this handoff was for, and a session is owed wherever it is.
+    // A failed handoff has released the old session, and the app must not
+    // stay connected without one: re-mint in the zone the phone is in NOW
+    // (a later tick may have moved it to a third member, or back into the
+    // old one; the visible transfer just auths in its target), or, with no
+    // zone to re-join, end the session the way a failed visible transfer
+    // does.
     final fallbackZone = zoneCode;
-    if (groupHandoffNeedsFallback(
+    switch (groupHandoffFollowUp(
       failed: result == SessionRecoveryResult.failed,
       connected: isConnected,
       offlineMode: _preferences.offlineMode,
       inZoneGracePeriod: _isInZoneGracePeriod,
       zoneCode: fallbackZone,
-      sessionZoneCode: _sessionZoneCode,
     )) {
-      final fallbackName = _currentZone?['name'] as String? ?? 'Unknown';
-      debugWarn('[ZONE] Group handoff failed, falling back to a full '
-          'zone transfer to $fallbackZone');
-      await _handleZoneTransfer(fallbackZone!, fallbackName);
+      case GroupHandoffFollowUp.transfer:
+        final fallbackName = _currentZone?['name'] as String? ?? 'Unknown';
+        debugWarn('[ZONE] Group handoff failed, falling back to a full '
+            'zone transfer to $fallbackZone');
+        await _handleZoneTransfer(fallbackZone!, fallbackName);
+      case GroupHandoffFollowUp.disconnect:
+        debugError('[ZONE] Group handoff failed with no zone to re-join: '
+            'ending the session');
+        logError('Zone transfer failed: no zone to re-join',
+            severity: ErrorSeverity.error);
+        await disconnect();
+      case GroupHandoffFollowUp.none:
+        break;
     }
   }
 
@@ -7642,6 +7725,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final current = _autoMode;
     if (current != AutoMode.active && current != AutoMode.hybrid) return;
+    // A stop the user already asked for outranks the remap (the external
+    // lanes' stillStopping rule): the switch below goes through the mode
+    // start, which force-disables the running mode and drops a parked
+    // disable, so the Stop would be lost and a fresh discovery would go out.
+    // Nothing is awaited between here and the switch, so one read suffices.
+    if (isPendingDisable) {
+      debugLog('[ZONE] $newZoneCode is at TX capacity, but a stop is '
+          'pending: leaving the mode to it');
+      return;
+    }
     final resolved = _resolveAutoModeForZone(current);
     if (resolved == current) {
       debugWarn('[ZONE] $newZoneCode allows neither TX nor RX; '
@@ -7700,6 +7793,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     bool owns() =>
         _ownsSessionRecovery(generation, connection, publicKey) &&
         !_isInZoneGracePeriod;
+    // Every exit past the keepPolicy release that does not end with a stored
+    // session forgets the kept zone policy, as a plain release would have:
+    // every superseding owner gates its own release on hasSession, so nothing
+    // else would. A successor that already minted its own session keeps it,
+    // and one still minting overwrites every field.
+    SessionRecoveryResult withoutSession(SessionRecoveryResult result) {
+      if (!_apiService.hasSession) _apiService.clearSession();
+      return result;
+    }
 
     debugLog('[ZONE] Group handoff: $oldZone -> $newZoneCode '
         '(group $_sessionGroupCode)');
@@ -7771,14 +7873,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugWarn('[ZONE] Group handoff release not confirmed: '
               '${released?['reason'] ?? 'no answer'}');
         }
-        if (!owns()) return SessionRecoveryResult.superseded;
+        if (!owns()) return withoutSession(SessionRecoveryResult.superseded);
       }
       // The release cleared the held session id, so the connect below has
       // no previous id to compare and never fires onSessionIdChanged. Drop
       // the tagged TX the drain left behind here instead: their tags only
       // re-derive under the session just released.
       await _apiQueueService.dropStaleTaggedItems();
-      if (!owns()) return SessionRecoveryResult.superseded;
+      if (!owns()) return withoutSession(SessionRecoveryResult.superseded);
 
       final minted = await _mintAndApplyReplacementSession(
         connection: connection,
@@ -7788,14 +7890,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         tag: '[ZONE]',
         what: 'group handoff',
       );
-      if (minted != SessionRecoveryResult.recovered) {
-        // The release kept the zone policy for a mint that did not come.
-        // With no session to follow, forget it in full, as a plain release
-        // would have. A successor that already minted its own session keeps
-        // it (hasSession), and one still minting overwrites every field.
-        if (!_apiService.hasSession) _apiService.clearSession();
-        return minted;
-      }
+      if (minted != SessionRecoveryResult.recovered) return withoutSession(minted);
 
       // Only now does the session belong to the new member: a failure above
       // leaves the old code in place, which is what lets the caller fall

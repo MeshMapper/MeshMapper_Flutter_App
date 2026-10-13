@@ -1752,7 +1752,10 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   with no TX capacity while Active or Hybrid runs is remapped the way the visible transfer's
   restore is (`_remapAutoModeAfterHandoff` through `_resolveAutoModeForZone`, Passive when RX is
   allowed, the shared cooldown cleared first), with a `[ZONE]` line and a warning in the error
-  log: the one case a hidden handoff changes what is on screen. It never sets `_isZoneTransferInProgress`, never stops auto-ping, the
+  log: the one case a hidden handoff changes what is on screen. A stop already pending
+  (`isPendingDisable`, a parked disable or the stop teardown) outranks the remap, which returns
+  with a `[ZONE]` line and leaves the mode to the stop, since the switch would force-disable the
+  mode and drop the parked disable (the external lanes' stillStopping rule). It never sets `_isZoneTransferInProgress`, never stops auto-ping, the
   RX logger, the zone refresh timer or the idle disconnect timer, never clears the borders or the
   repeater list, and never calls `clearOnDisconnect`: auto-ping keeps its schedule through the
   swap, so Hybrid does not flip early or late at the border, and the cost is about a second of
@@ -1772,14 +1775,27 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   preflight bow out, and the handoff mints the replacement itself. The results are the
   recovery's: `recovered`, `superseded` (something else owns the cleanup; a session minted
   meanwhile is released unawaited) or `failed`, which never leaves a minted session behind (an
-  apply failure releases it, awaited). On `failed`, `_startGroupHandoff` falls back to the
-  visible `_handleZoneTransfer` when `groupHandoffNeedsFallback` holds (still connected, not
-  Offline Mode, not in grace, a zone known, and `_sessionZoneCode` not that zone, which is why
-  the code moves only after the apply); the transfer goes to the zone the phone is in NOW, so a
-  phone a later tick already moved into a third member is not left without a session until the
-  next tick. A
+  apply failure releases it, awaited). Every exit past the keepPolicy release that ends without a
+  stored session forgets the kept zone policy (`ApiService.clearSession`), the superseded ones
+  included, since every superseding owner gates its own release on `hasSession`. On `failed` the
+  old session is gone and a connected online radio must not sit without one, so
+  `_startGroupHandoff` acts on the pure `groupHandoffFollowUp` (still connected, not Offline Mode,
+  not in grace): `transfer`, the visible `_handleZoneTransfer` to the zone the phone is in NOW
+  (the member the handoff was for, a third member a later tick moved it to, or the old member it
+  moved back into; the transfer just auths in its target), or `disconnect` when no zone is known,
+  the way a failed visible transfer ends. A
   throw out of the handoff is caught there and treated as `failed`, since nothing awaits the
   method.
+- **A reconnect in the gap.** The connect workflow's step 6 POSTs `/auth` on every reconnect
+  (the server reuses a live session, else mints one in the current zone), so an online reconnect
+  lands with a session even when a handoff it superseded had already released the old one.
+  `_onReconnectSuccess` keeps a backstop for the one state that must never persist (connected,
+  online, no session): `_reacquireSessionAfterReconnect` mints through
+  `_mintAndApplyReplacementSession`, re-arms the session zone, the zone refresh timer and the
+  keepalive, and abandons the reconnect as today when it cannot, all before auto-ping is
+  restored; a reconnect that holds its session is unchanged. On the API side a release only
+  forgets the session it released, so a stale release answer landing after a reconnect's connect
+  auth cannot null the new session.
 - **Server side.** `/wardrive` (online only) no longer moves a session between regions. A
   batch's zone is its newest item's; when it lands outside the session's own zone the server
   stores the WHOLE batch under the session's own zone and answers 200 in three cases: in a zone
@@ -1800,8 +1816,8 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   the release POST itself.
 - Logged under `[ZONE]` (the handoff), `[APP]` (the group), `[SESSION]` (the joiner rule),
   `[API QUEUE]` (the pause and the in-flight wait) and `[MAP]` (the overlay host). Tests:
-  `test/utils/zone_group_test.dart` (parsing, the short label, the move classifier, the fallback
-  rule), `test/services/session_recovery_join_test.dart`,
+  `test/utils/zone_group_test.dart` (parsing, the short label, the move classifier, the
+  follow-up rule), `test/services/session_recovery_join_test.dart`,
   `test/services/api_queue_upload_pause_test.dart`,
   `test/services/api_service_keep_policy_test.dart`, `test/services/ping_service_held_tx_test.dart`,
   `test/widgets/regional_config_card_test.dart`.

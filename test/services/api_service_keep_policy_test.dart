@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -84,6 +85,47 @@ void main() {
     expect(api.enforceHybrid, isFalse);
     expect(api.apiHopBytes, 1);
     expect(api.scopeDiscoveryOffered, isFalse);
+    api.dispose();
+  });
+
+  test('a release that lands after a new session was stored keeps the new one',
+      () async {
+    final releaseGate = Completer<void>();
+    var auths = 0;
+    final api = ApiService(
+      client: MockClient((request) async {
+        final body = json.decode(request.body) as Map<String, dynamic>;
+        if (body['reason'] == 'connect') {
+          auths++;
+          return http.Response(
+            json.encode({
+              'success': true,
+              'session_id': 'YOW-20261012-000$auths',
+              'tx_allowed': true,
+              'rx_allowed': true,
+            }),
+            200,
+          );
+        }
+        await releaseGate.future;
+        return http.Response(json.encode({'success': true}), 200);
+      }),
+    );
+    await connect(api);
+    expect(api.sessionId, 'YOW-20261012-0001');
+
+    // The release of the first session is on the wire when a reconnect's
+    // connect auth stores a second one.
+    final release = api.requestAuth(
+        reason: 'disconnect', publicKey: 'AB', keepPolicy: true);
+    await connect(api);
+    expect(api.sessionId, 'YOW-20261012-0002');
+
+    releaseGate.complete();
+    await release;
+    expect(api.sessionId, 'YOW-20261012-0002',
+        reason: 'the old release must not null the session that replaced it');
+    expect(api.hasSession, isTrue);
     api.dispose();
   });
 
