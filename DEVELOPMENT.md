@@ -1373,7 +1373,10 @@ the app shows as "This region does not support claiming yet."
   once per BLE connection and cached on the `MeshCoreConnection`, and every later
   `getContacts` sends the firmware's `since` filter (the newest `lastmod` from the
   END_OF_CONTACTS frame) and merges what changed, so the 52 KB stream happens once, not per
-  login; a learned route bumps `lastmod` so it syncs, `resetPath` does not so the cached
+  login; the read times out on 5 s of silence (120 s overall), never a fixed total, because
+  a 350-contact list takes about 21 s and a fixed 20 s timeout cut it off on every try, and that
+  timeout reads "Your radio didn't finish sending its contact list", never the password
+  sentence; a learned route bumps `lastmod` so it syncs, `resetPath` does not so the cached
   record is patched, `addContact` inserts its record, and the cache dies with the connection
   object (auto-reconnect builds a new one); `ERR 3` there is "Your radio's
   contact list is full."). Step 2 logs in (`login`, `CMD_SEND_LOGIN` with the raw UTF-8

@@ -26,6 +26,8 @@ const String kNeighboursUnansweredSentence =
     "This repeater's firmware cannot report neighbours.";
 const String kNeighboursTimeoutSentence =
     'No reply from the repeater. Try again.';
+const String kContactListTimeoutSentence =
+    "Your radio didn't finish sending its contact list. Try again.";
 const String kAdminCommandPendingSentence =
     'The radio is still finishing the previous request. '
     'Wait for its reply, or close Manage and try again.';
@@ -531,13 +533,22 @@ class RepeaterAdminSession extends ChangeNotifier {
   }
 
   void _fail(String message) {
+    debugLog('[RADMIN] Failed: $message');
     _lastError = message;
     _state = RepeaterAdminState.failed;
     _notify();
   }
 
   Future<void> _ensureContact() async {
-    final contacts = await _connection.getContacts();
+    final List<ContactRecord> contacts;
+    try {
+      contacts = await _connection.getContacts();
+    } on TimeoutException {
+      // A local read, not the mesh: it must not read as a wrong password or
+      // count towards the automatic route reset.
+      debugWarn('[RADMIN] Contact list read timed out');
+      throw const RepeaterAdminFailure(kContactListTimeoutSentence);
+    }
     final existing = _findContact(contacts);
     if (existing != null) {
       // Leave it alone: an add would wipe the learned route.

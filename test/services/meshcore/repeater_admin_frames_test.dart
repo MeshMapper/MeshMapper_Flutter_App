@@ -350,6 +350,63 @@ void main() {
       expect((await second).single.publicKeyHex, '09' * 32);
     });
 
+    test('a list that streams longer than the silence window still completes',
+        () async {
+      // The radio streams about one contact per 60 ms, so a 350 entry table
+      // runs past any fixed total. Each frame keeps the read alive.
+      final future = connection.getContacts(
+          silenceTimeout: const Duration(milliseconds: 80),
+          timeout: const Duration(seconds: 5));
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 8, 0, 0, 0]);
+      for (var i = 1; i <= 8; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        transport.emit(
+            [ResponseCodes.contact, ...contactPayload(pubkey: key(i))]);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect((await future).length, 8);
+    });
+
+    test('a stream that goes quiet times out after the silence window',
+        () async {
+      final future = connection.getContacts(
+          silenceTimeout: const Duration(milliseconds: 80),
+          timeout: const Duration(seconds: 5));
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 2, 0, 0, 0]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(1))]);
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+      expect(connection.hasPendingAdminCommand, isFalse);
+    });
+
+    test('no reply at all times out after the silence window', () async {
+      final future = connection.getContacts(
+          silenceTimeout: const Duration(milliseconds: 80),
+          timeout: const Duration(seconds: 5));
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+    });
+
+    test('a stream that never ends hits the overall ceiling', () async {
+      final future = connection.getContacts(
+          silenceTimeout: const Duration(milliseconds: 80),
+          timeout: const Duration(milliseconds: 300));
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 99, 0, 0, 0]);
+      var done = false;
+      unawaited(future.then((_) {}, onError: (_) {}).whenComplete(() {
+        done = true;
+      }));
+      for (var i = 1; i <= 20 && !done; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        transport.emit(
+            [ResponseCodes.contact, ...contactPayload(pubkey: key(i))]);
+      }
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+    });
+
     test('ERR while iterating fails with the radio code', () async {
       final future = connection.getContacts();
       await transport.settle();
