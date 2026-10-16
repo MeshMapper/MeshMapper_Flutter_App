@@ -10,89 +10,52 @@ import 'repeater_marker_style.dart';
 /// only puts paint on a canvas. MapLibre plumbing (encoding these to PNG and
 /// registering them by name) stays in the map widget.
 
-/// Margin left around every baked chip so the state-coloured glow has room.
-/// Uniform across states, so a chip's body stays centred in its bitmap however
-/// wide its glow is and the symbol's centre anchor lands on the body's centre.
-const double repeaterChipGlowMargin = RepeaterMarkerStyle.chipGlowNew + 2;
+/// Transparent margin around every baked chip for antialiased outer corners.
+const double repeaterChipCanvasMargin = 2;
 
 /// Paints one repeater chip into [outer] and returns the body rect, so a
 /// caller that also draws a label knows where the label may go.
 ///
-/// The body is neutral in every state. The state appears only in the left bar,
-/// the line just outside the body and the glow behind it, which is what keeps
-/// the marker from competing with the coverage carpet drawn underneath. See
-/// [RepeaterMarkerStyle] for the measurements behind that.
+/// The body is neutral in every state. The state appears only in the border,
+/// which keeps the marker from competing with the coverage carpet drawn
+/// underneath. See [RepeaterMarkerStyle] for the measurements behind that.
 Rect paintRepeaterChip(
   Canvas canvas,
   Rect outer,
   Color accent,
-  double bodyRadius, {
+  double cornerRadius, {
   required bool isNew,
 }) {
-  final body = outer.deflate(RepeaterMarkerStyle.bodyInset);
-  final bodyRRect =
-      RRect.fromRectAndRadius(body, Radius.circular(bodyRadius));
-
-  // Glow in the state colour, behind everything. A new repeater's is wide
-  // enough to read as emphasis on its own.
+  // Draw nested fills rather than strokes so both borders stay entirely
+  // inside [outer] and remain crisp at every device scale.
   canvas.drawRRect(
-    bodyRRect,
-    Paint()
-      ..color = accent.withValues(alpha: isNew ? 0.85 : 0.55)
-      ..maskFilter = MaskFilter.blur(
-        BlurStyle.normal,
-        isNew ? RepeaterMarkerStyle.chipGlowNew : RepeaterMarkerStyle.chipGlow,
-      ),
+    RRect.fromRectAndRadius(outer, Radius.circular(cornerRadius)),
+    Paint()..color = RepeaterMarkerStyle.hairlineColor,
   );
 
-  // The neutral body.
-  canvas.drawRRect(bodyRRect, Paint()..color = RepeaterMarkerStyle.bodyColor);
-
-  // State bar down the left edge, clipped to the body so it picks up the
-  // rounded corners instead of squaring them off.
-  canvas.save();
-  canvas.clipRRect(bodyRRect);
-  canvas.drawRect(
-    Rect.fromLTWH(
-        body.left, body.top, RepeaterMarkerStyle.barWidth, body.height),
+  final accentRect = outer.deflate(RepeaterMarkerStyle.hairlineWidth);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      accentRect,
+      Radius.circular(cornerRadius - RepeaterMarkerStyle.hairlineWidth),
+    ),
     Paint()..color = accent,
   );
-  canvas.restore();
 
-  // State line laid just outside the body...
-  const halfLine = RepeaterMarkerStyle.stateLineWidth / 2;
+  final body = outer.deflate(RepeaterMarkerStyle.bodyInset);
   canvas.drawRRect(
     RRect.fromRectAndRadius(
-      body.inflate(halfLine),
-      Radius.circular(bodyRadius + halfLine),
+      body,
+      Radius.circular(cornerRadius - RepeaterMarkerStyle.bodyInset),
     ),
-    Paint()
-      ..color = accent
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = RepeaterMarkerStyle.stateLineWidth,
-  );
-
-  // ...and the near-black hairline just outside that, whose outer edge lands
-  // exactly on [outer]. Two tones because no single border colour survives
-  // both a dark and a pale basemap.
-  const hairOffset = RepeaterMarkerStyle.stateLineWidth +
-      RepeaterMarkerStyle.hairlineWidth / 2;
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-      body.inflate(hairOffset),
-      Radius.circular(bodyRadius + hairOffset),
-    ),
-    Paint()
-      ..color = RepeaterMarkerStyle.hairlineColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = RepeaterMarkerStyle.hairlineWidth,
+    Paint()..color = RepeaterMarkerStyle.bodyColor,
   );
 
   return body;
 }
 
-/// Lays out a chip's hex label. Bold, sized by state, and inked from the body
-/// rather than hardcoded white. See [RepeaterMarkerStyle.labelInkFor].
+/// Lays out a chip's bold hex label, inked from the body rather than hardcoded
+/// white. See [RepeaterMarkerStyle.labelInkFor].
 TextPainter repeaterChipLabelPainter(String hex, {required bool isNew}) =>
     TextPainter(
       text: TextSpan(
@@ -108,18 +71,16 @@ TextPainter repeaterChipLabelPainter(String hex, {required bool isNew}) =>
       textDirection: TextDirection.ltr,
     )..layout();
 
-/// Paints a chip's hex label centred in the space right of the state bar.
+/// Paints a chip's hex label centred in the neutral body.
 void paintRepeaterChipLabel(
   Canvas canvas,
   Rect body,
   TextPainter textPainter,
 ) {
-  final labelLeft = body.left + RepeaterMarkerStyle.barWidth;
-  final labelWidth = body.width - RepeaterMarkerStyle.barWidth;
   textPainter.paint(
     canvas,
     Offset(
-      labelLeft + (labelWidth - textPainter.width) / 2,
+      body.left + (body.width - textPainter.width) / 2,
       body.top + (body.height - textPainter.height) / 2,
     ),
   );

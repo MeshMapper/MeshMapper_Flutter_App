@@ -49,8 +49,8 @@ Future<_Raster> _render(
   return _Raster(data!, size.width.round(), size.height.round());
 }
 
-/// Channel-wise closeness, so antialiasing and the glow bleeding underneath
-/// don't make a correct drawing fail.
+/// Channel-wise closeness, so edge antialiasing doesn't make a correct drawing
+/// fail.
 Matcher _isColor(Color expected, {int tolerance = 6}) =>
     predicate<Color>((actual) {
       return (actual.r * 255 - expected.r * 255).abs() <= tolerance &&
@@ -78,8 +78,8 @@ void main() {
   const body = RepeaterMarkerStyle.bodyColor;
   const hairline = RepeaterMarkerStyle.hairlineColor;
 
-  group('the chip keeps the state on its edge', () {
-    const radius = 4.0;
+  group('the repeater pill', () {
+    const radius = RepeaterMarkerStyle.chipCornerRadius;
     late _Raster raster;
     late Rect outer;
     late Rect bodyRect;
@@ -87,119 +87,64 @@ void main() {
     setUp(() async {
       final chip = RepeaterMarkerStyle.chipSize(4, isNew: false);
       final canvasSize = Size(
-        chip.width + repeaterChipGlowMargin * 2,
-        chip.height + repeaterChipGlowMargin * 2,
+        chip.width + repeaterChipCanvasMargin * 2,
+        chip.height + repeaterChipCanvasMargin * 2,
       );
-      outer = Rect.fromLTWH(
-          repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width, chip.height);
+      outer = Rect.fromLTWH(repeaterChipCanvasMargin,
+          repeaterChipCanvasMargin, chip.width, chip.height);
       raster = await _render(canvasSize, (canvas) {
-        bodyRect = paintRepeaterChip(canvas, outer, accent, radius,
-            isNew: false);
+        bodyRect =
+            paintRepeaterChip(canvas, outer, accent, radius, isNew: false);
       });
     });
 
     test('the large area is the neutral body, NOT the state colour', () {
-      // Well right of the bar and well inside the edge: this is the area that
-      // sits over the coverage carpet, and it must never carry the state.
-      final x = (bodyRect.left + RepeaterMarkerStyle.barWidth + 6).round();
+      final x = bodyRect.center.dx.round();
       final y = bodyRect.center.dy.round();
       expect(raster.at(x, y), _isColor(body));
       expect(raster.at(bodyRect.right.round() - 3, y), _isColor(body));
     });
 
-    test('the left bar carries the state colour', () {
-      final x = (bodyRect.left + RepeaterMarkerStyle.barWidth / 2).round();
-      expect(raster.at(x, bodyRect.center.dy.round()), _isColor(accent));
-    });
-
-    test('the bar is exactly the specified width, not a wash over the body',
-        () {
-      final y = bodyRect.center.dy.round();
-      // Walk right from the body's left edge and find where the state colour
-      // gives way to the body. That boundary is the bar's width.
-      var lastAccentX = bodyRect.left.floor();
-      for (var x = bodyRect.left.floor(); x < bodyRect.right.floor(); x++) {
-        if (_nearer(raster.at(x, y), accent, body)) lastAccentX = x;
-      }
-      expect((lastAccentX + 1) - bodyRect.left,
-          closeTo(RepeaterMarkerStyle.barWidth, 1.0),
-          reason: 'the bar ran to x=$lastAccentX');
-    });
-
-    test('the edge is two-tone: a state line inside a near-black hairline', () {
-      final y = bodyRect.center.dy.round();
-      // Left to right across the edge: hairline, then state line, then the
-      // bar. The state line and the bar are the same colour and meet on this
-      // side, so only the hairline can be probed for a distinct value.
-      final hairlineX = bodyRect.left.floor() - 2;
-      expect(raster.at(hairlineX, y), _isColor(hairline, tolerance: 12),
-          reason: 'expected the hairline at x=$hairlineX');
-
-      final stateLineX = bodyRect.left.floor() - 1;
-      expect(_nearer(raster.at(stateLineX, y), accent, hairline), isTrue,
-          reason: 'expected the state line at x=$stateLineX, '
-              'found ${raster.at(stateLineX, y)}');
-
-      // On the TOP edge the state line stands alone, with the body inside it
-      // and the hairline outside, which is the two-tone claim in full.
+    test('the accent forms one continuous border around the body', () {
       final x = bodyRect.center.dx.round();
-      expect(raster.at(x, bodyRect.top.floor() - 2),
-          _isColor(hairline, tolerance: 12));
-      expect(_nearer(raster.at(x, bodyRect.top.floor() - 1), accent, body),
-          isTrue);
-      expect(raster.at(x, bodyRect.top.floor() + 2), _isColor(body));
+      final y = bodyRect.center.dy.round();
+      expect(raster.at(bodyRect.left.floor() - 2, y), _isColor(accent));
+      expect(raster.at(bodyRect.right.ceil() + 1, y), _isColor(accent));
+      expect(raster.at(x, bodyRect.top.floor() - 2), _isColor(accent));
+      expect(raster.at(x, bodyRect.bottom.ceil() + 1), _isColor(accent));
+    });
+
+    test('a near-black hairline sits outside the accent', () {
+      final y = bodyRect.center.dy.round();
+      expect(
+          raster.at(outer.left.floor(), y), _isColor(hairline, tolerance: 20));
+      expect(raster.at(outer.right.ceil() - 1, y),
+          _isColor(hairline, tolerance: 20));
     });
 
     test('the edge is added inward, so the footprint is the outer box', () {
       final y = bodyRect.center.dy.round();
       expect(bodyRect, outer.deflate(RepeaterMarkerStyle.bodyInset));
-      // Just outside the footprint there is only glow, never opaque edge.
-      expect(raster.alphaAt((outer.left - 1).round(), y), lessThan(250));
+      expect(raster.alphaAt((outer.left - 1).round(), y), 0);
     });
 
-    test('a new repeater is taller and glows further', () async {
+    test('status does not change the pill geometry', () {
       final normal = RepeaterMarkerStyle.chipSize(4, isNew: false);
       final fresh = RepeaterMarkerStyle.chipSize(4, isNew: true);
-      expect(fresh.height, greaterThan(normal.height));
-
-      // Same probe point outside both bodies: the wider glow puts more of the
-      // state colour there.
-      Future<int> glowAlpha({required bool isNew}) async {
-        final chip = RepeaterMarkerStyle.chipSize(4, isNew: isNew);
-        final size = Size(chip.width + repeaterChipGlowMargin * 2,
-            chip.height + repeaterChipGlowMargin * 2);
-        final r = await _render(size, (canvas) {
-          paintRepeaterChip(
-            canvas,
-            Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin,
-                chip.width, chip.height),
-            accent,
-            radius,
-            isNew: isNew,
-          );
-        });
-        return r.alphaAt(2, (size.height / 2).round());
-      }
-
-      final freshGlow = await glowAlpha(isNew: true);
-      final normalGlow = await glowAlpha(isNew: false);
-      expect(freshGlow, greaterThan(normalGlow),
-          reason: 'new glow $freshGlow vs normal $normalGlow');
-      expect(freshGlow, greaterThan(0), reason: 'the new chip has no glow');
+      expect(fresh, normal);
     });
 
-    test('the label is centred right of the bar, not in the whole chip',
-        () async {
+    test('the label is centred in the pill', () async {
       final painter = repeaterChipLabelPainter('4E9A', isNew: false);
       final chip = RepeaterMarkerStyle.chipSize(4,
           isNew: false, measuredLabelWidth: painter.width);
-      final size = Size(chip.width + repeaterChipGlowMargin * 2,
-          chip.height + repeaterChipGlowMargin * 2);
+      final size = Size(chip.width + repeaterChipCanvasMargin * 2,
+          chip.height + repeaterChipCanvasMargin * 2);
       late Rect drawnBody;
       final r = await _render(size, (canvas) {
         drawnBody = paintRepeaterChip(
           canvas,
-          Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin,
+          Rect.fromLTWH(repeaterChipCanvasMargin, repeaterChipCanvasMargin,
               chip.width, chip.height),
           accent,
           radius,
@@ -208,13 +153,7 @@ void main() {
         paintRepeaterChipLabel(canvas, drawnBody, painter);
       });
 
-      // Ink appears on both sides of the label area's centre line, and the
-      // label area's centre is right of the whole chip's centre by half a bar.
-      final labelCenter =
-          drawnBody.left + RepeaterMarkerStyle.barWidth +
-              (drawnBody.width - RepeaterMarkerStyle.barWidth) / 2;
-      expect(labelCenter - drawnBody.center.dx,
-          closeTo(RepeaterMarkerStyle.barWidth / 2, 0.001));
+      final labelCenter = drawnBody.center.dx;
 
       int inkColumns(int fromX, int toX) {
         var count = 0;
@@ -232,15 +171,12 @@ void main() {
         return count;
       }
 
-      final leftHalf = inkColumns(
-          (drawnBody.left + RepeaterMarkerStyle.barWidth).round(),
-          labelCenter.round());
+      final leftHalf = inkColumns(drawnBody.left.round(), labelCenter.round());
       final rightHalf =
           inkColumns(labelCenter.round(), drawnBody.right.round());
       expect(leftHalf, greaterThan(0));
       expect(rightHalf, greaterThan(0));
-      // Roughly balanced around the label area's centre, which is what
-      // "centred in the space right of the bar" means.
+      // Roughly balanced around the pill centre.
       expect((leftHalf - rightHalf).abs(), lessThanOrEqualTo(3),
           reason: 'label ink is lopsided: $leftHalf left, $rightHalf right');
     });

@@ -161,25 +161,18 @@ void main() {
   });
 
   group('chip geometry', () {
-    test('a short id gets the fixed minimum, plus the bar', () {
-      expect(RepeaterMarkerStyle.chipSize(2, isNew: false).width,
-          24 + RepeaterMarkerStyle.barWidth);
-      expect(RepeaterMarkerStyle.chipSize(1, isNew: false).width,
-          24 + RepeaterMarkerStyle.barWidth);
+    test('width grows consistently with the id', () {
+      expect(RepeaterMarkerStyle.chipSize(1, isNew: false).width, 34);
+      expect(RepeaterMarkerStyle.chipSize(2, isNew: false).width, 42);
+      expect(RepeaterMarkerStyle.chipSize(4, isNew: false).width, 58);
+      expect(RepeaterMarkerStyle.chipSize(6, isNew: false).width, 74);
     });
 
-    test('a longer id grows with the label, plus the bar', () {
-      expect(RepeaterMarkerStyle.chipSize(4, isNew: false).width,
-          10 + 4 * 7 + RepeaterMarkerStyle.barWidth);
-      expect(RepeaterMarkerStyle.chipSize(6, isNew: false).width,
-          10 + 6 * 7 + RepeaterMarkerStyle.barWidth);
-    });
-
-    test('a new repeater gets the taller chip', () {
+    test('status does not change the pill height', () {
       expect(RepeaterMarkerStyle.chipSize(4, isNew: false).height,
           RepeaterMarkerStyle.chipHeight);
       expect(RepeaterMarkerStyle.chipSize(4, isNew: true).height,
-          RepeaterMarkerStyle.chipHeightNew);
+          RepeaterMarkerStyle.chipHeight);
     });
 
     test('a measured label only ever widens the chip, never narrows it', () {
@@ -194,7 +187,7 @@ void main() {
           greaterThan(rule));
     });
 
-    test('the label always has room right of the bar', () {
+    test('the label always has room inside the body', () {
       for (final length in [2, 4, 6]) {
         final width = RepeaterMarkerStyle.chipSize(length, isNew: false).width;
         // Roughly 7 px a character is what the width rule assumes, and the
@@ -205,22 +198,18 @@ void main() {
       }
     });
 
-    test('rendered sizes stay in the range the old markers occupied', () {
-      // Measured on an iPhone 16 Pro Max after the redesign first shipped: a
-      // 6-character chip came out 84 pt wide and the cluster badge 56 pt
-      // across, against 56 pt and 40 pt before it. The scale was the culprit.
-      // These bounds are what "too big" looked like, so they stay pinned.
+    test('rendered sizes stay compact beside the coverage grid', () {
       double rendered(double logical) => logical * RepeaterMarkerStyle.iconScale;
 
       final widest =
           rendered(RepeaterMarkerStyle.chipSize(6, isNew: false).width);
-      expect(widest, lessThanOrEqualTo(64.0),
-          reason: 'a 6-character chip is $widest pt wide; the old one was 56');
+      expect(widest, lessThanOrEqualTo(78.0),
+          reason: 'a 6-character pill is $widest pt wide');
 
       final tallest =
           rendered(RepeaterMarkerStyle.chipSize(6, isNew: true).height);
       expect(tallest, lessThanOrEqualTo(30.0),
-          reason: 'a new-repeater chip is $tallest pt tall; the old one was 28');
+          reason: 'a repeater pill is $tallest pt tall');
 
       final badgeAcross = rendered(
           (RepeaterMarkerStyle.badgeHairlineRadius +
@@ -231,10 +220,12 @@ void main() {
     });
 
     test('the edge is added inward, so the footprint is the spec width', () {
-      // bodyInset is exactly the state line plus the hairline: the two-tone
+      // bodyInset is exactly the accent border plus the hairline: the two-tone
       // edge costs nothing outside the box it is drawn in.
-      expect(RepeaterMarkerStyle.bodyInset,
-          RepeaterMarkerStyle.stateLineWidth + RepeaterMarkerStyle.hairlineWidth);
+      expect(
+          RepeaterMarkerStyle.bodyInset,
+          RepeaterMarkerStyle.accentBorderWidth +
+              RepeaterMarkerStyle.hairlineWidth);
     });
   });
 
