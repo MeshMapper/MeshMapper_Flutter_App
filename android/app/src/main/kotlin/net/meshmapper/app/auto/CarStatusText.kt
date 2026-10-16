@@ -2,16 +2,20 @@ package net.meshmapper.app.auto
 
 /// The words on the car map's status card, the phone's status bar and
 /// counter chips in short form.
+///
+/// Two lines only. The phone's phase detail ("Waiting for a square with no
+/// recent mapping") is left out: it changes with every phase, and a card
+/// sized to fit it widened and shrank every few seconds.
 object CarStatusText {
-    data class Lines(val status: String, val chips: String?, val detail: String?)
+    data class Lines(val status: String, val chips: String?)
 
     private val DISCOVERY = Regex("discovery", RegexOption.IGNORE_CASE)
 
     fun lines(snapshot: CarSnapshot?, appAttached: Boolean, nowMs: Long = System.currentTimeMillis()): Lines {
         if (!appAttached) {
-            return Lines("Open MeshMapper on your phone", null, "This screen mirrors the phone")
+            return Lines("Open MeshMapper on your phone", null)
         }
-        if (snapshot == null) return Lines("Connecting to MeshMapper…", null, null)
+        if (snapshot == null) return Lines("Connecting to MeshMapper…", null)
 
         val status = when {
             !snapshot.isConnected -> "No companion connected"
@@ -19,6 +23,9 @@ object CarStatusText {
             snapshot.sessionActive ->
                 snapshot.phaseTitle?.let(::shortPhase) ?: CarSnapshot.modeLabel(snapshot.mode)
             snapshot.sessionStarting -> "Starting…"
+            // Idle with Start unavailable: the reason is the only explanation
+            // the car gives for the missing button.
+            !snapshot.canStart -> snapshot.startBlockedReason ?: "Not wardriving"
             else -> "Not wardriving"
         }
         val seconds = countdownSeconds(snapshot, nowMs)
@@ -29,16 +36,9 @@ object CarStatusText {
             "⇅${snapshot.traceCount}",
             "☁${snapshot.queueSize}",
         ).joinToString("  ")
-        val detail = when {
-            snapshot.sessionActive -> snapshot.phaseDetail
-            !snapshot.isConnected -> null
-            !snapshot.canStart -> snapshot.startBlockedReason
-            else -> snapshot.deviceName
-        }
         return Lines(
             status = if (seconds != null) "$status  ${seconds}s" else status,
             chips = chips,
-            detail = detail,
         )
     }
 

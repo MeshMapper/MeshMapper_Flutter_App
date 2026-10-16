@@ -34,7 +34,9 @@ class DashboardScreen(carContext: CarContext) : CarStatusScreen(carContext) {
 
         return PaneTemplate.Builder(pane.build())
             .setTitle("MeshMapper")
-            .setHeaderAction(Action.APP_ICON)
+            // Opened from the map's More button, so it needs its own way back:
+            // without this the car's hardware Back key was the only exit.
+            .setHeaderAction(Action.BACK)
             .setActionStrip(
                 ActionStrip.Builder()
                     .addAction(

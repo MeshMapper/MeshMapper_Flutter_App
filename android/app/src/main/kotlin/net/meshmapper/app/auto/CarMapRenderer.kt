@@ -579,8 +579,8 @@ class CarMapRenderer(private val carContext: CarContext) : SurfaceCallback {
         return bitmap
     }
 
-    /// The phone's status bar and counter chips, drawn top left in small type:
-    /// the phase with its countdown, the counters, then the detail line.
+    /// The phone's status bar and counter chips, drawn top left: the phase
+    /// with its countdown, then the counters.
     private fun createStatusCard(context: android.content.Context): LinearLayout =
         LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -593,7 +593,6 @@ class CarMapRenderer(private val carContext: CarContext) : SurfaceCallback {
             }
             addView(cardLine(context, 17f * CARD_SCALE, bold = true, color = Color.WHITE))
             addView(cardLine(context, 15f * CARD_SCALE, bold = false, color = Color.parseColor("#CBD5E1")))
-            addView(cardLine(context, 13f * CARD_SCALE, bold = false, color = Color.parseColor("#94A3B8")))
         }
 
     private fun cardLine(context: android.content.Context, sizeSp: Float, bold: Boolean, color: Int): TextView =
@@ -635,7 +634,7 @@ class CarMapRenderer(private val carContext: CarContext) : SurfaceCallback {
     fun refreshStatus() {
         val card = statusCard ?: return
         val lines = CarStatusText.lines(CarStatusStore.snapshot, CarStatusStore.isAppAttached)
-        val values = listOf(lines.status, lines.chips, lines.detail)
+        val values = listOf(lines.status, lines.chips)
         values.forEachIndexed { index, value ->
             val view = card.getChildAt(index) as TextView
             view.text = value ?: ""
