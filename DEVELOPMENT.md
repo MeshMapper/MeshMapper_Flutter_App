@@ -94,7 +94,7 @@ updated by adding the developer-portal capability.
 
 ### Debug Logging
 - Web: Add `?debug=1` to URL to enable debug logging in browser console
-- Mobile: Debug logging enabled in debug builds via `kDebugMode`; disabled in release builds
+- Mobile: Debug logging is enabled in every build, release included (`DebugLogger.initialize` in `lib/utils/debug_logger_stub.dart`), and is also written to rotating files (see Bug Report / Debug File System)
 
 ## Architecture
 
@@ -209,7 +209,7 @@ The app uses a layered service architecture with clear separation of concerns:
 - `StreamFrameCodec`: Framing codec for TCP/USB Serial (`[0x3C][len_lo][len_hi][payload]` out, `[0x3E][len_lo][len_hi][payload]` in)
 - `StreamTransportBase`: Abstract base for TCP and USB Serial transports, owns codec and connection lifecycle
 - `TcpService`: TCP socket transport with saved connections persistence (Android/iOS)
-- `AndroidSerialService`: USB Serial via USB OTG on Android using `usb_serial` package
+- `AndroidSerialService`: USB Serial via USB OTG on Android, through the app's own `net.meshmapper.app/usb_serial` method and event channels (native side `MeshMapperUsbService.kt`)
 - `WebSerialService`: USB Serial via Web Serial API (Chrome/Edge) using `dart:js_interop`
 - Platform matrix: BLE (all platforms), TCP (Android/iOS), USB Serial (Android/Web)
 
@@ -217,7 +217,7 @@ The app uses a layered service architecture with clear separation of concerns:
 - `MeshCoreConnection`: Implements the 9-step connection workflow and MeshCore companion protocol
 - `PacketParser`: Binary packet parsing with BufferReader/Writer utilities
 - `UnifiedRxHandler`: Routes ALL incoming BLE packets to TX tracking or RX logging
-- `TxTracker`: Detects repeater echoes during 7-second window after TX ping
+- `TxTracker`: Detects repeater echoes during 5-second window after TX ping
 - `DiscTracker`: Detects discovery responses during 7-second window after discovery request
 - `RxLogger`: Logs passive mesh observations, buffers by repeater ID
 - `ChannelService`: Channel hash computation and management
@@ -353,12 +353,12 @@ Parse PacketMetadata (ONCE)
 TX Track   RX Log
 (echoes)  (passive)
    ↓         ↓
-7s window  Buffer by repeater
+5s window  Buffer by repeater
    ↓         ↓
 Update UI  Flush to API queue
 ```
 
-**TX Tracking** (during 7-second window after ping):
+**TX Tracking** (during 5-second window after ping):
 - Validates: GROUP_TEXT header, RSSI < -30dBm, channel hash match, decrypted message match, path length > 0
 - Deduplicates by first hop (repeater ID), keeps best SNR
 - Updates UI with repeater counts
@@ -377,7 +377,7 @@ Discovery pings use the MeshCore control data protocol to directly query nearby 
 
 **Response**: ControlData packets (0x8E) with `DISCOVER_RESP` flag (0x90), containing node type, remote SNR, and full 32-byte public key.
 
-**Tracking**: `DiscTracker` manages a 7-second listening window (like `TxTracker`), validates responses, deduplicates by public key, and applies carpeater filtering (RSSI too strong = too close).
+**Tracking**: `DiscTracker` manages a 7-second listening window (`TxTracker`'s is 5 seconds), validates responses, deduplicates by public key, and applies carpeater filtering (RSSI too strong = too close).
 
 **API Payload**: Type `"DISC"` with fields: `lat`, `lon`, `repeater_id`, `node_type`, `local_snr`, `local_rssi`, `remote_snr`, `public_key`, `timestamp`, `external_antenna`, `noisefloor`.
 
@@ -385,7 +385,7 @@ Discovery pings use the MeshCore control data protocol to directly query nearby 
 
 Four auto-ping modes are available after connecting:
 
-- **Active Mode**: Sends TX pings at user-configured interval (15s, 30s, or 60s). Each ping broadcasts a group channel message containing GPS location and radio power to `#wardriving`, then listens 7s for repeater echoes via `TxTracker`.
+- **Active Mode**: Sends TX pings at user-configured interval (15s, 30s, or 60s). Each ping broadcasts a group channel message containing GPS location and radio power to `#wardriving`, then listens 5s for repeater echoes via `TxTracker`.
 - **Passive Mode**: Sends discovery requests every 30s. No TX pings, only discovery request-response. Responses tracked via `DiscTracker`.
 - **Hybrid Mode**: Alternates between discovery and TX pings at the user-configured interval. Discovery, TX, Discovery, TX...
 - **Trace Mode**: Sends zero-hop trace path (CMD_SEND_TRACE_PATH, 0x24) to a specific repeater by ID at user-configured interval. Listens 7s for trace response (PUSH_CODE_TRACE_DATA, 0x89) via `TraceTracker`. Only successful traces are posted to API; failures are logged locally and shown as red markers on noise floor graph.
@@ -550,7 +550,7 @@ untouched. On by default with a 14 day window.
   not re-banked, so that one deferral is lost (pre-branch behaviour, and not worth the extra
   state to recover).
 - **"Deferred", not "Skipped"**: the word applies only to this hold. The countdown labels pick
-  it from the skip reason (`_pausedWord` in `lib/widgets/ping_controls.dart`), so the 25 m
+  it from the skip reason (`lib/services/status/ping_control_labels.dart`), so the 25 m
   distance skip still reads "Skipped". The shared phase title is the bare word `Deferred` with
   the detail "Waiting for a square with no recent mapping", carried by
   `LiveActivityPhase.deferred` (wire value `deferred`) and labelled natively in
@@ -974,7 +974,7 @@ Off by default until a region turns it on.
 Three data flows (TX pings, RX observations, Discovery results) merge into unified API batch queue:
 
 - **Storage**: Hive-based persistent queue survives app restarts
-- **Batch Size**: Max 50 messages, auto-flush at 10 items or 30 seconds
+- **Batch Size**: Max 50 messages per batch. A periodic batch timer uploads every 15 seconds (60 seconds on a constrained link), and a ping flush runs 5 seconds after a ping is enqueued (60 seconds constrained)
 - **Payload Format**: `[{type:"TX"|"RX"|"DISC"|"TRACE"|"SCOPES", ...}]`. TX/RX include `heard_repeats`; DISC includes `repeater_id`, `node_type`, `local_snr`, `local_rssi`, `remote_snr`, `public_key`; TRACE includes `repeater_id`, `local_snr`, `local_rssi`, `remote_snr`; SCOPES carries only `public_key` and `scopes` (see Scope Discovery), none of `external_antenna`, `noisefloor`, `altitude` or `power`. Every other type also carries `altitude` (whole meters) together with `altitude_ref` (`msl` above mean sea level, or `ellipsoid` above the WGS84 ellipsoid) and `altitude_acc` (vertical accuracy in whole meters, about one sigma, omitted when unknown). The altitude and its reference travel together or not at all, and the accuracy only beside them: an altitude whose reference the app cannot prove is never uploaded, and an offline session saved by an older build has its bare altitudes stripped at upload (`withoutUnlabelledAltitude`). iOS is always `msl`. Android below 14 is always `ellipsoid` (the app never enables the plugin's NMEA sea level option). On Android 14 and later the plugin swaps in a sea level value whenever the fix object carries one, so `GpsService` asks a native handler (`MeshMapperAltitudeService.kt`, channel `meshmapper/altitude`) to describe the provider's last fix and `resolveFixAltitude` (`lib/services/fix_altitude.dart`) proves identity by exact timestamp, coordinates and altitude value before labelling; nearness is never accepted. The GPS simulator and mocked fixes resolve unknown. Resolution runs in the background per fix (`FixAltitudeResolver`, keyed by exact fix plus a source generation, 128 entries) so no send path waits; it never notifies or bumps `mapRevision`. Logged under `[GPS]`, one line on first resolution, a once-a-minute warning when an Android fix cannot be proved, and one summary line per 50 Android resolutions (`AltitudeResolutionStats`). Contract: `MeshMapper_Server/docs/APP_API.md`)
 - **Radio preset stamp**: every item (TX, RX, DISC, TRACE and DEFER) carries `radio_freq`, the
   radio's configuration tag `freqMHz,bwKHz,SF,CR` as reported at connect (`ApiQueueItem` Hive
@@ -1210,6 +1210,16 @@ Two-flag system ensuring users explicitly declare their antenna configuration be
 - **Enforcement**: UI requires user to set this before first ping (`PingValidation.externalAntennaRequired`). Cannot be skipped.
 - **API integration**: `external_antenna` field included in every TX/RX/DISC API payload
 - **Persistence**: Stored per-device, restored on reconnect with same device, reset on reconnect failure
+
+### Persistent Power Override
+
+User-selected TX power overrides are saved per device and restored automatically on reconnect.
+
+- **Storage**: Hive box key `device_power_overrides`, mapping a device name to `{powerLevel, txPower}`
+- **Restore**: On reconnect, a saved override for the device replaces the power values from the device catalog
+- **Reset**: "Reset to Auto" clears the saved override and restores the catalog values for the device model
+- **Visual indicator**: `powerRestoredFromDevice` shows when power was restored from a saved override
+- **Important**: This only changes what the app *reports* to the API. The app never sends TX power commands to the radio.
 
 ### Wake Lock Service
 
@@ -1566,8 +1576,8 @@ sat on. The constant body is dE 25.7 from the nearest coverage colour.
   (`<= 2` chars: 24, else `10 + len * 7`, plus 8 for the bar), and the label is
   centred in the space RIGHT of the bar, not in the whole box. A newly
   discovered repeater is taller (28 vs 24), with a larger label and a wider
-  glow. Corner radius still encodes hop-byte width (4 / 6 / 8), which is this
-  app's own signal and has no web counterpart.
+  glow. Corners use one radius for every id length and state
+  (`RepeaterMarkerStyle.chipCornerRadius`, 8 px; see Uniform Repeater Corners).
 - **Group marker**: a `#22303A` disc of radius 19 with the count across it, a
   2.5 px ring at radius 17.75 in the DOMINANT state's colour, a 1 px hairline
   at 19.5, and one uniform 2.6 px dot per state PRESENT, pitch 4.2, centred at
@@ -1977,6 +1987,70 @@ fan-out logic (`MeshMapper_Server/dev/index.php`):
   `repeaterCoverageCells`, `RepeaterStats.fromCoverageWithPoints`),
   `lib/utils/coverage_tile_palette.dart` (`colorsForStatus`).
 
+### TX Wire-Tag (Location Privacy)
+
+By default a TX ping does not broadcast GPS on the air. It sends a short keyed token, and the
+coordinates travel only through the API. Anyone holding the community channel key can still
+decrypt the channel message, but sees the token, not a location.
+
+- **On-air body** (the decrypted `#wardriving` message, composed once in `ping_service.dart` and
+  reused for both the transmit and the `TxTracker.startTracking(payload:)` echo match):
+  - **Default (privacy):** `MM:<10 base64url>` (for example `MM:YVNPAr5OIw`), the keyed wire tag.
+    13 characters, two 16-byte AES blocks.
+  - **Broadcast My Coordinates** (Settings > Wardriving > Privacy, `preferences.broadcastCoords`,
+    default off): `MM:<tag>:lat,lon`. The keyed tag is kept so cross-region spillover can still be
+    attributed by region, and the plaintext coordinates are appended. Only the on-air body carries
+    the suffix; the API still receives the bare `MM:<tag>` as `wire_tag`. With no session yet the
+    body is `MM:lat,lon`.
+  - **Server contract for the combined form:** observers report the full on-air body, so the
+    server strips the `:lat,lon` suffix (`wireTagBare` in `MeshMapper_Server/wire_tag_codec.php`)
+    before the coverage observer join and the spillover decode. Coverage gaps for the combined
+    form are fixed server-side, never by dropping the tag in the app.
+- **Codec** (`lib/services/meshcore/wire_tag_codec.dart`): packs region (15 bits, base-26 of the
+  3-letter IATA), date (15 bits, `(year-2020)*512 + month*32 + day`), session number (14 bits) and
+  counter (11 bits) into 55 bits, then runs a 4-round keyed Feistel over two 28-bit halves (round
+  function: first 4 bytes of `SHA-256(key || round || half)`), base64url without padding. The
+  date is encoded so `decode` rebuilds the full `region-YYYYMMDD-NNNN` session id and a recycled
+  daily session number cannot collide across days. 55 bits exceeds the JavaScript exact-integer
+  range, so the codec only ever works on the two halves with arithmetic (`*`, `~/`, `%`), never
+  bitwise operators, which dart2js truncates to 32 bits. It must stay byte-identical to PHP
+  `wireTagEncode`; canonical vectors live in `test/services/wire_tag_codec_test.dart` (key
+  `TESTKEY`, `PAR-20260611-0013` ping 1 = `MM:YVNPAr5OIw`).
+- **Key** (`wire_key`): delivered by `/auth` and held in `ApiService`. With no key the app falls
+  back to an un-keyed tag (still coordinate-free). Never log the raw key; only its length.
+- **Counter**: per session, incremented on each token-mode TX, untouched by the heartbeat. A fresh
+  `/auth` that reuses the session resumes from the response's `resume_counter`; a brand-new
+  session starts at 0. Resetting on a reused session would re-mint tags identical to earlier
+  pings, which the server's dedupe silently drops. The server is the counter's source of truth.
+  At the 11-bit cap (2047) the app flushes the queue under the still-valid session, then
+  disconnects through `handleSessionError('session_limit', ...)`.
+- **API payload**: token-mode TX items add `ping_counter` and `wire_tag` (`ApiQueueItem` Hive
+  fields 16 and 17, sent only when set). Coordinate-mode items omit them and take the server's
+  coordinate path.
+- **A tag never outlives the session that minted it, and such a ping is dropped.** The server
+  recomputes the tag from the session id a batch is posted under and skips a mismatched entry
+  while still answering success, so the ping would vanish with no error anywhere. Two paths could
+  carry a tag across a session boundary, and both drop the tagged item:
+  1. **Offline preservation.** `extractAllAsJson()` (the pre-disconnect snapshot taken by
+     `handleSessionError`) leaves tagged TX pings out, because that snapshot is uploaded later
+     under a new `offline-YYYYMMDD-NNNN` session. Untagged RX, DISC and TRACE rows are kept.
+  2. **A new session id under a kept queue.** `ApiService` fires `onSessionIdChanged` when `/auth`
+     returns a different id, and the provider runs `ApiQueueService.dropStaleTaggedItems()`. This
+     matters for auto-reconnect, which keeps the queue. Zone grace and zone transfer clear the
+     queue before re-auth, and a group handoff runs the same drop itself after its release (see
+     Multi-region groups).
+  Every item queued when the session changes was minted under the old session, so a blanket drop
+  is exact and needs no per-item bookkeeping.
+- **Why drop rather than re-tag or strip.** Mismatches are rare (about 0.2% of TX pings).
+  Re-minting under the new session would claim a tag that never went out on the air, breaking the
+  observer join and spillover attribution. Stripping the tag sends the ping down the coordinate
+  path, where with no observer row left to join it inserts as DEAD and paints a grey cell for a
+  ping that was actually heard. A ping that cannot earn credit either way is better lost quietly.
+- **`onSessionError` must be awaited.** Its handler snapshots the queue to offline storage while
+  the `uploadBatch` call site returns `nonRetryable` and discards that same batch. Fired without
+  `await`, the discard could land first and the preserved pings came back short. Every call site
+  in `api_service.dart` awaits it.
+
 ### The One Session Status Model
 
 "What is the session doing right now?" is worked out in exactly one place,
@@ -2067,7 +2141,7 @@ fresh fix there anyway. `canPing()` re-reads the connection step and the airborn
 that suspension but never the mode, which is why the mode needs its own check.
 
 The mode re-read is not enough on its own, because `forceDisableAutoPing` also clears
-`_pingInProgress` (it has to: a force disable during a 7 second echo window would otherwise
+`_pingInProgress` (it has to: a force disable during a 5 second echo window would otherwise
 leave the flag latched for the next session) and a zone transfer can re-auth and restart the
 session inside the old send's fetch. The resumed send then read the mode as on and went out
 alongside the new session's first ping. So each lane also captures `PingService._sendEpoch`
@@ -2556,7 +2630,7 @@ when MeshMapper is disconnected.
 - Channel hash (PSK identifier) used for repeater echo detection and message decryption (AES-ECB via pointycastle)
 
 ### Packet Structure
-- Custom binary protocol with header byte (0x11 = GROUP_TEXT, 0x21 = ADVERT)
+- Custom binary protocol with header byte (0x15 = GROUP_TEXT, 0x11 = ADVERT, 0x26 = TRACE)
 - Path encoding: `pathLen` byte encodes hash size (top 2 bits) + hop count (bottom 6 bits), followed by `hopCount * hashSize` path bytes
   - `pathHashSize = (pathLen >> 6) + 1` → 1, 2, 3, or 4 bytes per hop
   - `pathHashCount = pathLen & 63` → 0-63 hops
@@ -2607,7 +2681,6 @@ Key packages used in this project:
 - `provider`: State management
 - `http`: API requests
 - `pointycastle`: Encryption (AES-ECB, SHA-256)
-- `usb_serial`: USB Serial communication on Android (USB OTG)
 - `app_links`: Custom-scheme deep links (`meshmapper-auth://callback`) for the portal sign-in return
 - `flutter_secure_storage`: Keychain / Android Keystore storage for the portal app token
 
@@ -2894,7 +2967,7 @@ All API endpoints may return maintenance mode:
 
    Critical: Channel deletion MUST happen while BLE is still connected to avoid GATT errors. API queue is cleared on user disconnect (pings won't have valid session) but preserved during auto-reconnect.
 
-5. **Platform-specific Bluetooth imports** - Use conditional exports (bluetooth_service.dart exports platform-specific implementation). Never import platform-specific files directly.
+5. **Platform-specific Bluetooth classes** - `lib/main.dart` is the one place that picks `MobileBluetoothService` (`mobile_bluetooth.dart`) or `WebBluetoothService` (`web_bluetooth.dart`) by `kIsWeb`. Everywhere else depend on the abstract `BluetoothService` / `CompanionTransport` and never construct or import a platform class.
 
 6. **Hive model generation required** - After modifying `@HiveType` classes, run `flutter pub run build_runner build --delete-conflicting-outputs`.
 
@@ -2908,8 +2981,9 @@ All API endpoints may return maintenance mode:
 - `lib/screens/settings/` - Settings folder pages (General, Map, Wardriving, Data, MeshMapper Account, API Endpoints, About & Support, Developer Tools) plus the shared section card and auto-ping lock banner
 - `lib/services/meshcore/connection.dart` - 9-step connection workflow, MeshCore protocol
 - `lib/services/meshcore/unified_rx_handler.dart` - Packet routing (TX vs RX)
-- `lib/services/meshcore/tx_tracker.dart` - Repeater echo detection (7s window)
+- `lib/services/meshcore/tx_tracker.dart` - Repeater echo detection (5s window)
 - `lib/services/meshcore/disc_tracker.dart` - Discovery response tracking (7s window)
+- `lib/services/meshcore/wire_tag_codec.dart` - TX wire-tag codec (keyed Feistel, byte-identical to PHP `wireTagEncode`)
 - `lib/services/scope_discovery/scope_regions_codec.dart` - Repeater scope reply codec: builds the regions request, parses the byte-faithful reply, the server's token rule
 - `lib/services/meshcore/scope_lease.dart` - The short radio lease a scope request borrows: admission, the write gate, the hold cap, the request/restore frames
 - `lib/services/scope_discovery/scope_discovery_rules.dart` - The due rule, the phone-side answer cache (including the no-answer hold), the per-device-hour upload budget
