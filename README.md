@@ -36,6 +36,7 @@ Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 - **Offline Mode** — Wardrive without connectivity, upload data later
 - **30+ Device Models** — Automatic identification and power reporting for Ikoka, Heltec, RAK, LilyGo, Seeed, and more
 - **Noise Floor Graphing** — Track signal quality over time
+- **Android Auto** — The Map tab on the car screen with coverage, your position, a live status card, and Start/Stop/Ping controls
 - **Dark/Light Theme** — System theme support
 
 ---
@@ -58,6 +59,7 @@ lib/
 ├── screens/                     # Full-page UI screens
 ├── widgets/                     # Reusable components
 └── services/
+    ├── android_auto/            # Android Auto bridge and car map projection
     ├── bluetooth/               # BLE abstraction layer
     │   ├── bluetooth_service.dart   # Abstract interface
     │   ├── mobile_bluetooth.dart    # Android/iOS (flutter_blue_plus)

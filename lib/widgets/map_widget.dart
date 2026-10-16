@@ -23,6 +23,8 @@ import '../services/repeater_admin/repeater_admin_models.dart';
 import '../utils/async_callback_boundary.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
+import '../utils/coverage_tile_url.dart';
+import '../utils/map_style_urls.dart';
 import '../utils/cluster_spread.dart';
 import '../utils/coalesced_async_runner.dart';
 import '../utils/debug_logger_io.dart';
@@ -43,15 +45,6 @@ import 'repeater_admin_sheet.dart';
 import 'repeater_id_chip.dart';
 import 'repeater_scope_chips.dart';
 import 'rx_path_chain.dart';
-
-/// Satellite style as inline MapLibre style JSON (ArcGIS raster source).
-/// The `glyphs` URL is required because our native symbol layers
-/// (repeater cluster count, individual repeater hex IDs, distance labels)
-/// use `textField`, and MapLibre iOS wedges its resource loader with
-/// NSURLError -1002 if it tries to resolve glyphs against a style that
-/// doesn't declare a glyphs URL.
-const _satelliteStyleJson =
-    '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{"satellite":{"type":"raster","tiles":["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],"tileSize":256,"maxzoom":17}},"layers":[{"id":"satellite-layer","type":"raster","source":"satellite"}]}';
 
 /// Default font stack used for all native text labels (textField property).
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
@@ -520,18 +513,7 @@ extension MapStyleExtension on MapStyle {
   }
 
   /// MapLibre style URL (or inline JSON for satellite)
-  String get styleUrl {
-    switch (this) {
-      case MapStyle.dark:
-        return 'https://tiles.openfreemap.org/styles/dark';
-      case MapStyle.light:
-        return 'https://tiles.openfreemap.org/styles/bright';
-      case MapStyle.liberty:
-        return 'https://tiles.openfreemap.org/styles/liberty';
-      case MapStyle.satellite:
-        return _satelliteStyleJson;
-    }
-  }
+  String get styleUrl => mapStyleUrlFor(name);
 
   /// Whether this style can be packaged as an offline region. Satellite uses
   /// inline raster JSON which MapLibre's offline downloader doesn't support.
@@ -3714,18 +3696,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final prefs = appState.preferences;
     // The region's site, or the group's when the zone belongs to one: the
     // group's site merges every member's coverage.
-    final zone = appState.coverageHostCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
     final recentDays = appState.coverageOverlayDays;
-    // Display every recent result. Only the Smart Pinging lookup filters types.
-    final recentSuffix = recentDays == null ? '' : '&f_days=$recentDays';
-    // The preset filter (f_freq, f_bw, f_sf; never f_cr) so the overlay
-    // paints the preset the radio is on, or was last on. Values are digits
-    // and dots, so no encoding. Absent = the region's default layer.
-    final radioFilter = appState.radioFilterQuery;
-    final radioSuffix = radioFilter == null
-        ? ''
-        : '&f_freq=${radioFilter['f_freq']}&f_bw=${radioFilter['f_bw']}&f_sf=${radioFilter['f_sf']}';
 
     // Replace, never stack: if an overlay is already up (double-triggered
     // add, resume racing a rebuild), tear it down first or the old
@@ -3759,8 +3731,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // cf declares the tile format this build understands (blocks carrying
       // `k`); only send it while the decoder, the patch filter and the paint
       // all handle blocks.
-      final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize&cf=$kCoverageTileFormat$radioSuffix$recentSuffix';
+      //
+      // Every recent result is displayed (only the Smart Pinging lookup
+      // filters types), under the preset the radio is on, or was last on.
+      // Absent preset = the region's default layer.
+      final url = coverageTileUrlTemplate(
+        coverageHostCode: appState.coverageHostCode!,
+        gridSize: gridSize,
+        radioFilter: appState.radioFilterQuery,
+        recentDays: recentDays,
+      );
       debugLog(
           '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
       // minzoom 2: the server answers z2 and up, zoomed-out tiles as blocks

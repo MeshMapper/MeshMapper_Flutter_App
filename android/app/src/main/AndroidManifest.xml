@@ -32,6 +32,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android Auto: the car home screen draws MeshMapper's own map on the
+         car display inside a NavigationTemplate (see auto/CarMapScreen.kt). -->
+    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+
     <application
         android:label="MeshMapper"
         android:name="${applicationName}"
@@ -83,6 +88,27 @@
         <meta-data
             android:name="android.telephony.PROPERTY_SATELLITE_DATA_OPTIMIZED"
             android:value="net.meshmapper.app" />
+
+        <!-- Android Auto dashboard. The car mirrors the phone's session and
+             relays Start/Stop/Ping back through the same checks as the phone's
+             buttons; see net.meshmapper.app.auto. NAVIGATION is the only category
+             allowed to draw its own map, which is how the car shows the phone's
+             Map tab. Play only accepts real navigation apps there, so this is
+             for sideloaded builds with Android Auto's "Unknown sources" on. -->
+        <service
+            android:name=".auto.MeshMapperCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.NAVIGATION" />
+            </intent-filter>
+        </service>
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="2" />
 
         <!-- Background service for continuous wardriving -->
         <service
