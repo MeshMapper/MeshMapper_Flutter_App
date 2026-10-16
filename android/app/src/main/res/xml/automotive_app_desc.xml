@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares MeshMapper as an Android Auto app built on the Car App Library
+     templates. See MeshMapperCarAppService.kt. -->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>
