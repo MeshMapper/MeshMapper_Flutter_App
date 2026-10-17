@@ -6,7 +6,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:flutter/widgets.dart'
-    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
+    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState, Rect;
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:app_links/app_links.dart';
@@ -12035,12 +12035,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Share a debug log file
   ///
   /// Uses the native share sheet to allow users to share logs via email, messaging, etc.
-  Future<void> shareDebugLog(File file) async {
+  /// [sharePositionOrigin] is the tapped button's global rect, which iPad needs
+  /// (see [shareOfflineSession]).
+  Future<void> shareDebugLog(File file, {Rect? sharePositionOrigin}) async {
     try {
       final result = await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
           subject: 'MeshMapper Debug Log',
+          sharePositionOrigin: sharePositionOrigin,
         ),
       );
       debugLog('[DEBUG] Shared log: ${file.path}, status: ${result.status}');
@@ -12053,7 +12056,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// to Files, Drive, email, …) — the mobile equivalent of the web JSON
   /// download. Mirrors [shareDebugLog]; writes the same pretty JSON the web
   /// path produces. Throws on failure so the caller can surface an error.
-  Future<void> shareOfflineSession(String filename) async {
+  ///
+  /// [sharePositionOrigin] is the global rect of the tapped button. iPad
+  /// anchors the share popover there, and share_plus refuses to open the
+  /// sheet on iPad without one.
+  Future<void> shareOfflineSession(String filename,
+      {Rect? sharePositionOrigin}) async {
     final data = _offlineSessionService.getSessionData(filename);
     if (data == null) {
       throw Exception('Session "$filename" not found');
@@ -12066,6 +12074,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ShareParams(
         files: [XFile(file.path)],
         subject: 'MeshMapper Offline Session',
+        sharePositionOrigin: sharePositionOrigin,
       ),
     );
     debugLog('[OFFLINE] Shared session: $filename, status: ${result.status}');
