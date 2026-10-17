@@ -99,7 +99,9 @@ import '../services/repeater_admin/repeater_admin_module.dart';
 import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
+import '../utils/public_key.dart';
 import '../utils/repeater_collision.dart';
+import '../utils/repeater_nicknames.dart';
 import '../utils/ping_colors.dart';
 import '../utils/radio_filter.dart' as radio_filter;
 import '../utils/zone_group.dart';
@@ -842,6 +844,125 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     return null;
+  }
+
+  // ============================================
+  // Repeater nicknames (personal labels, kept on the phone)
+  // ============================================
+
+  /// Box key for the saved nicknames, an untyped map in the preferences box.
+  static const String _repeaterNicknamesKey = 'repeater_nicknames';
+
+  /// The user's nicknames, keyed by the repeater's full public key.
+  ///
+  /// Global to the phone and never scoped to a zone or IATA: a nickname must
+  /// survive leaving a region and coming back. Nothing clears or filters this
+  /// on a zone change, a catalogue reload, a disconnect, a log clear or a
+  /// session end. Only [setRepeaterNickname] and [setRepeaterNicknameByKey]
+  /// change it, and resolution against whatever catalogue is loaded brings a
+  /// nickname back when its repeater is in view again.
+  Map<String, RepeaterNickname> _repeaterNicknames = const {};
+
+  /// Every saved nickname as (full public key, entry), sorted by nickname
+  /// without regard to case. Unmodifiable.
+  List<MapEntry<String, RepeaterNickname>> get repeaterNicknames =>
+      List.unmodifiable(_repeaterNicknames.entries.toList()
+        ..sort((a, b) => a.value.nickname
+            .toLowerCase()
+            .compareTo(b.value.nickname.toLowerCase())));
+
+  /// How many nicknames are saved.
+  int get repeaterNicknameCount => _repeaterNicknames.length;
+
+  /// The nickname saved for [repeater], or null when it has none.
+  String? nicknameForRepeater(Repeater repeater) =>
+      RepeaterNicknames.nicknameFor(repeater, _repeaterNicknames);
+
+  /// The text for a Top Heard row: its nickname when the row resolves to one
+  /// repeater that has one, else [repeaterId] unchanged.
+  String topHeardLabel(String repeaterId) {
+    final id = repeaterId.toUpperCase();
+    return RepeaterNicknames.labelFor(
+          displayId: id,
+          identity: _overlayIdentityById[id],
+          repeaters: _repeaters,
+          hopBytes: _hopBytes,
+          nicknames: _repeaterNicknames,
+        ) ??
+        repeaterId;
+  }
+
+  /// Give [repeater] the nickname [nickname], or remove its nickname when
+  /// [nickname] is null or blank. Does nothing for a repeater without a full
+  /// public key, which the UI never offers.
+  Future<void> setRepeaterNickname(Repeater repeater, String? nickname) async {
+    final key = normalizePublicKey(repeater.hexId);
+    if (key == null) {
+      debugWarn('[SETTINGS] Repeater nickname ignored: no full public key');
+      return;
+    }
+    final n = RepeaterNicknames.normalizeNickname(nickname);
+    await _onRepeaterNicknamesChanged(
+      key,
+      set: n == null
+          ? null
+          : RepeaterNickname(
+              nickname: n,
+              name: repeater.name,
+              hex: repeater.displayHexId(),
+            ),
+    );
+  }
+
+  /// Like [setRepeaterNickname] for a repeater known only by [publicKey], as
+  /// in the Settings list, whose entries may not be in the current catalogue.
+  ///
+  /// [name] and [hex] describe the repeater in the list: the arguments when
+  /// given (Undo re-adds a removed entry this way), else the existing entry's.
+  Future<void> setRepeaterNicknameByKey(
+    String publicKey,
+    String? nickname, {
+    String? name,
+    String? hex,
+  }) async {
+    final key = normalizePublicKey(publicKey);
+    if (key == null) return;
+    final n = RepeaterNicknames.normalizeNickname(nickname);
+    final existing = _repeaterNicknames[key];
+    await _onRepeaterNicknamesChanged(
+      key,
+      set: n == null
+          ? null
+          : RepeaterNickname(
+              nickname: n,
+              name: name ?? existing?.name ?? '',
+              hex: hex ?? existing?.hex ?? key.substring(0, 4),
+            ),
+    );
+  }
+
+  /// Apply one change to the nicknames: [set] is the new entry for [key], or
+  /// null to remove it. Replaces the map rather than editing it, since the
+  /// getters hand out views of it.
+  Future<void> _onRepeaterNicknamesChanged(
+    String key, {
+    required RepeaterNickname? set,
+  }) async {
+    final next = Map<String, RepeaterNickname>.of(_repeaterNicknames);
+    if (set == null) {
+      next.remove(key);
+    } else {
+      next[key] = set;
+    }
+    _repeaterNicknames = Map.unmodifiable(next);
+    // Part of the Siri preflight key, so the snapshot rebuilds.
+    _siriRepeaterCatalogRevision++;
+    // The Top Heard overlay only rebuilds on the map revision.
+    _notifyMapNow();
+    _scheduleLiveActivitySync();
+    await _saveRepeaterNicknames();
+    debugLog('[SETTINGS] Repeater nickname '
+        '${set != null ? 'set' : 'cleared'} for ${_pkPrefix(key)}');
   }
 
   // ============================================
@@ -2278,6 +2399,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       rxAt: _liveActivityRxUpdatedAt,
       lat: ranking?.lat,
       lon: ranking?.lon,
+      nicknames: _repeaterNicknames,
     );
 
     // The readout still needs the fix and Top Heard, but none of the arrays
@@ -2567,6 +2689,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       traceEntries: _traceLogEntries,
       repeaters: _repeaters,
       hopBytes: _hopBytes,
+      nicknames: _repeaterNicknames,
     );
     final phase = _resolveWatchPhase();
     final passive = sessionStartAvailability(AutoMode.passive);
@@ -3432,31 +3555,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String? _resolveRepeaterDisplayName(String rawId) {
     final displayId = rawId.toUpperCase();
-
-    // Try the fullest identity the row arrived with, then the display hash.
-    //
-    // **The fallback is the point.** A discovery response's public key is a
-    // better identity, but the catalogue is matched by an 8-character `hexId`
-    // that the API frequently omits, and the display hash additionally resolves
-    // through `displayHexId` — which falls back to the short numeric ID when
-    // there is no hex at all. Trying only the longer form threw away the lookup
-    // that was doing the work, and left named repeaters unnamed.
-    final identity = _overlayIdentityById[displayId];
-    final match = (identity == null
-            ? null
-            : ExternalSurfaceGeoBuilder.resolveRepeater(
-                repeaters: _repeaters,
-                id: identity,
-                hopBytes: _hopBytes,
-              )) ??
-        ExternalSurfaceGeoBuilder.resolveRepeater(
-          repeaters: _repeaters,
-          id: displayId,
-          hopBytes: _hopBytes,
-        );
-
-    final name = match?.name;
-    return name == null || name == 'Unknown' ? null : name;
+    // Why the display hash is tried as well as the identity: see
+    // resolveOverlayRow.
+    final match = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+      displayId: displayId,
+      identity: _overlayIdentityById[displayId],
+      repeaters: _repeaters,
+      hopBytes: _hopBytes,
+    );
+    if (match == null) return null;
+    // The user's nickname wins over the server's name.
+    final nickname = RepeaterNicknames.nicknameFor(match, _repeaterNicknames);
+    if (nickname != null) return nickname;
+    final name = match.name;
+    return name == 'Unknown' ? null : name;
   }
 
   // ============================================
@@ -3726,6 +3838,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
     await _loadRegionalCarpeaters();
+    await _loadRepeaterNicknames();
     await _loadRepeaterClaims();
     await _loadScopeDiscoveryState();
     await _loadLastRadioConfig();
@@ -12505,6 +12618,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     _syncCarpeaterFilter();
+  }
+
+  Future<void> _loadRepeaterNicknames() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      _repeaterNicknames =
+          RepeaterNicknames.sanitize(box.get(_repeaterNicknamesKey));
+      debugLog('[APP] Loaded ${_repeaterNicknames.length} repeater nicknames');
+    } catch (e) {
+      debugError('[APP] Failed to load repeater nicknames: $e');
+      _repeaterNicknames = const {};
+    }
+  }
+
+  Future<void> _saveRepeaterNicknames() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put(
+        _repeaterNicknamesKey,
+        RepeaterNicknames.toStorage(_repeaterNicknames),
+      );
+      await box.flush();
+    } catch (e) {
+      debugError('[APP] Failed to save repeater nicknames: $e');
+    }
   }
 
   Future<void> _loadLastRadioConfig() async {
