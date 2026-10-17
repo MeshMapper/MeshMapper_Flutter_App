@@ -29,7 +29,8 @@ class RepeaterNickname {
     required this.hex,
   });
 
-  /// The user's short label, already through [RepeaterNicknames.normalizeNickname].
+  /// The user's short label, already through
+  /// [RepeaterNicknames.normalizeNickname].
   final String nickname;
 
   /// The server's repeater name at save time.
