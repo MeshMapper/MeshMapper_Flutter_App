@@ -42,9 +42,9 @@ void main() {
     expect(find.text('5007'), findsOneWidget);
     expect(find.text('Mellionnec Repeater'), findsOneWidget);
     expect(
-      find.text('Shows instead of 5007 in Top Heard, on the Live Activity, '
-          'CarPlay, Apple Watch and Siri. If another repeater shares 5007, '
-          'the ID shows instead.'),
+      find.text('Shows instead of 5007 in Top Heard, and as its name on the '
+          'Live Activity, CarPlay, Apple Watch and Siri. If another repeater '
+          'shares 5007, the ID shows instead.'),
       findsOneWidget,
     );
   });

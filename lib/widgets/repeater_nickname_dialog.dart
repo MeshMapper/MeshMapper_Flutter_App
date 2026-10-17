@@ -117,9 +117,9 @@ class _RepeaterNicknameDialogState extends State<_RepeaterNicknameDialog> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Shows instead of $hex in Top Heard, on the Live Activity, '
-            'CarPlay, Apple Watch and Siri. If another repeater shares $hex, '
-            'the ID shows instead.',
+            'Shows instead of $hex in Top Heard, and as its name on the Live '
+            'Activity, CarPlay, Apple Watch and Siri. If another repeater '
+            'shares $hex, the ID shows instead.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),

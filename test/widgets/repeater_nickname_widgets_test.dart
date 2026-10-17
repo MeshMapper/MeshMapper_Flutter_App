@@ -37,6 +37,29 @@ void main() {
     expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
   });
 
+  testWidgets('the editable tag reads as one named button', (tester) async {
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(host(Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        RepeaterNicknameTag(nickname: null, onTap: () {}),
+        RepeaterNicknameTag(nickname: 'Mell', onTap: () {}),
+      ],
+    )));
+
+    for (final label in ['Add nickname', 'Edit nickname Mell']) {
+      expect(
+        tester.getSemantics(find.bySemanticsLabel(label)),
+        matchesSemantics(
+          label: label,
+          isButton: true,
+          hasTapAction: true,
+        ),
+      );
+    }
+    semantics.dispose();
+  });
+
   testWidgets('the hex badge shows the hex', (tester) async {
     await tester.pumpWidget(host(const RepeaterHexBadge('5007')));
     expect(find.text('5007'), findsOneWidget);

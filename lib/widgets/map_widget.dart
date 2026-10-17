@@ -6847,7 +6847,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               defaultColumnWidth: const IntrinsicColumnWidth(),
               columnWidths: {
                 0: const IntrinsicColumnWidth(), // dot
-                1: const IntrinsicColumnWidth(), // ID
+                1: const IntrinsicColumnWidth(), // label
                 2: FixedColumnWidth(isLarge ? 12 : 8), // spacer
                 3: const IntrinsicColumnWidth(), // SNR
               },

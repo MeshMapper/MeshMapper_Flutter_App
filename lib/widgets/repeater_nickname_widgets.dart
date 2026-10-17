@@ -66,6 +66,12 @@ class RepeaterNicknameTag extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final radius = BorderRadius.circular(RepeaterMarkerStyle.chipCornerRadius);
     final hue = scheme.secondary;
+    // Text and icons only. Sky-600 on its own tint is too dim on the dark
+    // slate surfaces, so it is lifted toward white there; the fill and the
+    // border stay on the true hue.
+    final fg = Theme.of(context).brightness == Brightness.dark
+        ? Color.lerp(hue, Colors.white, 0.45)!
+        : hue;
     final name = nickname;
 
     if (onTap == null) {
@@ -84,14 +90,14 @@ class RepeaterNicknameTag extends StatelessWidget {
           style: TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w600,
-            color: hue,
+            color: fg,
           ),
         ),
       );
     }
 
     final adding = name == null;
-    final color = adding ? scheme.primary : hue;
+    final color = adding ? scheme.primary : fg;
     // The add variant's border takes the same alpha as a set tag's, so the
     // two read as one tag with and without its fill. At full strength it was
     // the loudest line in the sheet.
@@ -108,37 +114,47 @@ class RepeaterNicknameTag extends StatelessWidget {
             border: Border.all(color: hue.withValues(alpha: _tagBorderAlpha)),
           );
 
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: radius,
-        child: Ink(
-          decoration: decoration,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: _tagMinTapHeight - 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(adding ? Icons.add : Icons.label_outline,
-                    size: 14, color: color),
-                const SizedBox(width: 6),
-                Text(
-                  adding ? 'Add nickname' : name,
-                  maxLines: 1,
-                  softWrap: false,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: color,
-                  ),
-                ),
-                if (!adding) ...[
+    // One button to a screen reader, named for what it does, rather than a
+    // bare nickname. The tap is re-attached here because excluding the
+    // children also drops the InkWell's own action.
+    return Semantics(
+      button: true,
+      label: adding ? 'Add nickname' : 'Edit nickname $name',
+      onTap: onTap,
+      excludeSemantics: true,
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: radius,
+          child: Ink(
+            decoration: decoration,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: ConstrainedBox(
+              constraints:
+                  const BoxConstraints(minHeight: _tagMinTapHeight - 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(adding ? Icons.add : Icons.label_outline,
+                      size: 14, color: color),
                   const SizedBox(width: 6),
-                  Icon(Icons.edit_outlined, size: 14, color: color),
+                  Text(
+                    adding ? 'Add nickname' : name,
+                    maxLines: 1,
+                    softWrap: false,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: color,
+                    ),
+                  ),
+                  if (!adding) ...[
+                    const SizedBox(width: 6),
+                    Icon(Icons.edit_outlined, size: 14, color: color),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),

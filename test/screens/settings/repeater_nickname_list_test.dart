@@ -40,8 +40,8 @@ void main() {
 
     expect(
       find.text('Give repeaters your own short names, like Mell for 5007. '
-          'They show instead of the ID in Top Heard, on the Live Activity, '
-          'CarPlay, Apple Watch and Siri.'),
+          'They show instead of the ID in Top Heard, and as the name on the '
+          'Live Activity, CarPlay, Apple Watch and Siri.'),
       findsOneWidget,
     );
     expect(

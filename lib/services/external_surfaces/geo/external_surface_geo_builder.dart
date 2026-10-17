@@ -294,8 +294,8 @@ class ExternalSurfaceGeoBuilder {
   /// arrived with first, then the display hash it is shown under.
   ///
   /// **The fallback is the point.** A discovery response's public key is a
-  /// better identity, but the catalogue is matched by an 8-character `hexId`
-  /// that the API frequently omits, and the display hash additionally resolves
+  /// better identity, but the catalogue is matched by a `hexId` that the API
+  /// frequently omits, and the display hash additionally resolves
   /// through `displayHexId`, which falls back to the short numeric ID when
   /// there is no hex at all. Trying only the longer form threw away the lookup
   /// that was doing the work, and left named repeaters unnamed. An [identity]

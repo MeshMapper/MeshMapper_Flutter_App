@@ -141,8 +141,8 @@ class RepeaterNicknameList extends StatelessWidget {
               const SizedBox(height: 12),
               Text(
                 'Give repeaters your own short names, like Mell for 5007. '
-                'They show instead of the ID in Top Heard, on the Live '
-                'Activity, CarPlay, Apple Watch and Siri.',
+                'They show instead of the ID in Top Heard, and as the name '
+                'on the Live Activity, CarPlay, Apple Watch and Siri.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium,
               ),

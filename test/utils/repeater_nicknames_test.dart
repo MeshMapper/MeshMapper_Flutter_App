@@ -122,8 +122,19 @@ void main() {
       });
 
       expect(out.keys, [_key('6666')]);
-      expect(out[_key('6666')], _nick('Fine', name: '', hex: ''),
-          reason: 'a non-string snapshot field falls back to empty');
+      expect(out[_key('6666')], _nick('Fine', name: '', hex: '6666'),
+          reason: 'a non-string name falls back to empty, a non-string hex '
+              'to the key prefix');
+    });
+
+    test('a missing or blank hex falls back to the key prefix', () {
+      final out = RepeaterNicknames.sanitize({
+        _key('7A7A'): {'nickname': 'NoHex', 'name': 'A'},
+        _key('8B8B'): {'nickname': 'Blank', 'name': 'B', 'hex': '  '},
+      });
+
+      expect(out[_key('7A7A')]?.hex, '7A7A');
+      expect(out[_key('8B8B')]?.hex, '8B8B');
     });
 
     test('re-caps a stored nickname that is too long', () {

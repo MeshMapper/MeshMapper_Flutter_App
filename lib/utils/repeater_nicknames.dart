@@ -98,7 +98,12 @@ class RepeaterNicknames {
       out[normalizedKey] = RepeaterNickname(
         nickname: nickname,
         name: name is String ? name : '',
-        hex: hex is String ? hex : '',
+        // A damaged entry still shows an ID in the Settings list: the key's
+        // first four characters, the same fallback setRepeaterNicknameByKey
+        // uses.
+        hex: hex is String && hex.trim().isNotEmpty
+            ? hex
+            : normalizedKey.substring(0, 4),
       );
     }
     return out;
