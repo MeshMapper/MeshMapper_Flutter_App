@@ -10,6 +10,8 @@ import '../../utils/web_file_helpers_stub.dart'
 
 import '../../providers/app_state_provider.dart';
 import '../../services/offline_session_service.dart';
+import '../../utils/debug_logger_io.dart';
+import '../../utils/share_origin.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: Data.
@@ -83,8 +85,8 @@ class DataSettingsPage extends StatelessWidget {
                         context, appState, session.filename),
                     onDelete: () => _confirmDeleteOfflineSession(
                         context, appState, session.filename),
-                    onDownload: () => _downloadOfflineSession(
-                        context, appState, session.filename),
+                    onDownload: (origin) => _downloadOfflineSession(
+                        context, appState, session.filename, origin),
                   )),
           ]),
         ],
@@ -278,8 +280,8 @@ class DataSettingsPage extends StatelessWidget {
     );
   }
 
-  Future<void> _downloadOfflineSession(
-      BuildContext context, AppStateProvider appState, String filename) async {
+  Future<void> _downloadOfflineSession(BuildContext context,
+      AppStateProvider appState, String filename, Rect? origin) async {
     try {
       final sessionData =
           appState.offlineSessionService.getSessionData(filename);
@@ -317,9 +319,11 @@ class DataSettingsPage extends StatelessWidget {
       } else {
         // Mobile: write the JSON to a temp file and open the native share
         // sheet (Save to Files, Drive, email, …) — mirrors the debug-log share.
-        await appState.shareOfflineSession(filename);
+        await appState.shareOfflineSession(filename,
+            sharePositionOrigin: origin);
       }
     } catch (e) {
+      debugError('[OFFLINE] Failed to download session $filename: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -338,7 +342,9 @@ class _OfflineSessionTile extends StatelessWidget {
   final bool uploadEnabled;
   final VoidCallback onUpload;
   final VoidCallback onDelete;
-  final VoidCallback onDownload;
+
+  /// Called with the download button's global rect (the iPad share anchor).
+  final ValueChanged<Rect?> onDownload;
 
   const _OfflineSessionTile({
     required this.session,
@@ -454,11 +460,13 @@ class _OfflineSessionTile extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           // Download button - always available
-          IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: onDownload,
-            tooltip: 'Download JSON',
-            color: Colors.blue,
+          Builder(
+            builder: (buttonContext) => IconButton(
+              icon: const Icon(Icons.download),
+              onPressed: () => onDownload(globalRectOf(buttonContext)),
+              tooltip: 'Download JSON',
+              color: Colors.blue,
+            ),
           ),
           // Upload button - only when not uploaded
           if (!isUploaded)

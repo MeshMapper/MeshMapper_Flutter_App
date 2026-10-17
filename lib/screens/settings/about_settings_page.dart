@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/debug_file_logger.dart';
 import '../../utils/constants.dart';
+import '../../utils/share_origin.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/bug_report_dialog.dart';
 import '../../widgets/upload_logs_dialog.dart';
@@ -292,10 +293,14 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
                                 _showLogViewer(context, appState, file),
                             tooltip: 'View',
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.share, size: 20),
-                            onPressed: () => appState.shareDebugLog(file),
-                            tooltip: 'Share',
+                          Builder(
+                            builder: (buttonContext) => IconButton(
+                              icon: const Icon(Icons.share, size: 20),
+                              onPressed: () => appState.shareDebugLog(file,
+                                  sharePositionOrigin:
+                                      globalRectOf(buttonContext)),
+                              tooltip: 'Share',
+                            ),
                           ),
                         ],
                       ),
