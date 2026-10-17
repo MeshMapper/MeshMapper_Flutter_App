@@ -218,20 +218,29 @@ again. The only thing that drops them is the existing corrupt-box recovery
 other preference.
 
 Matching is by full key. A heard ID shows a nickname only when it resolves to
-exactly one catalogue repeater through
-`ExternalSurfaceGeoBuilder.resolveOverlayRow` (the fullest identity first, then
-the display hash); an ambiguous ID keeps its hex, because a confidently wrong
-name is worse than none. The nickname is used
-on the Top Heard overlay (`AppStateProvider.topHeardLabel`, where it replaces
-the hex), on the Live Activity and CarPlay (`_resolveRepeaterDisplayName`,
-where it wins over the server name in the existing name slot beside the hex and
-still sits behind "Repeater Names on Live Activity"), on the Apple Watch heard
-rows (`buildHeard(nicknames:)`) and on Siri's heard observations
-(`buildRecentHeard(nicknames:)`). It is not used in log chips, ping popups, map
-markers or the Siri/Shortcuts repeater catalogue, which keep server names. A
-change goes through `setRepeaterNickname` or `setRepeaterNicknameByKey`, which
-bump `_siriRepeaterCatalogRevision`, call `_notifyMapNow()` (the overlay
-rebuilds on `mapRevision`) and schedule the Live Activity, watch and Siri sync.
+exactly one catalogue repeater, trying the fullest identity the row arrived
+with first and the display hash second; an ambiguous ID keeps its hex, because
+a confidently wrong name is worse than none. Each surface runs that same
+identity-first, unique-only rule through its own resolver: Top Heard
+(`AppStateProvider.topHeardLabel`, via `RepeaterNicknames.labelFor`) and the
+Live Activity use `ExternalSurfaceGeoBuilder.resolveOverlayRow`, the watch's
+heard rows use `resolveOverlayRepeaters`, and Siri uses `resolveRepeater`.
+
+The nickname replaces the hex on the Top Heard overlay. On the Live Activity and
+CarPlay heard rows (`_resolveRepeaterDisplayName`) it wins over the server name
+in the existing name slot beside the hex, still behind "Repeater Names on Live
+Activity". It also appears on the Apple Watch heard rows
+(`buildHeard(nicknames:)`) and in Siri's heard observations
+(`buildRecentHeard(nicknames:)`). `_resolveRepeaterDisplayName` also feeds
+`_targetRepeaterDisplayName`, so in Trace mode the nickname names the target in
+the session phase text on the Live Activity and watch ("Tracing <name>",
+"Waiting for <name> to reply", "To <name>"). That text was never behind the
+"Repeater Names on Live Activity" toggle; only the heard rows are. It is not
+used in log chips, ping popups, map markers or the Siri/Shortcuts repeater
+catalogue, which keep server names. A change goes through
+`setRepeaterNickname` or `setRepeaterNicknameByKey`, which bump
+`_siriRepeaterCatalogRevision`, call `_notifyMapNow()` (the overlay rebuilds on
+`mapRevision`) and schedule the Live Activity, watch and Siri sync.
 
 On the map, the minimized repeater pill shows the nickname as a small tag after
 the name. The expanded repeater sheet shows, under the name, an editable tag
