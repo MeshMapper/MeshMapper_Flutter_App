@@ -1,0 +1,156 @@
+/// Personal repeater nicknames: the pure store and resolution rules.
+///
+/// A nickname is a short label the user gives one repeater (for example "Mell"
+/// for the repeater whose key starts 5007). It lives only on the phone, keyed
+/// by the repeater's FULL public key (the one stable identity a repeater has),
+/// and takes priority over the server's name wherever a heard repeater is named
+/// on the Top Heard overlay, the Live Activity, the Watch and Siri.
+///
+/// **A nickname is shown only when the heard ID resolves to exactly one
+/// repeater.** A short path hash routinely matches several repeaters, and a
+/// confidently wrong name is worse than none.
+library;
+
+import 'package:flutter/widgets.dart' show StringCharacters;
+
+import '../models/repeater.dart';
+import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
+import 'public_key.dart';
+
+/// One saved nickname, with a snapshot of the repeater it was given to.
+///
+/// [name] and [hex] are captured when the nickname is saved so a Settings list
+/// can still describe a repeater that is not in the current zone's catalogue.
+/// They are display-only and never used to match a heard ID.
+class RepeaterNickname {
+  const RepeaterNickname({
+    required this.nickname,
+    required this.name,
+    required this.hex,
+  });
+
+  /// The user's short label, already through [RepeaterNicknames.normalizeNickname].
+  final String nickname;
+
+  /// The server's repeater name at save time.
+  final String name;
+
+  /// `Repeater.displayHexId()` at save time.
+  final String hex;
+
+  @override
+  bool operator ==(Object other) =>
+      other is RepeaterNickname &&
+      other.nickname == nickname &&
+      other.name == name &&
+      other.hex == hex;
+
+  @override
+  int get hashCode => Object.hash(nickname, name, hex);
+
+  @override
+  String toString() => 'RepeaterNickname($nickname, $name, $hex)';
+}
+
+/// Static helpers over a nickname map keyed by upper-case 64-hex public key.
+class RepeaterNicknames {
+  const RepeaterNicknames._();
+
+  /// The longest nickname, in user-perceived characters.
+  static const int maxLength = 8;
+
+  /// [raw] trimmed, with every run of whitespace collapsed to one space and
+  /// capped at [maxLength] characters, or null when nothing is left.
+  ///
+  /// The cap counts user-perceived characters (grapheme clusters), so an emoji
+  /// or an accented letter is never cut in half. A cap that lands on a space
+  /// is trimmed again so the result is stable under a second pass.
+  static String? normalizeNickname(String? raw) {
+    if (raw == null) return null;
+    final collapsed = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final capped = collapsed.characters.take(maxLength).toString().trim();
+    return capped.isEmpty ? null : capped;
+  }
+
+  /// The nicknames persisted in Hive: a map of key to a map holding
+  /// `nickname`, `name` and `hex`.
+  ///
+  /// Keys are stored in normalized form. An entry whose key is not a full
+  /// public key, or whose nickname is blank, is dropped. Anything that is not
+  /// a map, or a field that is not a string, is tolerated rather than thrown
+  /// on, so a corrupt box can never stop the app starting.
+  static Map<String, RepeaterNickname> sanitize(Object? raw) {
+    if (raw is! Map) return const {};
+    final out = <String, RepeaterNickname>{};
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String || value is! Map) continue;
+      final normalizedKey = normalizePublicKey(key);
+      if (normalizedKey == null) continue;
+      final rawNickname = value['nickname'];
+      final nickname =
+          rawNickname is String ? normalizeNickname(rawNickname) : null;
+      if (nickname == null) continue;
+      final name = value['name'];
+      final hex = value['hex'];
+      out[normalizedKey] = RepeaterNickname(
+        nickname: nickname,
+        name: name is String ? name : '',
+        hex: hex is String ? hex : '',
+      );
+    }
+    return out;
+  }
+
+  /// [nicknames] as plain maps, the shape [sanitize] reads back from Hive.
+  static Map<String, Map<String, String>> toStorage(
+    Map<String, RepeaterNickname> nicknames,
+  ) =>
+      {
+        for (final entry in nicknames.entries)
+          entry.key: {
+            'nickname': entry.value.nickname,
+            'name': entry.value.name,
+            'hex': entry.value.hex,
+          },
+      };
+
+  /// The nickname saved for [repeater], matched on its full public key, or
+  /// null when it has none or its `hexId` is not a full key (a repeater with an
+  /// empty or short `hexId` can never be told apart from another one).
+  static String? nicknameFor(
+    Repeater repeater,
+    Map<String, RepeaterNickname> nicknames,
+  ) {
+    final key = normalizePublicKey(repeater.hexId);
+    return key == null ? null : nicknames[key]?.nickname;
+  }
+
+  /// The nickname for a heard row, or null when the row does not resolve to
+  /// exactly one repeater that has one.
+  ///
+  /// Resolves through [ExternalSurfaceGeoBuilder.resolveOverlayRow]: the
+  /// fullest [identity] the row arrived with first (a discovery response's
+  /// public key, a trace's target), then [displayId], the hash it is shown
+  /// under.
+  ///
+  /// An empty [nicknames] returns null without scanning [repeaters], which is
+  /// the common case and runs on every overlay rebuild.
+  static String? labelFor({
+    required String displayId,
+    String? identity,
+    required List<Repeater> repeaters,
+    int? hopBytes,
+    required Map<String, RepeaterNickname> nicknames,
+  }) {
+    if (nicknames.isEmpty) return null;
+    final match = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+      displayId: displayId,
+      identity: identity,
+      repeaters: repeaters,
+      hopBytes: hopBytes,
+    );
+    return match == null ? null : nicknameFor(match, nicknames);
+  }
+}
