@@ -41,6 +41,8 @@ import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
 import 'repeater_admin_sheet.dart';
 import 'repeater_id_chip.dart';
+import 'repeater_nickname_dialog.dart';
+import 'repeater_nickname_widgets.dart';
 import 'repeater_scope_chips.dart';
 import 'rx_path_chain.dart';
 
@@ -6747,8 +6749,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     };
   }
 
-  /// Build a single overlay table row with colored dot, repeater ID, and SNR
-  TableRow _overlayRow(String repeaterId, double snr, Color dotColor,
+  /// Build a single overlay table row with colored dot, label, and SNR.
+  /// [label] is the user's nickname when the row resolves to one repeater
+  /// that has one, else the repeater's hex ID.
+  TableRow _overlayRow(String label, double snr, Color dotColor,
       {bool isLarge = false}) {
     final dotSize = isLarge ? 9.0 : 6.0;
     final fontSize = isLarge ? 17.0 : 11.0;
@@ -6772,7 +6776,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         Padding(
           padding: EdgeInsets.symmetric(vertical: rowVerticalPadding),
           child: Text(
-            repeaterId,
+            label,
             style: TextStyle(
               fontSize: fontSize,
               fontWeight: FontWeight.w600,
@@ -6849,11 +6853,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               },
               children: [
                 for (final r in topRepeaters)
-                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type),
+                  _overlayRow(appState.topHeardLabel(r.repeaterId), r.snr,
+                      _overlayTypeColor(r.type),
                       isLarge: isLarge),
                 if (rxSlot != null)
-                  _overlayRow(rxSlot.repeaterId, rxSlot.snr,
-                      _overlayTypeColor(OverlayPingType.rx),
+                  _overlayRow(appState.topHeardLabel(rxSlot.repeaterId),
+                      rxSlot.snr, _overlayTypeColor(OverlayPingType.rx),
                       isLarge: isLarge),
               ],
             ),
@@ -8809,7 +8814,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         iconColor: color, valueColor: color);
   }
 
-  /// Row-1 identity for the repeater pill: a status-coloured dot + the name.
+  /// Row-1 identity for the repeater pill: a status-coloured dot + the name,
+  /// then the user's nickname tag when it has one (edited from the sheet).
   Widget _repeaterPillTitle(Repeater repeater, Color statusColor) {
     final theme = Theme.of(context);
     return Row(
@@ -8830,7 +8836,44 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 color: theme.colorScheme.onSurface),
           ),
         ),
+        // Selected rather than read once: the pill can outlive an edit.
+        Selector<AppStateProvider, String?>(
+          selector: (_, s) => s.nicknameForRepeater(repeater),
+          builder: (context, nickname, _) => nickname == null
+              ? const SizedBox.shrink()
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(width: 6),
+                    RepeaterNicknameTag(nickname: nickname),
+                  ],
+                ),
+        ),
       ],
+    );
+  }
+
+  /// The repeater sheet's nickname line: the user's nickname for [repeater]
+  /// as an editable tag, or "Add nickname". Tapping it opens the nickname
+  /// dialog. Only built for a repeater with a full key.
+  Widget _nicknameLine(AppStateProvider appState, Repeater repeater) {
+    return Selector<AppStateProvider, String?>(
+      selector: (_, s) => s.nicknameForRepeater(repeater),
+      builder: (context, nickname, _) => RepeaterNicknameTag(
+        nickname: nickname,
+        onTap: () async {
+          final result = await showRepeaterNicknameDialog(
+            context,
+            hex: repeater.displayHexId(),
+            serverName: repeater.name,
+            current: nickname,
+          );
+          if (!context.mounted || !nicknameResultChanges(result, nickname)) {
+            return;
+          }
+          await appState.setRepeaterNickname(repeater, result);
+        },
+      ),
     );
   }
 
@@ -10756,7 +10799,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               // the marker the user just tapped are the same object. It used to
               // be a white-bordered pill filled solid with the state colour,
               // which is the treatment the marker redesign deliberately moved
-              // away from, so the two no longer matched.
+              // away from, so the two no longer matched. Under the name, the
+              // user's nickname for it (or "Add nickname"), which belongs with
+              // the identity rather than beside Manage. Only a repeater with a
+              // full key can take one; Manage's "Full key unknown" covers the
+              // rest.
               Row(
                 children: [
                   _RepeaterChip(
@@ -10767,13 +10814,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Text(
-                      repeater.name,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          repeater.name,
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (isFullPublicKey(repeater.hexId)) ...[
+                          const SizedBox(height: 6),
+                          _nicknameLine(appState, repeater),
+                        ],
+                      ],
                     ),
                   ),
                   const SizedBox(width: 8),

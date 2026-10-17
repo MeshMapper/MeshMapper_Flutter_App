@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../providers/app_state_provider.dart';
 import '../offline_maps_screen.dart';
+import 'repeater_nicknames_page.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: Map.
@@ -17,6 +18,7 @@ class MapSettingsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final prefs = appState.preferences;
+    final nicknameCount = appState.repeaterNicknameCount;
 
     return Scaffold(
       appBar: AppBar(
@@ -134,6 +136,24 @@ class MapSettingsPage extends StatelessWidget {
                       prefs.copyWith(largerTopRepeaters: value));
                 },
               ),
+            ListTile(
+              leading: const Icon(Icons.label_outline),
+              title: const Text('Repeater Nicknames'),
+              subtitle: Text(nicknameCount == 0
+                  ? 'Your own short names for Top Heard'
+                  : nicknameCount == 1
+                      ? '1 nickname'
+                      : '$nicknameCount nicknames'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const RepeaterNicknamesPage(),
+                  ),
+                );
+              },
+            ),
           ]),
         ],
       ),
