@@ -1486,6 +1486,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   void _exitFocusCamera() {
     if (!_cameraFocusActive) return;
     _cameraFocusActive = false;
+    // Before the zoom-back, so the saved center lands at the true map center.
+    _clearFitPadding();
     final center = _preFocusCenter;
     final zoom = _preFocusZoom;
     final restoreFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
@@ -1509,6 +1511,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         if (restoreRot) _alwaysNorth = false;
       });
     }
+  }
+
+  /// Android only: drop the edge padding a fit-to-box ([_animateFitBounds]) left
+  /// on the native map. MapLibre Android keeps a `newLatLngBounds` padding as
+  /// the map's viewport padding, and every later camera move (none carry a
+  /// padding) keeps it, so the map center stays pushed up by the room left for
+  /// the focus sheet. Auto-follow then adds its own control panel offset on top
+  /// and the GPS marker lands near the top of the screen. iOS applies a fit's
+  /// padding to that one move only, so it needs nothing here.
+  void _clearFitPadding() {
+    if (kIsWeb || !Platform.isAndroid) return;
+    if (_mapController == null || !_isMapReady || !_canAnimateCamera) return;
+    debugLog('[MAP CENTER] clearing fit padding after focus view');
+    _mapController!.updateContentInsets(EdgeInsets.zero).catchError((e) {
+      debugLog('[MAP CENTER] clearing fit padding failed: $e');
+    });
   }
 
   /// True while any focus view (ping focus, tile coverage, repeater coverage) is
