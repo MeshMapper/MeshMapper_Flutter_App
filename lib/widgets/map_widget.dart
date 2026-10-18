@@ -8853,15 +8853,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// The repeater sheet's nickname line: the user's nickname for [repeater]
-  /// as an editable tag, or "Add nickname". Tapping it opens the nickname
-  /// dialog. Only built for a repeater with a full key.
-  Widget _nicknameLine(AppStateProvider appState, Repeater repeater) {
+  /// The repeater sheet's Nickname button beside Manage: "Nickname" until
+  /// one is set, then the nickname. Opens the nickname dialog. Only built for
+  /// a repeater with a full key.
+  Widget _nicknameButton(AppStateProvider appState, Repeater repeater) {
     return Selector<AppStateProvider, String?>(
       selector: (_, s) => s.nicknameForRepeater(repeater),
-      builder: (context, nickname, _) => RepeaterNicknameTag(
+      builder: (context, nickname, _) => RepeaterNicknameButton(
         nickname: nickname,
-        onTap: () async {
+        onPressed: () async {
           final result = await showRepeaterNicknameDialog(
             context,
             hex: repeater.displayHexId(),
@@ -10799,11 +10799,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               // the marker the user just tapped are the same object. It used to
               // be a white-bordered pill filled solid with the state colour,
               // which is the treatment the marker redesign deliberately moved
-              // away from, so the two no longer matched. Under the name, the
-              // user's nickname for it (or "Add nickname"), which belongs with
-              // the identity rather than beside Manage. Only a repeater with a
-              // full key can take one; Manage's "Full key unknown" covers the
-              // rest.
+              // away from, so the two no longer matched.
               Row(
                 children: [
                   _RepeaterChip(
@@ -10814,26 +10810,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          repeater.name,
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleLarge
-                              ?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        if (isFullPublicKey(repeater.hexId)) ...[
-                          const SizedBox(height: 6),
-                          _nicknameLine(appState, repeater),
-                        ],
-                      ],
+                    child: Text(
+                      repeater.name,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -10856,11 +10839,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               const SizedBox(height: 14),
               // Manage: opens the admin sheet for this repeater. Disabled with
               // the reason when the key is short or the app cannot manage now.
+              // Beside it, for a repeater with a full key, the Nickname button
+              // (the nickname itself once one is set). A repeater without one
+              // can take no nickname, so Manage keeps the full width and its
+              // "Full key unknown" covers both.
               Builder(builder: (context) {
                 final block = appState.repeaterAdminBlockReason;
                 final hasKey = isFullPublicKey(repeater.hexId);
                 final hint = !hasKey ? 'Full key unknown' : block;
-                return Column(
+                final manage = Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       FilledButton.tonalIcon(
@@ -10887,6 +10874,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                       .onSurfaceVariant)),
                         ),
                     ]);
+                if (!hasKey) return manage;
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: manage),
+                    const SizedBox(width: 8),
+                    Expanded(child: _nicknameButton(appState, repeater)),
+                  ],
+                );
               }),
               const SizedBox(height: 14),
 

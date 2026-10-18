@@ -243,10 +243,12 @@ catalogue, which keep server names. A change goes through
 `mapRevision`) and schedule the Live Activity, watch and Siri sync.
 
 On the map, the minimized repeater pill shows the nickname as a small tag after
-the name. The expanded repeater sheet shows, under the name, an editable tag
-("Add nickname", or the nickname with an edit icon) for repeaters with a full
-public key only. The tag and the hex badge are the shared `RepeaterNicknameTag`
-and `RepeaterHexBadge` in `lib/widgets/repeater_nickname_widgets.dart`. The
+the name. The expanded repeater sheet has a Nickname button beside Manage, the
+same height and shape, reading "Nickname" until one is set and then the
+nickname itself, for repeaters with a full public key only (without one, Manage
+keeps the full width). The tag, the button and the hex badge are the shared
+`RepeaterNicknameTag`, `RepeaterNicknameButton` and `RepeaterHexBadge` in
+`lib/widgets/repeater_nickname_widgets.dart`. The
 other entry point is Settings > Map > Repeater Nicknames
 (`RepeaterNicknameList` in `lib/screens/settings/repeater_nicknames_page.dart`):
 list, add through the repeater picker, edit and remove, with Undo after a
@@ -3039,7 +3041,7 @@ All API endpoints may return maintenance mode:
 - `lib/utils/repeater_marker_painter.dart` - Draws the repeater chip, the cluster badge disc and its presence dots
 - `lib/utils/repeater_nicknames.dart` - Personal repeater nicknames: `RepeaterNicknames.sanitize`, the 8-character cap, and resolution of a heard row to its nickname
 - `lib/widgets/repeater_nickname_dialog.dart` - The dialog that sets or removes a nickname, shared by the map sheet and Settings
-- `lib/widgets/repeater_nickname_widgets.dart` - `RepeaterHexBadge` and `RepeaterNicknameTag`, the pieces every nickname surface is drawn from
+- `lib/widgets/repeater_nickname_widgets.dart` - `RepeaterHexBadge`, `RepeaterNicknameTag` and `RepeaterNicknameButton`, the pieces the nickname UI is drawn from
 - `lib/screens/settings/repeater_nicknames_page.dart` - Settings > Map > Repeater Nicknames: the list with add, edit, remove and Undo
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization

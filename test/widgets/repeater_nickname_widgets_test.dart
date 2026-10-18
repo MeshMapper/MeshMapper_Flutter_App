@@ -14,36 +14,36 @@ void main() {
     expect(tester.getSize(find.byType(RepeaterNicknameTag)), Size.zero);
   });
 
-  testWidgets('the editable tag is at least 40 tall, set or not',
+  testWidgets('a display tag shows the nickname', (tester) async {
+    await tester.pumpWidget(host(const RepeaterNicknameTag(nickname: 'Mell')));
+    expect(find.text('Mell'), findsOneWidget);
+  });
+
+  testWidgets('the button reads Nickname until one is set, then the nickname',
       (tester) async {
-    var taps = 0;
+    var presses = 0;
     await tester.pumpWidget(host(Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        RepeaterNicknameTag(nickname: null, onTap: () => taps++),
-        RepeaterNicknameTag(nickname: 'Mell', onTap: () => taps++),
+        RepeaterNicknameButton(nickname: null, onPressed: () => presses++),
+        RepeaterNicknameButton(nickname: 'Mell', onPressed: () => presses++),
       ],
     )));
 
-    final add = tester.getSize(find.byType(RepeaterNicknameTag).first);
-    final set = tester.getSize(find.byType(RepeaterNicknameTag).last);
-    expect(add.height, greaterThanOrEqualTo(40));
-    // Same height either way, so the sheet does not move when one is set.
-    expect(set.height, add.height);
-
-    await tester.tap(find.text('Add nickname'));
+    expect(find.byIcon(Icons.add), findsOneWidget);
+    expect(find.byIcon(Icons.label_outline), findsOneWidget);
+    await tester.tap(find.text('Nickname'));
     await tester.tap(find.text('Mell'));
-    expect(taps, 2);
-    expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+    expect(presses, 2);
   });
 
-  testWidgets('the editable tag reads as one named button', (tester) async {
+  testWidgets('the button reads as one named button', (tester) async {
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(host(Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        RepeaterNicknameTag(nickname: null, onTap: () {}),
-        RepeaterNicknameTag(nickname: 'Mell', onTap: () {}),
+        RepeaterNicknameButton(nickname: null, onPressed: () {}),
+        RepeaterNicknameButton(nickname: 'Mell', onPressed: () {}),
       ],
     )));
 
