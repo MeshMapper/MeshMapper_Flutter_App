@@ -599,6 +599,9 @@ class MeshCoreConnection {
   Timer? _adminLateResponseTimer;
   Completer<List<ContactRecord>>? _contactsCompleter;
   List<ContactRecord> _contactsBuffer = [];
+  // Re-arms the running getContacts call's silence timer. Called on every
+  // CONTACTS_START and CONTACT frame, so a long list keeps its read alive.
+  void Function()? _contactsProgress;
 
   /// The radio's contact list as this connection last saw it, keyed by the
   /// full public key hex, in the radio's order. Lives exactly as long as
@@ -1288,12 +1291,14 @@ class MeshCoreConnection {
             break;
           }
           _contactsBuffer = [];
+          _contactsProgress?.call();
           final count =
               reader.remainingBytesCount >= 4 ? reader.readUInt32LE() : -1;
           debugLog('[CONN] Contact list starting ($count contacts)');
           break;
         case ResponseCodes.contact:
           if (_contactsCompleter == null) break;
+          _contactsProgress?.call();
           try {
             _contactsBuffer.add(ContactRecord.parse(reader));
           } on FormatException catch (e) {
@@ -2983,10 +2988,29 @@ class MeshCoreConnection {
   }
 
   /// Read the radio's whole contact list (CMD_GET_CONTACTS with since = 0).
-  Future<List<ContactRecord>> getContacts(
-      {Duration timeout = const Duration(seconds: 20)}) async {
+  ///
+  /// The wait follows the stream rather than a fixed total: it times out
+  /// after [silenceTimeout] with no frame of the list, or at [timeout]
+  /// overall. The radio streams about one contact per 60 ms, so a 350 entry
+  /// table takes over 21 s, and a fixed 20 s cut it off every time.
+  Future<List<ContactRecord>> getContacts({
+    Duration silenceTimeout = const Duration(seconds: 5),
+    Duration timeout = const Duration(seconds: 120),
+  }) async {
     final token = _beginAdminCommand('getContacts');
     final completer = Completer<List<ContactRecord>>();
+    Timer? silence;
+    void armSilence() {
+      silence?.cancel();
+      silence = Timer(silenceTimeout, () {
+        if (completer.isCompleted) return;
+        debugWarn('[CONN] getContacts: radio silent for '
+            '${silenceTimeout.inMilliseconds}ms '
+            '(${_contactsBuffer.length} contacts received)');
+        completer.completeError(TimeoutException('getContacts timed out'));
+      });
+    }
+
     try {
       await _drainPollsForAdminCommand('getContacts');
       _contactsCompleter = completer;
@@ -2997,12 +3021,16 @@ class MeshCoreConnection {
         ..writeByte(CommandCodes.getContacts)
         ..writeUInt32LE(since);
       await _sendToRadio(data);
+      _contactsProgress = armSilence;
+      armSilence();
       return await completer.future.timeout(timeout, onTimeout: () {
         _contactsCompleter = null;
         _contactsBuffer = [];
         throw TimeoutException('getContacts timed out');
       });
     } finally {
+      silence?.cancel();
+      if (identical(_contactsProgress, armSilence)) _contactsProgress = null;
       // A write that threw before completer.future was ever awaited leaves
       // this call's completer registered with no listener. Clear it here
       // (only if it is still the one this call installed - a later call may

@@ -192,6 +192,22 @@ void main() {
       expect(session.busy, isFalse);
     });
 
+    test('a contact list that never finishes is not a password problem',
+        () async {
+      final future = session.login('admin-pw');
+      await transport.settle();
+      expect(commands(), [CommandCodes.getContacts]);
+      transport.emit([ResponseCodes.contactsStart, 2, 0, 0, 0]);
+      transport.emit([ResponseCodes.contact, ...contactPayload(otherKey)]);
+      // The radio goes quiet before END_OF_CONTACTS: the silence window
+      // (5 s by default) runs out and no login is ever sent.
+      expect(await future, isFalse);
+      expect(session.state, RepeaterAdminState.failed);
+      expect(session.lastError, kContactListTimeoutSentence);
+      expect(commands(), [CommandCodes.getContacts]);
+      expect(session.busy, isFalse);
+    }, timeout: const Timeout(Duration(seconds: 15)));
+
     test('a zero-hop contact reads as a direct route', () async {
       final future = session.login('admin-pw');
       await answerContacts([contactPayload(repeaterKey, outPathLen: 0x80)]);
