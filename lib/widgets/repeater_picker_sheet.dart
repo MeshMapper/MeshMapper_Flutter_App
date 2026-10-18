@@ -9,7 +9,12 @@ import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 
 /// Show a bottom sheet repeater picker and return the selected repeater.
-Future<Repeater?> showRepeaterPicker(BuildContext context) {
+/// [include], when given, limits the list to the repeaters it accepts, so a
+/// caller never offers one it would then have to refuse.
+Future<Repeater?> showRepeaterPicker(
+  BuildContext context, {
+  bool Function(Repeater repeater)? include,
+}) {
   return showModalBottomSheet<Repeater>(
     context: context,
     isScrollControlled: true,
@@ -25,6 +30,7 @@ Future<Repeater?> showRepeaterPicker(BuildContext context) {
       expand: false,
       builder: (context, scrollController) => _RepeaterPickerBody(
         scrollController: scrollController,
+        include: include,
       ),
     ),
   );
@@ -32,8 +38,9 @@ Future<Repeater?> showRepeaterPicker(BuildContext context) {
 
 class _RepeaterPickerBody extends StatefulWidget {
   final ScrollController scrollController;
+  final bool Function(Repeater repeater)? include;
 
-  const _RepeaterPickerBody({required this.scrollController});
+  const _RepeaterPickerBody({required this.scrollController, this.include});
 
   @override
   State<_RepeaterPickerBody> createState() => _RepeaterPickerBodyState();
@@ -104,7 +111,10 @@ class _RepeaterPickerBodyState extends State<_RepeaterPickerBody> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final repeaters = appState.repeaters;
+    final include = widget.include;
+    final repeaters = include == null
+        ? appState.repeaters
+        : appState.repeaters.where(include).toList();
     final position = appState.currentPosition;
     final isImperial = appState.preferences.isImperial;
     final colorScheme = Theme.of(context).colorScheme;

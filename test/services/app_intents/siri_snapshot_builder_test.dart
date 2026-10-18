@@ -4,6 +4,7 @@ import 'package:mesh_mapper/models/repeater.dart';
 import 'package:mesh_mapper/services/app_intents/siri_snapshot_builder.dart';
 import 'package:mesh_mapper/services/app_intents/siri_snapshot_models.dart';
 import 'package:mesh_mapper/services/watch/watch_models.dart';
+import 'package:mesh_mapper/utils/repeater_nicknames.dart';
 
 void main() {
   final now = DateTime.fromMillisecondsSinceEpoch(1787535920000);
@@ -707,5 +708,54 @@ void main() {
     expect(catalog, hasLength(SiriSnapshotBuilder.maximumRepeaters));
     expect(catalog.first.id, 'SEA|repeater-7');
     expect(catalog[1].id, 'SEA|repeater-0');
+  });
+
+  test('a nickname names the observation but not the Shortcuts catalogue', () {
+    final fullKey = '4E5D82AA'.padRight(64, '0');
+    final keyed = Repeater(
+      id: 'database-123',
+      hexId: fullKey,
+      name: 'Capitol Hill',
+      lat: 47.6202,
+      lon: -122.3194,
+      lastHeard: 1787535900,
+      enabled: 1,
+      iata: 'SEA',
+    );
+    final tx = [
+      TxLogEntry(
+        timestamp: now,
+        latitude: 47.6,
+        longitude: -122.3,
+        power: 1,
+        events: [RxEvent(repeaterId: '4E5D', snr: 8.5, rssi: -91)],
+      ),
+    ];
+    SiriRecentHeard heard(Map<String, RepeaterNickname> nicknames) =>
+        SiriSnapshotBuilder.buildRecentHeard(
+          txEntries: tx,
+          rxEntries: const [],
+          discoveryEntries: const [],
+          traceEntries: const [],
+          repeaters: [keyed],
+          hopBytes: 2,
+          now: now,
+          nicknames: nicknames,
+        );
+
+    final nicknamed = heard({
+      fullKey: const RepeaterNickname(
+          nickname: 'Mell', name: 'Capitol Hill', hex: '4E5D82AA'),
+    }).observations.single;
+    expect(nicknamed.name, 'Mell');
+    expect(nicknamed.entityId, 'SEA|database-123',
+        reason: 'a nickname never changes the entity identity');
+
+    expect(heard(const {}).observations.single.name, 'Capitol Hill',
+        reason: 'without nicknames the server name is unchanged');
+
+    expect(SiriSnapshotBuilder.buildRepeaterCatalog([keyed]).single.name,
+        'Capitol Hill',
+        reason: 'Shortcuts entities keep the server name');
   });
 }

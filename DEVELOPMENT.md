@@ -194,6 +194,70 @@ back to `hop_bytes`, independently of regional TX path-width enforcement.
 Coverage requests use up to 40 characters of the full key to meet the API's
 prefix limit. Legacy narrow coverage tokens can remain inherently ambiguous.
 
+### Repeater Nicknames
+
+A user can give a repeater a short personal nickname ("Mell" for the repeater
+whose key starts 5007) that is shown where a heard repeater is named. It stays
+on the phone: no account sync and no server involvement. Nicknames are kept in
+the Hive `user_preferences` box under `repeater_nicknames`, a map of full
+64-hex public key to `{nickname, name, hex}`, and read back through
+`RepeaterNicknames.sanitize` (`lib/utils/repeater_nicknames.dart`), which drops
+a bad entry instead of throwing. `name` and `hex` are snapshots of the server
+name and display hex taken at save time, so the Settings list can describe a
+repeater outside the current zone's catalogue; they are display-only and never
+used to match. A nickname is capped at 8 characters
+(`RepeaterNicknames.maxLength`), and only a repeater with a full public key can
+take one.
+
+Nicknames are global to the phone and never scoped to a zone or IATA, so they
+survive leaving a region and coming back. Nothing clears them on a zone change,
+catalogue reload, disconnect, log clear or session end, and resolving against
+whatever catalogue is loaded brings one back when its repeater is in view
+again. The only thing that drops them is the existing corrupt-box recovery
+(`_openBoxSafely`) that deletes the whole `user_preferences` box, like every
+other preference.
+
+Matching is by full key. A heard ID shows a nickname only when it resolves to
+exactly one catalogue repeater, trying the fullest identity the row arrived
+with first and the display hash second; an ambiguous ID keeps its hex, because
+a confidently wrong name is worse than none. Top Heard
+(`AppStateProvider.topHeardLabel`, via `RepeaterNicknames.labelFor`), the Live
+Activity and Siri all resolve through `ExternalSurfaceGeoBuilder.resolveOverlayRow`;
+the watch's heard rows use `resolveOverlayRepeaters`, which applies the same
+identity-first, unique-only rule to the whole set of rows at once.
+
+The nickname replaces the hex on the Top Heard overlay. On the Live Activity and
+CarPlay heard rows (`_resolveRepeaterDisplayName`) it wins over the server name
+in the existing name slot beside the hex, still behind "Repeater Names on Live
+Activity". It also appears on the Apple Watch heard rows
+(`buildHeard(nicknames:)`) and in Siri's heard observations
+(`buildRecentHeard(nicknames:)`). `_resolveRepeaterDisplayName` also feeds
+`_targetRepeaterDisplayName`, so in Trace mode the nickname names the target in
+the session phase text on the Live Activity and watch ("Tracing <name>",
+"Waiting for <name> to reply", "To <name>"). That text was never behind the
+"Repeater Names on Live Activity" toggle; only the heard rows are. It is not
+used in log chips, ping popups, map markers or the Siri/Shortcuts repeater
+catalogue, which keep server names. A change goes through
+`setRepeaterNickname` or `setRepeaterNicknameByKey`, which bump
+`_siriRepeaterCatalogRevision`, call `_notifyMapNow()` (the overlay rebuilds on
+`mapRevision`) and schedule the Live Activity, watch and Siri sync.
+
+On the map, the minimized repeater pill shows the nickname as a small tag after
+the name. The expanded repeater sheet has a Nickname button beside Manage, the
+same height and shape, reading "Nickname" until one is set and then the
+nickname itself, for repeaters with a full public key only (without one, Manage
+keeps the full width). The tag, the button and the hex badge are the shared
+`RepeaterNicknameTag`, `RepeaterNicknameButton` and `RepeaterHexBadge` in
+`lib/widgets/repeater_nickname_widgets.dart`. The
+other entry point is Settings > Map > Repeater Nicknames
+(`RepeaterNicknameList` in `lib/screens/settings/repeater_nicknames_page.dart`):
+list, add through the repeater picker (which offers only repeaters with a full
+key), edit and remove. A removal offers Undo, and removals made while that bar
+is up share it (`NicknameRemovalBatch`), so one Undo brings them all back. The
+sheet and the list's add share one ask-then-save flow, `editRepeaterNickname`
+in `lib/widgets/repeater_nickname_dialog.dart`, and nicknames made only of
+invisible characters are treated as blank.
+
 ### Service-Oriented Architecture
 
 The app uses a layered service architecture with clear separation of concerns:
@@ -2294,6 +2358,8 @@ carries the responder's full 64-character public key, and a trace carries its
 `_overlayIdentityById`, **replaced wholesale per ping and never merged**, because
 a hash that meant one repeater in a discovery response says nothing about who a
 later TX echo under the same hash was.
+A user's own nickname for the resolved repeater wins over the server name; see
+"Repeater Nicknames".
 
 TX echoes and passive RX carry only the path byte, so they fall back to prefix
 matching and keep refusing to guess. That fallback indexes per *distinct*
@@ -2977,5 +3043,9 @@ All API endpoints may return maintenance mode:
 - `lib/utils/repeater_marker_style.dart` - Repeater marker geometry, the five-state colour registry, and the cluster dominant/presence expressions
 - `lib/utils/cluster_spread.dart` - The zoom that pulls a repeater cluster apart, deciding zoom-vs-spread on tap
 - `lib/utils/repeater_marker_painter.dart` - Draws the repeater chip, the cluster badge disc and its presence dots
+- `lib/utils/repeater_nicknames.dart` - Personal repeater nicknames: `RepeaterNicknames.sanitize`, the 8-character cap, and resolution of a heard row to its nickname
+- `lib/widgets/repeater_nickname_dialog.dart` - The dialog that sets or removes a nickname, shared by the map sheet and Settings
+- `lib/widgets/repeater_nickname_widgets.dart` - `RepeaterHexBadge`, `RepeaterNicknameTag` and `RepeaterNicknameButton`, the pieces the nickname UI is drawn from
+- `lib/screens/settings/repeater_nicknames_page.dart` - Settings > Map > Repeater Nicknames: the list with add, edit, remove and Undo
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization

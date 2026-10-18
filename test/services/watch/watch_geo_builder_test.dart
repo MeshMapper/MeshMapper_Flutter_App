@@ -7,6 +7,7 @@ import 'package:mesh_mapper/providers/app_state_provider.dart'
 import 'package:mesh_mapper/services/watch/watch_geo_builder.dart';
 import 'package:mesh_mapper/services/watch/watch_models.dart';
 import 'package:mesh_mapper/utils/ping_colors.dart';
+import 'package:mesh_mapper/utils/repeater_nicknames.dart';
 
 TxPing _tx(DateTime at, {List<HeardRepeater> heard = const []}) => TxPing(
       latitude: 47.6,
@@ -593,6 +594,47 @@ void main() {
           reason: 'a confidently wrong name is worse than none');
       expect(built.single.distanceM, isNull);
     });
+
+    test('a nickname replaces the name only on the repeater it belongs to', () {
+      final keyedKey = '4E5D82AA'.padRight(64, '0');
+      final capitol = _repeater(
+          id: '01',
+          hexId: keyedKey,
+          name: 'Capitol Hill',
+          lat: 47.61,
+          lon: -122.3);
+      final beacon = _repeater(
+          id: '02',
+          hexId: '77A1B0CC'.padRight(64, '0'),
+          name: 'Beacon Hill',
+          lat: 47.62,
+          lon: -122.3);
+
+      final built = WatchGeoBuilder.buildHeard(
+        top: const [
+          (repeaterId: '4E5D', snr: 8, type: OverlayPingType.tx),
+          (repeaterId: '77A1', snr: 6, type: OverlayPingType.tx),
+          (repeaterId: 'AB', snr: 4, type: OverlayPingType.tx),
+        ],
+        repeaterByHex: {'4E5D': capitol, '77A1': beacon},
+        topAt: DateTime(2026, 8, 12),
+        rxAt: null,
+        lat: 47.6,
+        lon: -122.3,
+        nicknames: {
+          keyedKey: const RepeaterNickname(
+              nickname: 'Mell', name: 'Capitol Hill', hex: '4E5D'),
+        },
+      );
+
+      expect(built[0].name, 'Mell');
+      expect(built[0].distanceM, isNotNull,
+          reason: 'a nickname changes the label, never the match');
+      expect(built[1].name, 'Beacon Hill',
+          reason: 'a repeater without a nickname keeps the server name');
+      expect(built[2].name, isNull,
+          reason: 'an unresolved hash stays unnamed, nicknames or not');
+    });
   });
 
   group('resolveRepeater', () {
@@ -653,6 +695,98 @@ void main() {
           hopBytes: 1,
         ),
         isNull,
+      );
+    });
+  });
+
+  group('resolveOverlayRow - identity first, then the display hash', () {
+    // Two repeaters sharing a leading byte, so the one-byte hash alone is
+    // genuinely ambiguous.
+    final capitol = _repeater(
+      id: '01',
+      hexId: '4E5D82AA',
+      name: 'Capitol Hill',
+      lat: 47.6,
+      lon: -122.3,
+    );
+    final beacon = _repeater(
+      id: '02',
+      hexId: '4E99F1BB',
+      name: 'Beacon Hill',
+      lat: 47.5,
+      lon: -122.3,
+    );
+    final other = _repeater(
+      id: '03',
+      hexId: '9C12D4EE',
+      name: 'Queen Anne',
+      lat: 47.7,
+      lon: -122.3,
+    );
+
+    test('the identity wins when the display hash is shared', () {
+      expect(
+        WatchGeoBuilder.resolveOverlayRow(
+          displayId: '4E',
+          repeaters: [capitol, beacon],
+          hopBytes: 1,
+        ),
+        isNull,
+        reason: 'the hash alone is genuinely ambiguous',
+      );
+
+      expect(
+        WatchGeoBuilder.resolveOverlayRow(
+          displayId: '4E',
+          identity: '4E99F1BB2233445566',
+          repeaters: [capitol, beacon],
+          hopBytes: 1,
+        )?.name,
+        'Beacon Hill',
+      );
+    });
+
+    test('a missing identity falls back to the display hash', () {
+      expect(
+        WatchGeoBuilder.resolveOverlayRow(
+          displayId: '9c',
+          repeaters: [capitol, beacon, other],
+          hopBytes: 1,
+        )?.name,
+        'Queen Anne',
+        reason: 'the display hash is matched case-insensitively',
+      );
+      expect(
+        WatchGeoBuilder.resolveOverlayRow(
+          displayId: '9C',
+          identity: '',
+          repeaters: [capitol, beacon, other],
+          hopBytes: 1,
+        )?.name,
+        'Queen Anne',
+        reason: 'an empty identity is no identity',
+      );
+    });
+
+    test('an identity that resolves to nothing falls back to the hash', () {
+      expect(
+        WatchGeoBuilder.resolveOverlayRow(
+          displayId: '9C',
+          identity: 'FFFFFFFF0011',
+          repeaters: [capitol, beacon, other],
+          hopBytes: 1,
+        )?.name,
+        'Queen Anne',
+      );
+      expect(
+        WatchGeoBuilder.resolveOverlayRow(
+          displayId: '4E',
+          identity: 'FFFFFFFF0011',
+          repeaters: [capitol, beacon, other],
+          hopBytes: 1,
+        ),
+        isNull,
+        reason: 'the fallback keeps the uniqueness rule',
       );
     });
   });
