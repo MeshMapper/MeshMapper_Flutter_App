@@ -66,12 +66,24 @@ class RepeaterNicknames {
   /// The cap counts user-perceived characters (grapheme clusters), so an emoji
   /// or an accented letter is never cut in half. A cap that lands on a space
   /// is trimmed again so the result is stable under a second pass.
+  ///
+  /// Zero-width spaces, word joiners and byte-order marks are dropped, and a
+  /// nickname of nothing but format characters (joiners, direction marks) is
+  /// blank: pasted, it would save a label nobody can see. Joiners inside an
+  /// emoji sequence are kept.
   static String? normalizeNickname(String? raw) {
     if (raw == null) return null;
-    final collapsed = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final collapsed = raw
+        .replaceAll(_zeroWidth, '')
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ');
     final capped = collapsed.characters.take(maxLength).toString().trim();
-    return capped.isEmpty ? null : capped;
+    if (capped.replaceAll(_format, '').trim().isEmpty) return null;
+    return capped;
   }
+
+  static final RegExp _zeroWidth = RegExp('[\u200B\u2060\uFEFF]');
+  static final RegExp _format = RegExp(r'\p{Cf}', unicode: true);
 
   /// The nicknames persisted in Hive: a map of key to a map holding
   /// `nickname`, `name` and `hex`.

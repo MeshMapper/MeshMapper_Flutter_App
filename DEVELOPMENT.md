@@ -220,11 +220,11 @@ other preference.
 Matching is by full key. A heard ID shows a nickname only when it resolves to
 exactly one catalogue repeater, trying the fullest identity the row arrived
 with first and the display hash second; an ambiguous ID keeps its hex, because
-a confidently wrong name is worse than none. Each surface runs that same
-identity-first, unique-only rule through its own resolver: Top Heard
-(`AppStateProvider.topHeardLabel`, via `RepeaterNicknames.labelFor`) and the
-Live Activity use `ExternalSurfaceGeoBuilder.resolveOverlayRow`, the watch's
-heard rows use `resolveOverlayRepeaters`, and Siri uses `resolveRepeater`.
+a confidently wrong name is worse than none. Top Heard
+(`AppStateProvider.topHeardLabel`, via `RepeaterNicknames.labelFor`), the Live
+Activity and Siri all resolve through `ExternalSurfaceGeoBuilder.resolveOverlayRow`;
+the watch's heard rows use `resolveOverlayRepeaters`, which applies the same
+identity-first, unique-only rule to the whole set of rows at once.
 
 The nickname replaces the hex on the Top Heard overlay. On the Live Activity and
 CarPlay heard rows (`_resolveRepeaterDisplayName`) it wins over the server name
@@ -251,8 +251,12 @@ keeps the full width). The tag, the button and the hex badge are the shared
 `lib/widgets/repeater_nickname_widgets.dart`. The
 other entry point is Settings > Map > Repeater Nicknames
 (`RepeaterNicknameList` in `lib/screens/settings/repeater_nicknames_page.dart`):
-list, add through the repeater picker, edit and remove, with Undo after a
-removal.
+list, add through the repeater picker (which offers only repeaters with a full
+key), edit and remove. A removal offers Undo, and removals made while that bar
+is up share it (`NicknameRemovalBatch`), so one Undo brings them all back. The
+sheet and the list's add share one ask-then-save flow, `editRepeaterNickname`
+in `lib/widgets/repeater_nickname_dialog.dart`, and nicknames made only of
+invisible characters are treated as blank.
 
 ### Service-Oriented Architecture
 

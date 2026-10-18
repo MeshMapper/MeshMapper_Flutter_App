@@ -54,6 +54,16 @@ void main() {
       expect(RepeaterNicknames.normalizeNickname(null), isNull);
     });
 
+    test('a nickname nobody could see is blank', () {
+      expect(RepeaterNicknames.normalizeNickname('\u200B\u200B'), isNull);
+      expect(RepeaterNicknames.normalizeNickname('\u200D'), isNull);
+      expect(RepeaterNicknames.normalizeNickname('\u200E \uFEFF'), isNull);
+    });
+
+    test('zero-width spaces are dropped from a visible nickname', () {
+      expect(RepeaterNicknames.normalizeNickname('\u200BMe\u200Bll'), 'Mell');
+    });
+
     test('counts user-perceived characters, not code units', () {
       // Each smiley is two UTF-16 code units; a code-unit cap would keep four.
       expect(RepeaterNicknames.normalizeNickname('😀' * 10), '😀' * 8);
@@ -180,8 +190,10 @@ void main() {
 
     test('returns null for an empty or short hexId', () {
       expect(
-        RepeaterNicknames.nicknameFor(_repeater('r1', ''), nicknames),
+        RepeaterNicknames.nicknameFor(
+            _repeater('r1', ''), {'': _nick('Ghost'), ...nicknames}),
         isNull,
+        reason: 'an empty key in the map must not name a repeater with no key',
       );
       expect(
         RepeaterNicknames.nicknameFor(_repeater('r1', '5007'), nicknames),
@@ -287,7 +299,7 @@ void main() {
           displayId: '50',
           repeaters: [noHex],
           hopBytes: 1,
-          nicknames: nicknames,
+          nicknames: {'': _nick('Ghost'), ...nicknames},
         ),
         isNull,
         reason: 'it resolves by its short id, but a nickname needs a full key',
@@ -304,7 +316,7 @@ void main() {
       );
     });
 
-    test('empty nicknames give null without scanning the catalogue', () {
+    test('empty nicknames give null', () {
       expect(
         RepeaterNicknames.labelFor(
           displayId: '5007',

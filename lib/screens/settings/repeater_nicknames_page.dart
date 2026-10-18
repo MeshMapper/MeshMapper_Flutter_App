@@ -12,8 +12,15 @@ import 'settings_section_card.dart';
 /// Settings > Map > Repeater Nicknames: every saved nickname, with add, edit
 /// and remove. Entries may belong to repeaters outside the current zone, so
 /// edits and removals go by key, not through the catalogue.
-class RepeaterNicknamesPage extends StatelessWidget {
+class RepeaterNicknamesPage extends StatefulWidget {
   const RepeaterNicknamesPage({super.key});
+
+  @override
+  State<RepeaterNicknamesPage> createState() => _RepeaterNicknamesPageState();
+}
+
+class _RepeaterNicknamesPageState extends State<RepeaterNicknamesPage> {
+  final _removed = NicknameRemovalBatch();
 
   @override
   Widget build(BuildContext context) {
@@ -26,44 +33,30 @@ class RepeaterNicknamesPage extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: 'Add nickname',
-            onPressed: () => _add(context),
+            onPressed: _add,
           ),
         ],
       ),
       body: RepeaterNicknameList(
         entries: entries,
-        onAdd: () => _add(context),
-        onEdit: (key, entry) => _edit(context, key, entry),
-        onRemove: (key, entry) => _remove(context, key, entry),
+        onAdd: _add,
+        onEdit: _edit,
+        onRemove: _remove,
       ),
     );
   }
 
-  Future<void> _add(BuildContext context) async {
+  Future<void> _add() async {
     final appState = context.read<AppStateProvider>();
     // Only repeaters with a full key can take a nickname, so the picker
     // offers no others.
     final picked = await showRepeaterPicker(context,
         include: (repeater) => isFullPublicKey(repeater.hexId));
-    if (!context.mounted || picked == null) return;
-    final current = appState.nicknameForRepeater(picked);
-    final result = await showRepeaterNicknameDialog(
-      context,
-      hex: picked.displayHexId(),
-      serverName: picked.name,
-      current: current,
-    );
-    // The save needs no context, so a page closed under the dialog still
-    // keeps what was typed.
-    if (!nicknameResultChanges(result, current)) return;
-    await appState.setRepeaterNickname(picked, result);
+    if (!mounted || picked == null) return;
+    await editRepeaterNickname(context, appState, picked);
   }
 
-  Future<void> _edit(
-    BuildContext context,
-    String key,
-    RepeaterNickname entry,
-  ) async {
+  Future<void> _edit(String key, RepeaterNickname entry) async {
     final appState = context.read<AppStateProvider>();
     final result = await showRepeaterNicknameDialog(
       context,
@@ -71,36 +64,71 @@ class RepeaterNicknamesPage extends StatelessWidget {
       serverName: entry.name,
       current: entry.nickname,
     );
+    // The save needs no context, so a page closed under the dialog still
+    // keeps what was typed.
     if (!nicknameResultChanges(result, entry.nickname)) return;
     await appState.setRepeaterNicknameByKey(key, result);
   }
 
-  Future<void> _remove(
-    BuildContext context,
-    String key,
-    RepeaterNickname entry,
-  ) async {
+  Future<void> _remove(String key, RepeaterNickname entry) async {
     final appState = context.read<AppStateProvider>();
     final messenger = ScaffoldMessenger.of(context);
     await appState.setRepeaterNicknameByKey(key, null);
+    // A removal while the last one's bar is still up joins it, so one Undo
+    // brings both back. Replacing the bar alone used to lose the first.
+    final batch = _removed..add(key, entry);
+    messenger.hideCurrentSnackBar();
     messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text('Removed ${entry.nickname}'),
-        // A snack bar with an action stays up until tapped unless told not
-        // to; this one is a short offer, not a question.
-        persist: false,
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => appState.setRepeaterNicknameByKey(
-            key,
-            entry.nickname,
-            name: entry.name,
-            hex: entry.hex,
+        .showSnackBar(SnackBar(
+          content: Text(batch.message),
+          // A snack bar with an action stays up until tapped unless told not
+          // to; this one is a short offer, not a question.
+          persist: false,
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () {
+              for (final removed in batch.take().entries) {
+                appState.setRepeaterNicknameByKey(
+                  removed.key,
+                  removed.value.nickname,
+                  name: removed.value.name,
+                  hex: removed.value.hex,
+                );
+              }
+            },
           ),
-        ),
-      ));
+        ))
+        .closed
+        .then((reason) {
+      // Hidden means a newer removal replaced this bar and carries the batch
+      // on. Anything else ends the offer.
+      if (reason != SnackBarClosedReason.hide) batch.clear();
+    });
   }
+}
+
+/// The removals the Settings list's current Undo bar covers, so one Undo
+/// restores every nickname removed while it was up.
+class NicknameRemovalBatch {
+  final Map<String, RepeaterNickname> _entries = {};
+
+  /// Adds [entry], removed from the repeater with full key [key].
+  void add(String key, RepeaterNickname entry) => _entries[key] = entry;
+
+  /// "Removed Mell" for one, "Removed 2 nicknames" for more.
+  String get message => _entries.length == 1
+      ? 'Removed ${_entries.values.single.nickname}'
+      : 'Removed ${_entries.length} nicknames';
+
+  /// Every removal in the batch, which is left empty.
+  Map<String, RepeaterNickname> take() {
+    final taken = Map.of(_entries);
+    _entries.clear();
+    return taken;
+  }
+
+  /// Ends the batch without restoring anything.
+  void clear() => _entries.clear();
 }
 
 /// The nickname list itself, fed by the page so it can be built without the

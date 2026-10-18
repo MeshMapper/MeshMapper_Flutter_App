@@ -8861,18 +8861,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       selector: (_, s) => s.nicknameForRepeater(repeater),
       builder: (context, nickname, _) => RepeaterNicknameButton(
         nickname: nickname,
-        onPressed: () async {
-          final result = await showRepeaterNicknameDialog(
-            context,
-            hex: repeater.displayHexId(),
-            serverName: repeater.name,
-            current: nickname,
-          );
-          // The save needs no context, so it does not wait on this one
-          // still being mounted.
-          if (!nicknameResultChanges(result, nickname)) return;
-          await appState.setRepeaterNickname(repeater, result);
-        },
+        onPressed: () => editRepeaterNickname(context, appState, repeater),
       ),
     );
   }

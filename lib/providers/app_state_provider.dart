@@ -864,12 +864,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Map<String, RepeaterNickname> _repeaterNicknames = const {};
 
   /// Every saved nickname as (full public key, entry), sorted by nickname
-  /// without regard to case. Unmodifiable.
+  /// without regard to case, then by key so two repeaters given the same
+  /// nickname keep their order. Unmodifiable.
   List<MapEntry<String, RepeaterNickname>> get repeaterNicknames =>
       List.unmodifiable(_repeaterNicknames.entries.toList()
-        ..sort((a, b) => a.value.nickname
-            .toLowerCase()
-            .compareTo(b.value.nickname.toLowerCase())));
+        ..sort((a, b) {
+          final byName = a.value.nickname
+              .toLowerCase()
+              .compareTo(b.value.nickname.toLowerCase());
+          return byName != 0 ? byName : a.key.compareTo(b.key);
+        }));
 
   /// How many nicknames are saved.
   int get repeaterNicknameCount => _repeaterNicknames.length;
@@ -926,7 +930,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     String? hex,
   }) async {
     final key = normalizePublicKey(publicKey);
-    if (key == null) return;
+    if (key == null) {
+      debugWarn('[SETTINGS] Repeater nickname ignored: not a full public key');
+      return;
+    }
     final n = RepeaterNicknames.normalizeNickname(nickname);
     final existing = _repeaterNicknames[key];
     await _onRepeaterNicknamesChanged(
@@ -12635,7 +12642,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _saveRepeaterNicknames() async {
     final box = await _openBoxSafely(_preferencesBoxName);
-    if (box == null) return;
+    if (box == null) {
+      debugError('[APP] Repeater nicknames not saved: preferences unavailable');
+      return;
+    }
     try {
       await box.put(
         _repeaterNicknamesKey,

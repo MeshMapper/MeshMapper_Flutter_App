@@ -1,7 +1,31 @@
 import 'package:flutter/material.dart';
 
+import '../models/repeater.dart';
+import '../providers/app_state_provider.dart';
 import '../utils/repeater_nicknames.dart';
 import 'repeater_nickname_widgets.dart';
+
+/// Asks for [repeater]'s nickname and saves the answer, skipping a result
+/// that changes nothing. The one flow behind the repeater sheet's Nickname
+/// button and the Settings list's add.
+///
+/// The save needs no context, so it does not wait on [context] still being
+/// mounted: a screen closed under the dialog keeps what was typed.
+Future<void> editRepeaterNickname(
+  BuildContext context,
+  AppStateProvider appState,
+  Repeater repeater,
+) async {
+  final current = appState.nicknameForRepeater(repeater);
+  final result = await showRepeaterNicknameDialog(
+    context,
+    hex: repeater.displayHexId(),
+    serverName: repeater.name == 'Unknown' ? '' : repeater.name,
+    current: current,
+  );
+  if (!nicknameResultChanges(result, current)) return;
+  await appState.setRepeaterNickname(repeater, result);
+}
 
 /// Asks for a nickname for the repeater shown as [hex] (named [serverName] by
 /// the server), starting from [current].

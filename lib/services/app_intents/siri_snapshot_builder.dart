@@ -46,18 +46,12 @@ class SiriSnapshotBuilder {
     Repeater? lookup(_SiriObservationCandidate candidate) {
       final cacheKey = _identityKey(candidate);
       if (repeaterCache.containsKey(cacheKey)) return repeaterCache[cacheKey];
-      final found = (candidate.identity == null
-              ? null
-              : ExternalSurfaceGeoBuilder.resolveRepeater(
-                  repeaters: repeaters,
-                  id: candidate.identity!,
-                  hopBytes: hopBytes,
-                )) ??
-          ExternalSurfaceGeoBuilder.resolveRepeater(
-            repeaters: repeaters,
-            id: candidate.displayId.toUpperCase(),
-            hopBytes: hopBytes,
-          );
+      final found = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+        displayId: candidate.displayId,
+        identity: candidate.identity,
+        repeaters: repeaters,
+        hopBytes: hopBytes,
+      );
       repeaterCache[cacheKey] = found;
       return found;
     }
@@ -271,18 +265,12 @@ class SiriSnapshotBuilder {
     required int? hopBytes,
   }) {
     if (heardRepeaters.isEmpty) return null;
-    final match = (candidate.identity == null
-            ? null
-            : ExternalSurfaceGeoBuilder.resolveRepeater(
-                repeaters: heardRepeaters,
-                id: candidate.identity!,
-                hopBytes: hopBytes,
-              )) ??
-        ExternalSurfaceGeoBuilder.resolveRepeater(
-          repeaters: heardRepeaters,
-          id: candidate.displayId.toUpperCase(),
-          hopBytes: hopBytes,
-        );
+    final match = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+      displayId: candidate.displayId,
+      identity: candidate.identity,
+      repeaters: heardRepeaters,
+      hopBytes: hopBytes,
+    );
     return match == null ? null : repeaterEntityId(match);
   }
 
