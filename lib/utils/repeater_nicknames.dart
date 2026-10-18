@@ -73,10 +73,8 @@ class RepeaterNicknames {
   /// emoji sequence are kept.
   static String? normalizeNickname(String? raw) {
     if (raw == null) return null;
-    final collapsed = raw
-        .replaceAll(_zeroWidth, '')
-        .trim()
-        .replaceAll(RegExp(r'\s+'), ' ');
+    final collapsed =
+        raw.replaceAll(_zeroWidth, '').trim().replaceAll(RegExp(r'\s+'), ' ');
     final capped = collapsed.characters.take(maxLength).toString().trim();
     if (capped.replaceAll(_format, '').trim().isEmpty) return null;
     return capped;

@@ -30,8 +30,8 @@ class RepeaterHexBadge extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius:
             BorderRadius.circular(RepeaterMarkerStyle.chipCornerRadius),
-        border: Border.all(
-            color: scheme.onSurfaceVariant.withValues(alpha: 0.5)),
+        border:
+            Border.all(color: scheme.onSurfaceVariant.withValues(alpha: 0.5)),
       ),
       child: Text(
         hex,
