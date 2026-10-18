@@ -74,8 +74,12 @@ class _RepeaterNicknameDialogState extends State<_RepeaterNicknameDialog> {
     final canRemove = widget.current != null;
 
     return AlertDialog(
-      title: const Text('Repeater nickname'),
+      title: const Text('Repeater Nickname'),
       scrollable: true,
+      // The default 40 pt side inset left 232 pt for Remove, Cancel and Save,
+      // which pushed Remove onto its own row on 320 and 360 pt phones. At 16
+      // (and Remove's padding trimmed below) all three fit from 320 up.
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -105,6 +109,7 @@ class _RepeaterNicknameDialogState extends State<_RepeaterNicknameDialog> {
             textCapitalization: TextCapitalization.words,
             textInputAction: TextInputAction.done,
             decoration: InputDecoration(
+              labelText: 'Nickname',
               hintText: 'Mell',
               // Faded: the hint is a real-looking nickname, and at the
               // theme's full hint colour it read as one already typed in the
@@ -130,7 +135,10 @@ class _RepeaterNicknameDialogState extends State<_RepeaterNicknameDialog> {
       actions: [
         if (canRemove)
           TextButton(
-            style: TextButton.styleFrom(foregroundColor: scheme.error),
+            style: TextButton.styleFrom(
+              foregroundColor: scheme.error,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
             onPressed: () => Navigator.of(context).pop(''),
             child: const Text('Remove'),
           ),

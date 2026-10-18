@@ -38,7 +38,7 @@ void main() {
   testWidgets('shows the hex, the server name and the helper', (tester) async {
     await openDialog(tester);
 
-    expect(find.text('Repeater nickname'), findsOneWidget);
+    expect(find.text('Repeater Nickname'), findsOneWidget);
     expect(find.text('5007'), findsOneWidget);
     expect(find.text('Mellionnec Repeater'), findsOneWidget);
     expect(

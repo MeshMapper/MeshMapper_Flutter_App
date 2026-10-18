@@ -8,13 +8,15 @@ import 'package:flutter/material.dart';
 import '../utils/repeater_marker_style.dart';
 
 /// Fill and border alphas of the app's tinted status pills (the zone and
-/// TX/RX counters under the title, `status_bar.dart`), so a nickname tag
-/// reads as one of them.
+/// TX/RX counters under the title, `status_bar.dart`), so a nickname tag and
+/// the Nickname button read as one of them.
 const double _tagFillAlpha = 0.15;
 const double _tagBorderAlpha = 0.4;
 
 /// A repeater's hex ID as Top Heard shows it, in a hairline box with the map
-/// chip's corner radius. No fill, so it sits on any surface.
+/// chip's corner radius. No fill, so it sits on any surface. The border is the
+/// muted text role at half strength: the app's scheme sets no
+/// `outlineVariant`, and its `outline` all but vanishes on the dark cards.
 class RepeaterHexBadge extends StatelessWidget {
   const RepeaterHexBadge(this.hex, {super.key});
 
@@ -28,7 +30,8 @@ class RepeaterHexBadge extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius:
             BorderRadius.circular(RepeaterMarkerStyle.chipCornerRadius),
-        border: Border.all(color: scheme.outlineVariant),
+        border: Border.all(
+            color: scheme.onSurfaceVariant.withValues(alpha: 0.5)),
       ),
       child: Text(
         hex,
@@ -57,12 +60,13 @@ class RepeaterNicknameTag extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = nickname;
     if (name == null) return const SizedBox.shrink();
-    final hue = Theme.of(context).colorScheme.secondary;
+    final scheme = Theme.of(context).colorScheme;
+    final hue = scheme.secondary;
     // Sky-600 on its own tint is too dim on the dark slate surfaces, so the
-    // text is lifted toward white there; the fill and the border stay on the
-    // true hue.
+    // text is lifted toward the theme's text colour there; the fill and the
+    // border stay on the true hue.
     final fg = Theme.of(context).brightness == Brightness.dark
-        ? Color.lerp(hue, Colors.white, 0.45)!
+        ? Color.lerp(hue, scheme.onSurface, 0.45)!
         : hue;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -105,6 +109,17 @@ class RepeaterNicknameButton extends StatelessWidget {
       onTap: onPressed,
       excludeSemantics: true,
       child: OutlinedButton.icon(
+        // The outline takes the status pills' border recipe in the button's
+        // own colour. The theme default (`outline`) is slate-700 on the dark
+        // sheet and all but disappears.
+        style: OutlinedButton.styleFrom(
+          side: BorderSide(
+            color: Theme.of(context)
+                .colorScheme
+                .primary
+                .withValues(alpha: _tagBorderAlpha),
+          ),
+        ),
         icon: Icon(name == null ? Icons.add : Icons.label_outline, size: 18),
         label: Text(
           name ?? 'Nickname',

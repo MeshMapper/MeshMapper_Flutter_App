@@ -41,15 +41,11 @@ class RepeaterNicknamesPage extends StatelessWidget {
 
   Future<void> _add(BuildContext context) async {
     final appState = context.read<AppStateProvider>();
-    final picked = await showRepeaterPicker(context);
+    // Only repeaters with a full key can take a nickname, so the picker
+    // offers no others.
+    final picked = await showRepeaterPicker(context,
+        include: (repeater) => isFullPublicKey(repeater.hexId));
     if (!context.mounted || picked == null) return;
-    if (!isFullPublicKey(picked.hexId)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text("This repeater's full key is unknown, "
-            "so it can't have a nickname."),
-      ));
-      return;
-    }
     final current = appState.nicknameForRepeater(picked);
     final result = await showRepeaterNicknameDialog(
       context,
@@ -57,7 +53,9 @@ class RepeaterNicknamesPage extends StatelessWidget {
       serverName: picked.name,
       current: current,
     );
-    if (!context.mounted || !nicknameResultChanges(result, current)) return;
+    // The save needs no context, so a page closed under the dialog still
+    // keeps what was typed.
+    if (!nicknameResultChanges(result, current)) return;
     await appState.setRepeaterNickname(picked, result);
   }
 
@@ -73,9 +71,7 @@ class RepeaterNicknamesPage extends StatelessWidget {
       serverName: entry.name,
       current: entry.nickname,
     );
-    if (!context.mounted || !nicknameResultChanges(result, entry.nickname)) {
-      return;
-    }
+    if (!nicknameResultChanges(result, entry.nickname)) return;
     await appState.setRepeaterNicknameByKey(key, result);
   }
 

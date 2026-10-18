@@ -8868,9 +8868,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             serverName: repeater.name,
             current: nickname,
           );
-          if (!context.mounted || !nicknameResultChanges(result, nickname)) {
-            return;
-          }
+          // The save needs no context, so it does not wait on this one
+          // still being mounted.
+          if (!nicknameResultChanges(result, nickname)) return;
           await appState.setRepeaterNickname(repeater, result);
         },
       ),
@@ -10842,26 +10842,39 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               // Beside it, for a repeater with a full key, the Nickname button
               // (the nickname itself once one is set). A repeater without one
               // can take no nickname, so Manage keeps the full width and its
-              // "Full key unknown" covers both.
+              // "Full key unknown" covers both. The reason spans the whole
+              // row: under a half-width Manage it wrapped to two lines beside
+              // empty space.
               Builder(builder: (context) {
                 final block = appState.repeaterAdminBlockReason;
                 final hasKey = isFullPublicKey(repeater.hexId);
                 final hint = !hasKey ? 'Full key unknown' : block;
-                final manage = Column(
+                final manage = FilledButton.tonalIcon(
+                  icon:
+                      const Icon(Icons.admin_panel_settings_outlined, size: 18),
+                  label: const Text('Manage'),
+                  onPressed: hint == null
+                      ? () {
+                          Navigator.pop(context);
+                          showRepeaterAdminSheet(this.context,
+                              RepeaterTarget.fromRepeater(repeater));
+                        }
+                      : null,
+                );
+                return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      FilledButton.tonalIcon(
-                        icon: const Icon(Icons.admin_panel_settings_outlined,
-                            size: 18),
-                        label: const Text('Manage'),
-                        onPressed: hint == null
-                            ? () {
-                                Navigator.pop(context);
-                                showRepeaterAdminSheet(this.context,
-                                    RepeaterTarget.fromRepeater(repeater));
-                              }
-                            : null,
-                      ),
+                      if (hasKey)
+                        Row(
+                          children: [
+                            Expanded(child: manage),
+                            const SizedBox(width: 8),
+                            Expanded(
+                                child: _nicknameButton(appState, repeater)),
+                          ],
+                        )
+                      else
+                        manage,
                       if (hint != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
@@ -10874,15 +10887,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                       .onSurfaceVariant)),
                         ),
                     ]);
-                if (!hasKey) return manage;
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: manage),
-                    const SizedBox(width: 8),
-                    Expanded(child: _nicknameButton(appState, repeater)),
-                  ],
-                );
               }),
               const SizedBox(height: 14),
 
