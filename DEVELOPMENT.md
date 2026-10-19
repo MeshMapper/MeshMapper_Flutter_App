@@ -1078,6 +1078,7 @@ The app never checks its own version: it sends `APP-<x.y.z>` (store) or `APP-<ep
 - **Session Format**: Each session has a filename (`YYYY-MM-DD.json`), creation timestamp, ping count, device info, and the wardrive data payload
 - **Upload**: Sessions can be uploaded from Settings → Data when connectivity is restored
 - **Non-persistent**: Offline mode is never persisted — always off on app restart. Users must re-enable if needed.
+- **When pings are written**: pings collect in memory (`ApiQueueService` offline buffer, cleared on every app launch) and reach the session file at these points: a 60 s auto-save that runs for as long as Offline Mode is on (it stops only when Offline Mode is turned off or the switch back to online succeeds, never on a save), a snapshot whenever the app is backgrounded, and a final save on mode stop, mode switch, user disconnect and the BLE-drop cleanup after a reconnect gives up. The noise floor session is stored on those same teardowns, so a teardown that skipped the final save left a drive in Session History with no offline file. The final save finalizes the file, so the next connect starts a new one.
 - **Maintenance integration**: When maintenance mode is detected while disconnected, the UI suggests using Offline Mode
 - **Airborne pause**: while the airborne latch is set, no fix is appended to the offline recording (`ApiQueueService.setOfflineRecordingPaused`); the session itself ends through the normal airborne block. See GPS & Zone Validation.
 - **File**: `lib/services/offline_session_service.dart`
