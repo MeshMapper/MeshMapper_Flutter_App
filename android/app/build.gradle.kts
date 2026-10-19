@@ -83,4 +83,8 @@ dependencies {
     // 4.6.2, but declared so MeshMapperAltitudeService.kt compiles against it.
     // Version must match geolocator_android's transitive dependency.
     implementation("com.google.android.gms:play-services-location:21.2.0")
+
+    // Android for Cars App Library, for the Android Auto screens in
+    // net.meshmapper.app.auto (CarMapScreen draws the map on the car surface).
+    implementation("androidx.car.app:app:1.4.0")
 }

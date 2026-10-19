@@ -2,7 +2,8 @@ import 'package:flutter/foundation.dart';
 
 enum ExternalCommandSource {
   watch,
-  siri;
+  siri,
+  androidAuto;
 
   static ExternalCommandSource? fromWire(String value) {
     for (final source in values) {

@@ -15,6 +15,7 @@ import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
 import 'services/background_service.dart';
 import 'services/app_intents/app_intent_bridge_service.dart';
+import 'services/android_auto/android_auto_bridge_service.dart';
 import 'services/debug_file_logger.dart';
 import 'services/offline_map_service.dart';
 import 'services/watch/watch_bridge_service.dart';
@@ -35,6 +36,7 @@ void main() async {
   // provider finishes initializing and starts listening.
   WatchBridgeService.reserveCommandQueue();
   AppIntentBridgeService.reserveCommandQueue();
+  AndroidAutoBridgeService.reserveCommandQueue();
 
   // Initialize debug logger (checks for ?debug=1 URL param on web)
   DebugLogger.initialize();
