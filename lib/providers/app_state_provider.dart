@@ -471,12 +471,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Top repeaters overlay, updated live on each ping event. The map's Top
   // Heard box, the watch's heard rows and the Live Activity's rows all read
-  // this one list, so the three surfaces cannot disagree.
+  // this one list, so the three surfaces cannot disagree. It holds up to
+  // UserPreferences.topHeardRowsMax rows; the map shows the user's row
+  // setting of them and the other surfaces the first [_surfaceTopHeardRows].
   List<({String repeaterId, double snr, OverlayPingType type})>
       _topRepeatersOverlay = [];
   DateTime? _topRepeatersOverlayUpdatedAt;
 
-  /// How many repeaters the latest ping heard in all, beyond the three the
+  /// Ping rows the Live Activity, CarPlay and the watch show, whatever the
+  /// in-app Top Heard Rows setting is.
+  static const int _surfaceTopHeardRows = 3;
+
+  /// How many repeaters the latest ping heard in all, beyond the rows the
   /// overlay keeps. The Live Activity's "HEARD NOW n" header counts them.
   int _topRepeatersOverlayTotalCount = 0;
 
@@ -883,7 +889,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       RepeaterNicknames.nicknameFor(repeater, _repeaterNicknames);
 
   /// The text for a Top Heard row: its nickname when the row resolves to one
-  /// repeater that has one, else [repeaterId] unchanged.
+  /// repeater that has one, else that repeater's server name when the Top
+  /// Heard names setting is on, else [repeaterId] unchanged.
   String topHeardLabel(String repeaterId) {
     final id = repeaterId.toUpperCase();
     return RepeaterNicknames.labelFor(
@@ -892,6 +899,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           repeaters: _repeaters,
           hopBytes: _hopBytes,
           nicknames: _repeaterNicknames,
+          useServerName: _preferences.topHeardShowNames,
         ) ??
         repeaterId;
   }
@@ -1377,16 +1385,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<TxPing> get txPings => List.unmodifiable(_txPings);
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
 
-  /// Top 3 repeaters by best SNR from TX/DISC/Trace pings
+  /// The in-app Top Heard rows: the latest ping's repeaters by best SNR from
+  /// TX/DISC/Trace pings, up to the user's Top Heard Rows setting.
   List<({String repeaterId, double snr, OverlayPingType type})>
-      get topRepeatersBySnr => _topRepeatersOverlay;
+      get topRepeatersBySnr =>
+          _topRepeatersOverlay.take(_preferences.topHeardRows).toList();
 
   /// Best RX observation in the current 5-second window
   ({String repeaterId, double snr})? get rxOverlaySlot => _rxOverlaySlot;
 
   /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
-  /// Replaces all 3 slots entirely (no carryover from previous pings). Only a
-  /// ping that heard something calls this, so a silent ping leaves the last
+  /// Replaces every stored row entirely (no carryover from previous pings),
+  /// keeping up to [UserPreferences.topHeardRowsMax] so a higher Top Heard Rows
+  /// setting takes effect on the next rebuild without waiting for a ping. Only
+  /// a ping that heard something calls this, so a silent ping leaves the last
   /// heard set in place on the map, the watch and the Live Activity alike.
   /// - Parameter identities: display hash to the fullest identity this ping
   ///   carried for it, for the ping types that carry more than a path byte.
@@ -1405,7 +1417,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .map((e) => (repeaterId: e.key, snr: e.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
-    _topRepeatersOverlay = fresh.take(3).toList();
+    _topRepeatersOverlay =
+        fresh.take(UserPreferences.topHeardRowsMax).toList();
     _topRepeatersOverlayTotalCount = fresh.length;
     _topRepeatersOverlayUpdatedAt = DateTime.now();
   }
@@ -1466,7 +1479,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Clear all overlay state (top 3 + RX slot).
+  /// Clear all overlay state (top heard rows + RX slot).
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
     _topRepeatersOverlayTotalCount = 0;
@@ -2374,10 +2387,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final position = _resolveWatchPosition();
     final ranking = _resolveRankingPosition();
 
-    // The wrist mirrors the map's "Top Heard" overlay: the latest ping's top
-    // three by SNR plus the current RX slot. Same source, so the two surfaces
-    // can never disagree.
-    final top = _topRepeatersOverlay;
+    // The wrist mirrors the map's "Top Heard" overlay: the top three of the
+    // same stored list, plus the current RX slot. Same source, so the two
+    // surfaces can never disagree. The list is cut here because
+    // ExternalSurfaceGeoBuilder.buildHeard caps its rows at
+    // ExternalSurfaceGeoWire.maxHeard, so more ping rows would drop the RX row.
+    final top = _topRepeatersOverlay.take(_surfaceTopHeardRows).toList();
     final rxSlot = _rxOverlaySlot;
 
     // Overlay IDs are hex path hashes. Resolved from the fullest identity each
@@ -3532,15 +3547,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? (endsAt: t.endTime!, durationMs: null, remainingSec: t.remainingSec)
           : null;
 
-  /// The Live Activity's rows are the map's Top Heard box, the same list the
-  /// watch mirrors, so the three surfaces cannot disagree. The ordering, the
-  /// RX slot and the current-or-last rule live in [buildLiveActivityHeard].
+  /// The Live Activity's rows are the first three of the map's Top Heard list,
+  /// the same three the watch mirrors, so the surfaces cannot disagree. The
+  /// ordering, the RX slot and the current-or-last rule live in
+  /// [buildLiveActivityHeard].
   ({
     List<LiveActivityRepeater> repeaters,
     int totalCount,
     bool isCurrent,
   }) _buildLiveActivityRepeaters() => buildLiveActivityHeard(
-        top: _topRepeatersOverlay,
+        top: _topRepeatersOverlay.take(_surfaceTopHeardRows).toList(),
         topTotalCount: _topRepeatersOverlayTotalCount,
         rxSlot: _rxOverlaySlot,
         topAt: _topRepeatersOverlayUpdatedAt,

@@ -4,11 +4,12 @@ import 'live_activity_models.dart';
 
 /// The Live Activity's heard rows, read from the map's Top Heard box.
 ///
-/// One source for the map, the watch and the Live Activity: [top] is the
-/// latest ping's top three by SNR exactly as the map overlay stores them, and
-/// [rxSlot] the best passive observation of the current interval. The order is
-/// the map's too, ping rows first and the RX row trailing, never a global SNR
-/// sort, so the card's first rows are always the box's first rows.
+/// One source for the map, the watch and the Live Activity: [top] is the first
+/// three of the latest ping's rows by SNR, in the order the map overlay stores
+/// them (the in-app box may show more of that list), and [rxSlot] the best
+/// passive observation of the current interval. The order is the map's too,
+/// ping rows first and the RX row trailing, never a global SNR sort, so the
+/// card's first rows are always the box's first rows.
 ///
 /// The one place this departs from the map is a repeater that is both a ping
 /// row and the RX slot: the map draws it twice, this returns it once, because

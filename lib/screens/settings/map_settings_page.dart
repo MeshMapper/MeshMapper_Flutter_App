@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import '../../models/user_preferences.dart';
 import '../../providers/app_state_provider.dart';
 import '../offline_maps_screen.dart';
 import 'repeater_nicknames_page.dart';
@@ -115,19 +116,35 @@ class MapSettingsPage extends StatelessWidget {
             ),
             SwitchListTile(
               secondary: const Icon(Icons.cell_tower),
-              title: const Text('Top Repeaters on Map'),
-              subtitle:
-                  const Text('Show top 3 repeaters by SNR from last ping'),
+              title: const Text('Top Heard on Map'),
+              subtitle: const Text('Strongest repeaters from the last ping'),
               value: prefs.showTopRepeaters,
               onChanged: (value) {
                 appState
                     .updatePreferences(prefs.copyWith(showTopRepeaters: value));
               },
             ),
-            if (prefs.showTopRepeaters)
+            if (prefs.showTopRepeaters) ...[
+              ListTile(
+                leading: const Icon(Icons.format_list_numbered),
+                title: const Text('Top Heard Rows'),
+                subtitle: Text('${prefs.topHeardRows} rows'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _showTopHeardRowsSelector(context, appState),
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.badge_outlined),
+                title: const Text('Repeater Names in Top Heard'),
+                subtitle: const Text('Names instead of hex IDs'),
+                value: prefs.topHeardShowNames,
+                onChanged: (value) {
+                  appState.updatePreferences(
+                      prefs.copyWith(topHeardShowNames: value));
+                },
+              ),
               SwitchListTile(
                 secondary: const Icon(Icons.text_increase),
-                title: const Text('Larger Top 3 Overlay'),
+                title: const Text('Larger Top Heard Overlay'),
                 subtitle: const Text(
                     'Increase the size of the overlay for easier reading'),
                 value: prefs.largerTopRepeaters,
@@ -136,6 +153,7 @@ class MapSettingsPage extends StatelessWidget {
                       prefs.copyWith(largerTopRepeaters: value));
                 },
               ),
+            ],
             ListTile(
               leading: const Icon(Icons.label_outline),
               title: const Text('Repeater Nicknames'),
@@ -312,6 +330,56 @@ class MapSettingsPage extends StatelessWidget {
       'achromatopsia' => 'Achromatopsia (monochrome)',
       _ => 'Default',
     };
+  }
+
+  /// How many ping rows the in-app Top Heard box shows. The RX row is extra,
+  /// and the Live Activity, CarPlay and watch keep 3 ping rows.
+  void _showTopHeardRowsSelector(
+      BuildContext context, AppStateProvider appState) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('Top Heard Rows',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              RadioGroup<int>(
+                groupValue: appState.preferences.topHeardRows,
+                onChanged: (v) {
+                  if (v != null) {
+                    appState.updatePreferences(
+                        appState.preferences.copyWith(topHeardRows: v));
+                  }
+                  Navigator.pop(context);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (var n = UserPreferences.topHeardRowsMin;
+                        n <= UserPreferences.topHeardRowsMax;
+                        n++)
+                      RadioListTile<int>(
+                        title: Text('$n rows'),
+                        value: n,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// Grid Mode preset selector — mirrors the web UI's Grid Mode
