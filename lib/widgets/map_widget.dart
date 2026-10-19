@@ -6769,7 +6769,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Build a single overlay table row with colored dot, label, and SNR.
   /// [label] is the user's nickname when the row resolves to one repeater
-  /// that has one, else the repeater's hex ID.
+  /// that has one, else its server name (with Repeater Names in Top Heard on),
+  /// else the repeater's hex ID.
   TableRow _overlayRow(String label, double snr, Color dotColor,
       {bool isLarge = false}) {
     final dotSize = isLarge ? 9.0 : 6.0;
@@ -6821,7 +6822,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// Top heard repeaters overlay (bottom-right of map)
+  /// Top heard repeaters overlay (top-left of map, under the GPS chip)
   Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
     final topRepeaters = appState.topRepeatersBySnr;
     final rxSlot = appState.rxOverlaySlot;

@@ -147,12 +147,15 @@ class RepeaterNicknames {
   /// characters for a label with `…` appended when it was cut, or null when
   /// [name] is blank.
   ///
-  /// A name of [maxLength] characters or fewer is returned trimmed with no
-  /// ellipsis. The cut counts grapheme clusters, like [normalizeNickname], so an
-  /// emoji or an accented letter is never split.
+  /// Cleaned like [normalizeNickname] first: zero-width characters dropped,
+  /// whitespace runs collapsed to one space, and a name of nothing but format
+  /// characters is blank. A name of [maxLength] characters or fewer is
+  /// returned with no ellipsis. The cut counts grapheme clusters, so an emoji
+  /// or an accented letter is never split.
   static String? shortenServerName(String name) {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return null;
+    final trimmed =
+        name.replaceAll(_zeroWidth, '').replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (trimmed.replaceAll(_format, '').trim().isEmpty) return null;
     final chars = trimmed.characters;
     if (chars.length <= maxLength) return trimmed;
     return '${chars.take(maxLength).toString().trimRight()}…';

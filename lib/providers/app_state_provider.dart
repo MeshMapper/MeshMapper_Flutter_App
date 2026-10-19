@@ -482,8 +482,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// in-app Top Heard Rows setting is.
   static const int _surfaceTopHeardRows = 3;
 
-  /// How many repeaters the latest ping heard in all, beyond the rows the
-  /// overlay keeps. The Live Activity's "HEARD NOW n" header counts them.
+  /// How many repeaters the latest ping heard in all, regardless of how many
+  /// rows are stored or shown. The Live Activity's "HEARD NOW n" header counts
+  /// them.
   int _topRepeatersOverlayTotalCount = 0;
 
   /// The fullest identity known for each overlay row, keyed by the display hash
@@ -1417,8 +1418,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .map((e) => (repeaterId: e.key, snr: e.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
-    _topRepeatersOverlay =
-        fresh.take(UserPreferences.topHeardRowsMax).toList();
+    _topRepeatersOverlay = fresh.take(UserPreferences.topHeardRowsMax).toList();
     _topRepeatersOverlayTotalCount = fresh.length;
     _topRepeatersOverlayUpdatedAt = DateTime.now();
   }

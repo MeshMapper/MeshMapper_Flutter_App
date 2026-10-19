@@ -557,6 +557,25 @@ void main() {
       );
 
       expect(built.length, WatchWire.maxHeard);
+      expect(built.map((n) => n.id).toList(), ['A', 'B', 'C', 'E'],
+          reason: 'the RX row stays and the fourth ping row is the one cut');
+    });
+
+    test('five ping rows and no RX slot keep the first four', () {
+      final built = WatchGeoBuilder.buildHeard(
+        top: const [
+          (repeaterId: 'A', snr: 5, type: OverlayPingType.tx),
+          (repeaterId: 'B', snr: 4, type: OverlayPingType.tx),
+          (repeaterId: 'C', snr: 3, type: OverlayPingType.tx),
+          (repeaterId: 'D', snr: 2, type: OverlayPingType.tx),
+          (repeaterId: 'E', snr: 1, type: OverlayPingType.tx),
+        ],
+        repeaterByHex: const {},
+        topAt: DateTime(2026, 8, 12),
+        rxAt: null,
+      );
+
+      expect(built.map((n) => n.id).toList(), ['A', 'B', 'C', 'D']);
     });
 
     test('uppercases the hex id and resolves name plus distance', () {

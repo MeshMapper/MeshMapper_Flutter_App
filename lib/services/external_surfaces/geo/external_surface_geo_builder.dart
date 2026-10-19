@@ -403,7 +403,7 @@ class ExternalSurfaceGeoBuilder {
       ExternalSurfaceColor.fromColor(PingColors.snrColor(snr));
 
   /// The "Top Heard" overlay rows: up to three top-SNR repeaters from the
-  /// latest ping, then the current RX slot.
+  /// latest ping, then the current RX slot, which the wire cap never drops.
   ///
   /// Order is deliberate rather than a global SNR sort: it matches the map
   /// overlay, where the RX slot is a distinct trailing row rather than a
@@ -419,11 +419,14 @@ class ExternalSurfaceGeoBuilder {
     Map<String, RepeaterNickname> nicknames = const {},
   }) {
     final rows = <ExternalSurfaceHeardNode>[];
+    // Leave the RX row its place under the wire cap.
+    const cap = ExternalSurfaceGeoWire.maxHeard;
+    final maxPingRows = rxSlot != null && rxAt != null ? cap - 1 : cap;
 
     // Missing time means the provider cannot truthfully say when this set was
     // heard. Omitting such a row is safer than presenting a plausible lie in
     // Node Detail; every production mutation records its timestamp atomically.
-    for (final entry in top.where((_) => topAt != null)) {
+    for (final entry in top.where((_) => topAt != null).take(maxPingRows)) {
       rows.add(_row(
         id: entry.repeaterId,
         snr: entry.snr,

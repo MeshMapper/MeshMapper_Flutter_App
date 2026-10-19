@@ -394,7 +394,8 @@ void main() {
       });
 
       test('a short server name is shown whole', () {
-        final short = _repeater('r3', _key('7A11'), hopBytes: 2, name: 'Hilltop');
+        final short =
+            _repeater('r3', _key('7A11'), hopBytes: 2, name: 'Hilltop');
 
         expect(
           RepeaterNicknames.labelFor(
@@ -425,10 +426,10 @@ void main() {
       });
 
       test('an anonymised name gives null, prefix or suffix', () {
-        final prefixed =
-            _repeater('r3', _key('7A11'), hopBytes: 2, name: '\u{1F6AB} Secret');
-        final suffixed =
-            _repeater('r4', _key('7B22'), hopBytes: 2, name: 'Secret \u{1F6AB}');
+        final prefixed = _repeater('r3', _key('7A11'),
+            hopBytes: 2, name: '\u{1F6AB} Secret');
+        final suffixed = _repeater('r4', _key('7B22'),
+            hopBytes: 2, name: 'Secret \u{1F6AB}');
 
         for (final (id, hidden) in [('7A11', prefixed), ('7B22', suffixed)]) {
           expect(hidden.isHidden, isTrue);
@@ -552,14 +553,17 @@ void main() {
   });
 
   group('shortenServerName', () {
-    test('a name of exactly ${RepeaterNicknames.maxLength} characters has no '
+    test(
+        'a name of exactly ${RepeaterNicknames.maxLength} characters has no '
         'ellipsis', () {
       expect(RepeaterNicknames.shortenServerName('Lakeview'), 'Lakeview');
     });
 
-    test('a name of ${RepeaterNicknames.maxLength + 1} characters is cut and '
+    test(
+        'a name of ${RepeaterNicknames.maxLength + 1} characters is cut and '
         'gets an ellipsis', () {
-      expect(RepeaterNicknames.shortenServerName('Lakeviews'), 'Lakeview\u2026');
+      expect(
+          RepeaterNicknames.shortenServerName('Lakeviews'), 'Lakeview\u2026');
     });
 
     test('a longer name is cut to the first characters', () {
@@ -570,7 +574,8 @@ void main() {
     });
 
     test('a cut that lands on a space leaves no gap before the ellipsis', () {
-      expect(RepeaterNicknames.shortenServerName('Capitol Hill'), 'Capitol\u2026');
+      expect(
+          RepeaterNicknames.shortenServerName('Capitol Hill'), 'Capitol\u2026');
     });
 
     test('surrounding whitespace is trimmed and not counted', () {
@@ -601,7 +606,8 @@ void main() {
 
     test('the ellipsis is a single character', () {
       expect('\u2026'.length, 1);
-      expect(RepeaterNicknames.shortenServerName('Lakeviews')!.endsWith('\u2026'),
+      expect(
+          RepeaterNicknames.shortenServerName('Lakeviews')!.endsWith('\u2026'),
           isTrue);
     });
 
@@ -609,6 +615,31 @@ void main() {
       expect(RepeaterNicknames.shortenServerName(''), isNull);
       expect(RepeaterNicknames.shortenServerName('   '), isNull);
       expect(RepeaterNicknames.shortenServerName('\t\n'), isNull);
+    });
+
+    test('a newline inside the name collapses to one space', () {
+      expect(RepeaterNicknames.shortenServerName('Cap\nHill'), 'Cap Hill');
+    });
+
+    test('a run of whitespace collapses before the cut is counted', () {
+      expect(
+        RepeaterNicknames.shortenServerName('Capitol \t  Hill Road'),
+        'Capitol\u2026',
+      );
+    });
+
+    test('a zero-width character is dropped before the cut is counted', () {
+      // Nine characters once the zero-width space is gone, so it is cut.
+      expect(
+        RepeaterNicknames.shortenServerName('Lake\u200BUnion'),
+        'LakeUnio\u2026',
+      );
+    });
+
+    test('a name of only zero-width or format characters gives null', () {
+      expect(RepeaterNicknames.shortenServerName('\u200B\u2060'), isNull);
+      expect(RepeaterNicknames.shortenServerName('\u200E\u200F'), isNull,
+          reason: 'direction marks alone show as nothing');
     });
   });
 }
