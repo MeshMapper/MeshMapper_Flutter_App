@@ -766,6 +766,48 @@ List<RepeaterCoverageCell> repeaterCoverageCells(
   return cells.values.toList();
 }
 
+/// One dashed coverage line, from a shared start point out to ([lat],[lon]),
+/// in [color] (a hex string).
+typedef CoverageLineSegment = ({double lat, double lon, String color});
+
+/// The coverage lines drawn for a selected repeater (Feature B): one per
+/// coverage cell, from the repeater at ([lat],[lon]) to the cell centre. The
+/// map keeps them while the repeater stays selected so the Repeater Coverage
+/// Lines switch can redraw or clear them without a reselect (web
+/// `mmRedrawSelectedCoverage` parity).
+class RepeaterCoverageLines {
+  final String repeaterId; // full identity of the selected repeater
+  final double lat;
+  final double lon;
+  final List<CoverageLineSegment> segments;
+
+  const RepeaterCoverageLines({
+    required this.repeaterId,
+    required this.lat,
+    required this.lon,
+    required this.segments,
+  });
+
+  /// The segments to draw with the switch at [show]. Empty clears the layer.
+  List<CoverageLineSegment> visible(bool show) => show ? segments : const [];
+}
+
+/// What flipping the Repeater Coverage Lines switch to [show] does to the
+/// lines layer: the segments to push (empty clears it), or null to leave the
+/// layer alone. Null when no repeater coverage is on the map ([drawn] null),
+/// when it belongs to a repeater other than [selectedRepeaterId], or when a
+/// tapped tile is open ([tileSelected]): the layer is shared with the tile
+/// fan-out, which the switch does not cover.
+List<CoverageLineSegment>? repeaterCoverageLinesAfterSwitch(
+    RepeaterCoverageLines? drawn,
+    {required bool show,
+    required String? selectedRepeaterId,
+    required bool tileSelected}) {
+  if (drawn == null || tileSelected) return null;
+  if (drawn.repeaterId != selectedRepeaterId) return null;
+  return drawn.visible(show);
+}
+
 // --- cell fan-out endpoints (Feature A) --------------------------------------
 
 /// One repeater endpoint that heard a ping in a tapped cell, ready to render as

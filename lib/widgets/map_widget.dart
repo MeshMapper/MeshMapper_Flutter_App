@@ -901,6 +901,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // _syncAllAnnotations) so the two features never wipe each other.
   bool _coverageLinesInstalled = false;
   bool _coverageCellsInstalled = false;
+  // The selected repeater's coverage lines, kept while its cells are on the
+  // map (cleared with them in _clearCoverageCells) so the Repeater Coverage
+  // Lines switch can redraw or clear them without a reselect.
+  RepeaterCoverageLines? _repeaterCoverageLines;
+  // The switch value _onRepeaterCoverageLinesNotify last saw, so it acts only
+  // on a flip and not on every provider notify.
+  bool? _lastSeenShowRepeaterCoverageLines;
   // Set while a tapped cell's fan-out is shown: the repeater ids that heard the
   // cell's pings. Non-null -> _buildRepeaterFeatureCollection hides every
   // repeater NOT in the set (web fades-but-keeps; the app hides for consistency
@@ -1060,9 +1067,35 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // a direct listener too. See _onCoverageOpacityNotify.
     _patchProviderRef!.addListener(_onCoverageOpacityNotify);
     _patchProviderRef!.addListener(_onCoverageFilterNotify);
+    // The Repeater Coverage Lines switch does not bump mapRevision either.
+    _lastSeenShowRepeaterCoverageLines =
+        _patchProviderRef!.preferences.showRepeaterCoverageLines;
+    _patchProviderRef!.addListener(_onRepeaterCoverageLinesNotify);
   }
 
   AppStateProvider? _patchProviderRef;
+
+  /// Fires on every provider notify; applies a flipped Repeater Coverage Lines
+  /// switch to the selected repeater straight away (web
+  /// `mmRedrawSelectedCoverage` parity), no rebuild. Leaves the lines layer
+  /// alone unless the selected repeater's own lines are drawn: a tapped tile's
+  /// fan-out shares the layer and the switch does not cover it.
+  void _onRepeaterCoverageLinesNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    final show = appState.preferences.showRepeaterCoverageLines;
+    if (show == _lastSeenShowRepeaterCoverageLines) return;
+    _lastSeenShowRepeaterCoverageLines = show;
+    final drawn = _repeaterCoverageLines;
+    final segments = repeaterCoverageLinesAfterSwitch(drawn,
+        show: show,
+        selectedRepeaterId: _isolatedRepeaterId,
+        tileSelected: _cellPopupActive);
+    if (drawn == null || segments == null) return;
+    debugLog('[COVERAGE] repeater coverage lines ${show ? 'on' : 'off'}: '
+        '${segments.length} drawn');
+    _updateCoverageLines(segments, drawn.lat, drawn.lon, width: 1.5);
+  }
 
   /// Auth/release can change the effective window on a UI-only notify.
   /// Observe it directly so the memoized map never keeps a regional override.
@@ -1194,6 +1227,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _patchProviderRef?.removeListener(_onPositionNotify);
     _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
     _patchProviderRef?.removeListener(_onCoverageFilterNotify);
+    _patchProviderRef?.removeListener(_onRepeaterCoverageLinesNotify);
     _tileLoadTimeoutTimer?.cancel();
     if (controller != null) {
       controller.removeListener(_onCameraChanged);
@@ -3374,6 +3408,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // also gone with the style; reset so the next draw treats it as fresh.
       _coverageLinesInstalled = false;
       _coverageCellsInstalled = false;
+      _repeaterCoverageLines = null;
       _coverageHeardRepeaterIds = null;
       _coverageDistanceLabelSymbols.clear();
       _registeredCoverageLabelImages.clear();
@@ -6103,7 +6138,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Empty the coverage-cells source so it renders nothing (layer stays).
+  /// Also forgets the selected repeater's kept lines: with no cells under them
+  /// the Repeater Coverage Lines switch must not draw them back.
   Future<void> _clearCoverageCells() async {
+    _repeaterCoverageLines = null;
     if (_mapController == null || !_coverageCellsInstalled) return;
     try {
       await _mapController!
@@ -6238,9 +6276,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Feature B draw: render [matched] (the points that heard [repeater]) as
   /// deduped status-coloured coverage cells plus a status-coloured dashed line
-  /// from the repeater to each cell centre. The lines layer is ensured BEFORE
-  /// the cells layer so the lines read on top. Returns the (capped) cells so the
-  /// caller can frame them with the repeater.
+  /// from the repeater to each cell centre. The lines only draw while the
+  /// Repeater Coverage Lines switch is on, but are kept either way so a flip
+  /// can redraw them (_onRepeaterCoverageLinesNotify). The lines layer is
+  /// ensured BEFORE the cells layer (switch on or off) so the lines read on
+  /// top. Returns the (capped) cells so the caller can frame them with the
+  /// repeater.
   Future<List<RepeaterCoverageCell>> _drawRepeaterCoverage(Repeater repeater,
       List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
     final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
@@ -6261,16 +6302,25 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     await _ensureCoverageLinesLayer();
     await _updateCoverageCells(cells, cvd, steps[0], steps[1]);
-    final segments = [
-      for (final c in cells)
-        (
-          lat: c.centerLat,
-          lon: c.centerLon,
-          color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
-        ),
-    ];
+    final lines = RepeaterCoverageLines(
+      repeaterId: _repeaterIdentity(repeater),
+      lat: repeater.lat,
+      lon: repeater.lon,
+      segments: [
+        for (final c in cells)
+          (
+            lat: c.centerLat,
+            lon: c.centerLon,
+            color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
+          ),
+      ],
+    );
+    _repeaterCoverageLines = lines;
+    final show =
+        _patchProviderRef?.preferences.showRepeaterCoverageLines ?? false;
     // Skinnier than the tile fan-out — a repeater draws many lines at once.
-    await _updateCoverageLines(segments, repeater.lat, repeater.lon,
+    // Switch off: an empty list clears any lines already drawn.
+    await _updateCoverageLines(lines.visible(show), repeater.lat, repeater.lon,
         width: 1.5);
     // Dim the base coverage tiles so the repeater's coloured cells + lines pop
     // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in

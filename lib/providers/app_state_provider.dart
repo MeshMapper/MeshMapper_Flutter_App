@@ -10208,6 +10208,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
+  /// Show or hide the dashed lines from a selected repeater to the coverage
+  /// squares that heard it, and persist. Like the opacity above this must NOT
+  /// bump mapRevision: nothing in MapWidget.build() reads it. MapWidget redraws
+  /// or clears the lines of the selected repeater from its direct provider
+  /// listener (`_onRepeaterCoverageLinesNotify`), so the change shows straight
+  /// away, even while the Settings tab is in front of the map.
+  void setShowRepeaterCoverageLines(bool value) {
+    _preferences = _preferences.copyWith(showRepeaterCoverageLines: value);
+    debugLog('[MAP] Repeater coverage lines set to $value');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Set app theme mode (dark/light) and persist
   void setThemeMode(String mode) {
     _preferences = _preferences.copyWith(themeMode: mode);
