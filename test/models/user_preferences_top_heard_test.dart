@@ -2,9 +2,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/models/user_preferences.dart';
 
 void main() {
-  test('the row range is 3 to 8', () {
+  test('the row range is 3 to 8, defaulting to 3', () {
     expect(UserPreferences.topHeardRowsMin, 3);
     expect(UserPreferences.topHeardRowsMax, 8);
+    expect(UserPreferences.topHeardRowsDefault, 3);
   });
 
   test('Top Heard shows 3 rows with hex IDs by default', () {

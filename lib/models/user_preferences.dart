@@ -123,9 +123,10 @@ class UserPreferences {
   /// Double the size of the Top Heard overlay for easier reading
   final bool largerTopRepeaters;
 
-  /// Fewest and most rows the Top Heard overlay can show.
+  /// Fewest and most rows the Top Heard overlay can show, and the default.
   static const int topHeardRowsMin = 3;
   static const int topHeardRowsMax = 8;
+  static const int topHeardRowsDefault = 3;
 
   /// Rows the in-app Top Heard overlay shows (the RX row is extra). The Live
   /// Activity, CarPlay and watch always show 3.
@@ -217,7 +218,7 @@ class UserPreferences {
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
     this.largerTopRepeaters = false,
-    this.topHeardRows = 3,
+    this.topHeardRows = topHeardRowsDefault,
     this.topHeardShowNames = false,
     this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
@@ -341,10 +342,10 @@ class UserPreferences {
   }
 
   /// A stored Top Heard row count, clamped to the supported range. A missing
-  /// or non-numeric value (or NaN/infinity) gives the default of 3, so a bad
-  /// stored value never reaches the UI.
+  /// or non-numeric value (or NaN/infinity) gives [topHeardRowsDefault], so a
+  /// bad stored value never reaches the UI.
   static int _topHeardRowsFromJson(Object? value) {
-    if (value is! num || !value.isFinite) return 3;
+    if (value is! num || !value.isFinite) return topHeardRowsDefault;
     return value.toInt().clamp(topHeardRowsMin, topHeardRowsMax);
   }
 
