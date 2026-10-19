@@ -339,5 +339,276 @@ void main() {
         isNull,
       );
     });
+
+    group('with useServerName', () {
+      test('a nickname beats the server name', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5007',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: nicknames,
+            useServerName: true,
+          ),
+          'Mell',
+        );
+      });
+
+      test('the server name is used when there is no nickname', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5099',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: nicknames,
+            useServerName: true,
+          ),
+          'Queen An\u2026',
+        );
+      });
+
+      test('an empty nickname map still resolves the server name', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5099',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          'Queen An\u2026',
+        );
+      });
+
+      test('a long server name is shortened', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5007',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          'Capitol\u2026',
+        );
+      });
+
+      test('a short server name is shown whole', () {
+        final short = _repeater('r3', _key('7A11'), hopBytes: 2, name: 'Hilltop');
+
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '7A11',
+            repeaters: [short],
+            hopBytes: 2,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          'Hilltop',
+        );
+      });
+
+      test('the placeholder name Unknown gives null', () {
+        final unknown =
+            _repeater('r3', _key('7A11'), hopBytes: 2, name: 'Unknown');
+
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '7A11',
+            repeaters: [unknown],
+            hopBytes: 2,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          isNull,
+        );
+      });
+
+      test('an anonymised name gives null, prefix or suffix', () {
+        final prefixed =
+            _repeater('r3', _key('7A11'), hopBytes: 2, name: '\u{1F6AB} Secret');
+        final suffixed =
+            _repeater('r4', _key('7B22'), hopBytes: 2, name: 'Secret \u{1F6AB}');
+
+        for (final (id, hidden) in [('7A11', prefixed), ('7B22', suffixed)]) {
+          expect(hidden.isHidden, isTrue);
+          expect(
+            RepeaterNicknames.labelFor(
+              displayId: id,
+              repeaters: [prefixed, suffixed],
+              hopBytes: 2,
+              nicknames: const {},
+              useServerName: true,
+            ),
+            isNull,
+            reason: '$id is anonymised, so its name must not be shown',
+          );
+        }
+      });
+
+      test('a nickname still names an anonymised repeater', () {
+        final hidden = _repeater('r3', _key('7A11'),
+            hopBytes: 2, name: '\u{1F6AB} Secret');
+
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '7A11',
+            repeaters: [hidden],
+            hopBytes: 2,
+            nicknames: {_key('7A11'): _nick('Mine')},
+            useServerName: true,
+          ),
+          'Mine',
+        );
+      });
+
+      test('a hash shared by two repeaters gives null, never a guess', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '50',
+            repeaters: [mell, other],
+            hopBytes: 1,
+            nicknames: nicknames,
+            useServerName: true,
+          ),
+          isNull,
+        );
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '50',
+            repeaters: [mell, other],
+            hopBytes: 1,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          isNull,
+        );
+      });
+
+      test('a row that matches no repeater gives null', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: 'AB',
+            repeaters: [mell, other],
+            hopBytes: 1,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          isNull,
+        );
+      });
+
+      test('the shared hash plus a discovery key names the server name', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '50',
+            identity: keyOther,
+            repeaters: [mell, other],
+            hopBytes: 1,
+            nicknames: const {},
+            useServerName: true,
+          ),
+          'Queen An\u2026',
+        );
+      });
+    });
+
+    group('without useServerName', () {
+      test('the server name is never used', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5099',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: nicknames,
+          ),
+          isNull,
+        );
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5099',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: nicknames,
+            useServerName: false,
+          ),
+          isNull,
+        );
+      });
+
+      test('an empty nickname map still returns null', () {
+        expect(
+          RepeaterNicknames.labelFor(
+            displayId: '5007',
+            repeaters: [mell, other],
+            hopBytes: 2,
+            nicknames: const {},
+            useServerName: false,
+          ),
+          isNull,
+        );
+      });
+    });
+  });
+
+  group('shortenServerName', () {
+    test('a name of exactly ${RepeaterNicknames.maxLength} characters has no '
+        'ellipsis', () {
+      expect(RepeaterNicknames.shortenServerName('Lakeview'), 'Lakeview');
+    });
+
+    test('a name of ${RepeaterNicknames.maxLength + 1} characters is cut and '
+        'gets an ellipsis', () {
+      expect(RepeaterNicknames.shortenServerName('Lakeviews'), 'Lakeview\u2026');
+    });
+
+    test('a longer name is cut to the first characters', () {
+      expect(
+        RepeaterNicknames.shortenServerName('SE-JKP-Nyk\u00F6ping-4F'),
+        'SE-JKP-N\u2026',
+      );
+    });
+
+    test('a cut that lands on a space leaves no gap before the ellipsis', () {
+      expect(RepeaterNicknames.shortenServerName('Capitol Hill'), 'Capitol\u2026');
+    });
+
+    test('surrounding whitespace is trimmed and not counted', () {
+      expect(RepeaterNicknames.shortenServerName('  Lakeview  '), 'Lakeview');
+      expect(
+        RepeaterNicknames.shortenServerName('  Lakeviews  '),
+        'Lakeview\u2026',
+      );
+    });
+
+    test('a short name is returned as is', () {
+      expect(RepeaterNicknames.shortenServerName('Mell'), 'Mell');
+    });
+
+    test('an emoji at the cut is kept whole', () {
+      // Seven letters then a family emoji (one grapheme, several code points).
+      const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+      expect(
+        RepeaterNicknames.shortenServerName('Abcdefg${family}Zed'),
+        'Abcdefg$family\u2026',
+      );
+      expect(
+        RepeaterNicknames.shortenServerName('Abcdefg$family'),
+        'Abcdefg$family',
+        reason: 'eight characters including the emoji need no ellipsis',
+      );
+    });
+
+    test('the ellipsis is a single character', () {
+      expect('\u2026'.length, 1);
+      expect(RepeaterNicknames.shortenServerName('Lakeviews')!.endsWith('\u2026'),
+          isTrue);
+    });
+
+    test('blank gives null', () {
+      expect(RepeaterNicknames.shortenServerName(''), isNull);
+      expect(RepeaterNicknames.shortenServerName('   '), isNull);
+      expect(RepeaterNicknames.shortenServerName('\t\n'), isNull);
+    });
   });
 }
