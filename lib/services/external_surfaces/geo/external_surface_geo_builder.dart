@@ -402,12 +402,13 @@ class ExternalSurfaceGeoBuilder {
   static ExternalSurfaceColor snrColor(double snr) =>
       ExternalSurfaceColor.fromColor(PingColors.snrColor(snr));
 
-  /// The "Top Heard" overlay rows: up to three top-SNR repeaters from the
-  /// latest ping, then the current RX slot, which the wire cap never drops.
+  /// The "Top Heard" overlay rows: up to [ExternalSurfaceGeoWire.maxHeard]
+  /// rows, the top-SNR repeaters from the latest ping, then the current RX
+  /// slot, which is always kept when present (ping rows are cut to make room).
   ///
   /// Order is deliberate rather than a global SNR sort: it matches the map
   /// overlay, where the RX slot is a distinct trailing row rather than a
-  /// competitor for the top three.
+  /// competitor for the top-SNR rows.
   static List<ExternalSurfaceHeardNode> buildHeard({
     required List<({String repeaterId, double snr, OverlayPingType type})> top,
     ({String repeaterId, double snr})? rxSlot,

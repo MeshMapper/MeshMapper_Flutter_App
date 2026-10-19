@@ -2389,9 +2389,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // The wrist mirrors the map's "Top Heard" overlay: the top three of the
     // same stored list, plus the current RX slot. Same source, so the two
-    // surfaces can never disagree. The list is cut here because
-    // ExternalSurfaceGeoBuilder.buildHeard caps its rows at
-    // ExternalSurfaceGeoWire.maxHeard, so more ping rows would drop the RX row.
+    // surfaces can never disagree. The list is cut to three here by design: the
+    // Live Activity, CarPlay and watch show 3 ping rows plus RX, whatever the
+    // in-app Top Heard Rows setting is. buildHeard's RX-keeping cap backs it up.
     final top = _topRepeatersOverlay.take(_surfaceTopHeardRows).toList();
     final rxSlot = _rxOverlaySlot;
 
