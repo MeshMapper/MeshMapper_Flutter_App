@@ -162,6 +162,11 @@ class UserPreferences {
   /// applied server-side). Only these two values are valid.
   final int coverageGridSize;
 
+  /// Draw a dashed line from a selected repeater to each coverage square that
+  /// heard it. Off by default: near a busy repeater the lines hide the squares,
+  /// which already show the coverage. The web keeps them on (`mm_std_repcov`).
+  final bool showRepeaterCoverageLines;
+
   /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
   final bool disconnectAlertEnabled;
 
@@ -227,6 +232,7 @@ class UserPreferences {
     this.mapTilesEnabled = true,
     this.coverageOverlayOpacity = 0.7,
     this.coverageGridSize = 300,
+    this.showRepeaterCoverageLines = false,
     this.disconnectAlertEnabled = false,
     this.customApiEnabled = false,
     this.customApiUrl,
@@ -300,6 +306,8 @@ class UserPreferences {
         100 => 100,
         _ => 300,
       },
+      showRepeaterCoverageLines:
+          (json['showRepeaterCoverageLines'] as bool?) ?? false,
       disconnectAlertEnabled:
           (json['disconnectAlertEnabled'] as bool?) ?? false,
       customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
@@ -398,6 +406,7 @@ class UserPreferences {
       'mapTilesEnabled': mapTilesEnabled,
       'coverageOverlayOpacity': coverageOverlayOpacity,
       'coverageGridSize': coverageGridSize,
+      'showRepeaterCoverageLines': showRepeaterCoverageLines,
       'disconnectAlertEnabled': disconnectAlertEnabled,
       'customApiEnabled': customApiEnabled,
       'customApiUrl': customApiUrl,
@@ -456,6 +465,7 @@ class UserPreferences {
     bool? mapTilesEnabled,
     double? coverageOverlayOpacity,
     int? coverageGridSize,
+    bool? showRepeaterCoverageLines,
     bool? disconnectAlertEnabled,
     bool? customApiEnabled,
     String? customApiUrl,
@@ -519,6 +529,8 @@ class UserPreferences {
       coverageOverlayOpacity:
           coverageOverlayOpacity ?? this.coverageOverlayOpacity,
       coverageGridSize: coverageGridSize ?? this.coverageGridSize,
+      showRepeaterCoverageLines:
+          showRepeaterCoverageLines ?? this.showRepeaterCoverageLines,
       disconnectAlertEnabled:
           disconnectAlertEnabled ?? this.disconnectAlertEnabled,
       customApiEnabled: customApiEnabled ?? this.customApiEnabled,
@@ -602,6 +614,7 @@ class UserPreferences {
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
         other.coverageOverlayOpacity == coverageOverlayOpacity &&
+        other.showRepeaterCoverageLines == showRepeaterCoverageLines &&
         other.disconnectAlertEnabled == disconnectAlertEnabled &&
         other.customApiEnabled == customApiEnabled &&
         other.customApiUrl == customApiUrl &&
@@ -655,6 +668,7 @@ class UserPreferences {
       colorVisionType,
       mapTilesEnabled,
       coverageOverlayOpacity,
+      showRepeaterCoverageLines,
       disconnectAlertEnabled,
       customApiEnabled,
       customApiUrl,

@@ -98,6 +98,16 @@ class MapSettingsPage extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _showColorVisionSelector(context, appState),
             ),
+            // Its own setter, not updatePreferences: the selected repeater's
+            // lines update in place, with no map rebuild.
+            SwitchListTile(
+              secondary: const Icon(Icons.hub),
+              title: const Text('Repeater Coverage Lines'),
+              subtitle: const Text(
+                  'Dashed lines from a selected repeater to the squares that heard it'),
+              value: prefs.showRepeaterCoverageLines,
+              onChanged: appState.setShowRepeaterCoverageLines,
+            ),
           ]),
           SettingsSectionCard(title: 'Markers', children: [
             ListTile(

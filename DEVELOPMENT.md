@@ -1967,8 +1967,21 @@ fan-out logic (`MeshMapper_Server/dev/index.php`):
   Reuses the points fetched in `_showRepeaterDetails`. Port of
   `buildChartFromPoints` (`RepeaterStats.fromCoverageWithPoints`) +
   `drawRepeaterCoverageFromCache` (`repeaterCoverageCells`).
-- **Volume cap**: both cap at the farthest 250 lines/cells (longest reach kept),
-  logged under `[COVERAGE]` when truncated.
+- **Repeater Coverage Lines switch** (Settings > Map > Coverage Overlay,
+  `preferences.showRepeaterCoverageLines`, default off; the web's "Repeater
+  Coverage" layer `mm_std_repcov` defaults on): gates only Feature B's lines.
+  The cells, dim and framing always draw, in status colours (the web's
+  lines-off highlight blue is not copied). `_drawRepeaterCoverage` keeps the
+  lines in `_repeaterCoverageLines` (`RepeaterCoverageLines`, cleared with the
+  cells in `_clearCoverageCells` and on style reload), so a flip redraws or
+  clears the selected repeater's lines at once (web `mmRedrawSelectedCoverage`
+  parity). The setter does not bump `mapRevision`: MapWidget applies it from a
+  direct provider listener (`_onRepeaterCoverageLinesNotify`), which leaves the
+  shared lines layer alone while a tapped tile's fan-out (Feature A, not
+  covered by the switch) owns it (`repeaterCoverageLinesAfterSwitch`).
+- **Volume cap**: the tile fan-out keeps the farthest 250 lines, a repeater the
+  farthest 5000 cells (longest reach kept), logged under `[COVERAGE]` when
+  truncated.
 - **Layers** (`map_widget.dart`): `coverage-lines-layer` (shared A/B, per-feature
   `color`) and `coverage-cells-layer` (per-feature fill) — install-once empty,
   updated via `setGeoJsonSource`, kept separate from the focus-mode lines so the
