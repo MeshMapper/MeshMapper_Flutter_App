@@ -6280,21 +6280,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Repeater Coverage Lines switch is on, but are kept either way so a flip
   /// can redraw them (_onRepeaterCoverageLinesNotify). The lines layer is
   /// ensured BEFORE the cells layer (switch on or off) so the lines read on
-  /// top. Returns the (capped) cells so the caller can frame them with the
-  /// repeater.
+  /// top. Returns every cell so the caller can frame them with the repeater.
   Future<List<RepeaterCoverageCell>> _drawRepeaterCoverage(Repeater repeater,
       List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
     final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
     final blob = gridSize == 100 ? 1 : 0;
-    // High cap so a repeater's full footprint draws (web parity — it draws all).
-    // Still bounded (farthest-first) to protect against pathological volumes.
-    final cells = _capByFarthest(
-      repeaterCoverageCells(matched, repeater,
-          latStep: steps[0], lonStep: steps[1], blob: blob),
-      (c) => c.distanceMeters,
-      5000,
-      '[COVERAGE] repeater coverage',
-    );
+    // Every cell draws (web parity — it draws all). Only the lines are capped:
+    // capping the cells farthest-first dropped the ones nearest a busy
+    // repeater and left a pale hole round it.
+    final cells = repeaterCoverageCells(matched, repeater,
+        latStep: steps[0], lonStep: steps[1], blob: blob);
+    debugLog('[COVERAGE] repeater ${repeater.id} coverage: '
+        '${cells.length} cells');
     if (cells.isEmpty) {
       await _clearCoverageCells();
       await _clearCoverageLines();
@@ -6302,12 +6299,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     await _ensureCoverageLinesLayer();
     await _updateCoverageCells(cells, cvd, steps[0], steps[1]);
+    // Bounded (farthest-first, so the longest-reach lines survive) to protect
+    // against pathological volumes.
+    final lineCells = _capByFarthest(
+      cells,
+      (c) => c.distanceMeters,
+      5000,
+      '[COVERAGE] repeater coverage lines',
+    );
     final lines = RepeaterCoverageLines(
       repeaterId: _repeaterIdentity(repeater),
       lat: repeater.lat,
       lon: repeater.lon,
       segments: [
-        for (final c in cells)
+        for (final c in lineCells)
           (
             lat: c.centerLat,
             lon: c.centerLon,
