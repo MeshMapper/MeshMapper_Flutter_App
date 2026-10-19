@@ -2391,7 +2391,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // same stored list, plus the current RX slot. Same source, so the two
     // surfaces can never disagree. The list is cut to three here by design: the
     // Live Activity, CarPlay and watch show 3 ping rows plus RX, whatever the
-    // in-app Top Heard Rows setting is. buildHeard's RX-keeping cap backs it up.
+    // in-app Top Heard Rows setting is. buildHeard's RX-keeping cap is a backup.
     final top = _topRepeatersOverlay.take(_surfaceTopHeardRows).toList();
     final rxSlot = _rxOverlaySlot;
 
