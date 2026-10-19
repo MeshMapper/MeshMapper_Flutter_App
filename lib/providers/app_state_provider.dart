@@ -6662,6 +6662,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop RX logger
     _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
 
+    // Save offline pings, as disconnect() does. The noise floor session above
+    // is already stored, so skipping this left a drive in History with no
+    // offline file once the unsaved pings were gone (no-op with no pings).
+    await _saveOfflineSession();
+
     // Force upload any pending items BEFORE releasing session
     if (flushQueue && _apiService.hasSession) {
       debugLog('[CONN] Flushing API queue before session release');
@@ -9352,6 +9357,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 5. Auth successful - update state
       switchSucceeded = true;
+      // Offline Mode is off for good now (the finally only rolls back a
+      // failed switch), so its auto-save stops here.
+      _stopOfflineAutoSaveTimer();
 
       // 6. Update regional channels from auth response
       final channels = result['channels'];
@@ -9466,7 +9474,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get _offlineDeviceName => _isAnonymousRenamed
       ? 'Anonymous'
       : (_meshCoreConnection?.selfInfo?.name ??
-          connectedDeviceName?.replaceFirst('MeshCore-', ''));
+          connectedDeviceName?.replaceFirst('MeshCore-', '') ??
+          // A reconnect that gave up has already dropped the connection.
+          _displayDeviceName);
 
   /// Save accumulated offline pings to a session file
   Future<void> _saveOfflineSession() async {
@@ -9492,7 +9502,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       devicePublicKey: _devicePublicKey,
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
-      radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
+      // The remembered config covers a reconnect that gave up, which has
+      // already dropped the connection.
+      radioConfig: liveRadioConfig ?? _lastRadioConfig,
       deviceModel: _meshCoreConnection?.deviceModel?.manufacturer ??
           _meshCoreConnection?.deviceInfo?.manufacturer ??
           _manufacturerString,
@@ -9501,7 +9513,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     _offlineSessionService.finalizeCurrentSession();
     debugLog('[APP] Saved offline session with ${pings.length} pings');
-    _stopOfflineAutoSaveTimer();
+    // The auto-save keeps running: Offline Mode is still on, and the next
+    // connect or mode start in this stint needs it. It stops when Offline
+    // Mode is turned off.
     notifyListeners();
   }
 
