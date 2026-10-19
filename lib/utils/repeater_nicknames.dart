@@ -143,30 +143,61 @@ class RepeaterNicknames {
     return key == null ? null : nicknames[key]?.nickname;
   }
 
-  /// The nickname for a heard row, or null when the row does not resolve to
-  /// exactly one repeater that has one.
+  /// [name], the server's repeater name, cut to [maxLength] user-perceived
+  /// characters for a label with `…` appended when it was cut, or null when
+  /// [name] is blank.
+  ///
+  /// Cleaned like [normalizeNickname] first: zero-width characters dropped,
+  /// whitespace runs collapsed to one space, and a name of nothing but format
+  /// characters is blank. A name of [maxLength] characters or fewer is
+  /// returned with no ellipsis. The cut counts grapheme clusters, so an emoji
+  /// or an accented letter is never split.
+  static String? shortenServerName(String name) {
+    final trimmed =
+        name.replaceAll(_zeroWidth, '').replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (trimmed.replaceAll(_format, '').trim().isEmpty) return null;
+    final chars = trimmed.characters;
+    if (chars.length <= maxLength) return trimmed;
+    return '${chars.take(maxLength).toString().trimRight()}…';
+  }
+
+  /// The label for a heard row, or null (show the hex) when the row does not
+  /// resolve to exactly one repeater that has one.
+  ///
+  /// That is the repeater's nickname, or, with [useServerName], its server name
+  /// through [shortenServerName] when it has no nickname. The server name is
+  /// skipped for the placeholder name `Unknown` and for an anonymised
+  /// repeater ([Repeater.isHidden]).
   ///
   /// Resolves through [ExternalSurfaceGeoBuilder.resolveOverlayRow]: the
   /// fullest [identity] the row arrived with first (a discovery response's
   /// public key, a trace's target), then [displayId], the hash it is shown
   /// under.
   ///
-  /// An empty [nicknames] returns null without scanning [repeaters], which is
-  /// the common case and runs on every overlay rebuild.
+  /// With [useServerName] false, an empty [nicknames] returns null without
+  /// scanning [repeaters], which is the common case and runs on every overlay
+  /// rebuild.
   static String? labelFor({
     required String displayId,
     String? identity,
     required List<Repeater> repeaters,
     int? hopBytes,
     required Map<String, RepeaterNickname> nicknames,
+    bool useServerName = false,
   }) {
-    if (nicknames.isEmpty) return null;
+    if (nicknames.isEmpty && !useServerName) return null;
     final match = ExternalSurfaceGeoBuilder.resolveOverlayRow(
       displayId: displayId,
       identity: identity,
       repeaters: repeaters,
       hopBytes: hopBytes,
     );
-    return match == null ? null : nicknameFor(match, nicknames);
+    if (match == null) return null;
+    final nickname = nicknameFor(match, nicknames);
+    if (nickname != null) return nickname;
+    if (!useServerName || match.name == 'Unknown' || match.isHidden) {
+      return null;
+    }
+    return shortenServerName(match.name);
   }
 }

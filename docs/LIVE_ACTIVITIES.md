@@ -6,7 +6,7 @@ MeshMapper starts one read-only Live Activity while an automatic wardriving sess
 
 - Current mode and phase (`Sending`, `Listening`, `Next ping`, `Cooldown`, GPS/zone/reconnect states)
 - System-rendered countdowns based on absolute timer deadlines
-- The map's Top Heard rows: the latest ping's top three repeaters by SNR plus the current passive RX slot, the same list the watch shows. Rows heard before the latest send stay on the card dimmed as last heard; a silent ping does not wipe them. Repeater names (when "Repeater Names on Live Activity" is on) show the user's own nickname when set in Settings > Map > Repeater Nicknames, otherwise the server name
+- The map's Top Heard rows: the latest ping's top three repeaters by SNR plus the current passive RX slot, the same list the watch shows. It stays three whatever the in-app Top Heard Rows setting is. Rows heard before the latest send stay on the card dimmed as last heard; a silent ping does not wipe them. Repeater names (when "Repeater Names on Live Activity" is on) show the user's own nickname when set in Settings > Map > Repeater Nicknames, otherwise the server name
 - TX/RX counters, upload queue, zone, connection state, and stale-update warnings
 - Lock Screen, Dynamic Island, and one iOS 18 small-family layout shared by the paired watch's Smart Stack card and the CarPlay dashboard. CarPlay's canvas overlaps the watch card sizes and nothing names the surface, so the card solves its row count and font from the measured height instead of guessing
 

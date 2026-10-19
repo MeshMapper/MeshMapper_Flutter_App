@@ -4,11 +4,12 @@ import 'live_activity_models.dart';
 
 /// The Live Activity's heard rows, read from the map's Top Heard box.
 ///
-/// One source for the map, the watch and the Live Activity: [top] is the
-/// latest ping's top three by SNR exactly as the map overlay stores them, and
-/// [rxSlot] the best passive observation of the current interval. The order is
-/// the map's too, ping rows first and the RX row trailing, never a global SNR
-/// sort, so the card's first rows are always the box's first rows.
+/// One source for the map, the watch and the Live Activity: [top] is the first
+/// three of the latest ping's rows by SNR, in the order the map overlay stores
+/// them (the in-app box may show more of that list), and [rxSlot] the best
+/// passive observation of the current interval. The order is the map's too,
+/// ping rows first and the RX row trailing, never a global SNR sort, so the
+/// card's first rows are always the box's first rows.
 ///
 /// The one place this departs from the map is a repeater that is both a ping
 /// row and the RX slot: the map draws it twice, this returns it once, because
@@ -22,10 +23,15 @@ import 'live_activity_models.dart';
 /// dimmed, so a silent ping never reads as an old result left on screen.
 /// A fresh RX observation during such a cycle is the only current thing, so it
 /// is shown on its own.
+///
+/// [topHeardIds] is every repeater the latest ping heard (upper-case display
+/// IDs), not only the [top] rows shown. The "HEARD NOW" total counts them, plus
+/// the RX repeater only when the ping did not hear it, so an RX repeater the
+/// ping ranked below the shown rows is not counted twice.
 ({List<LiveActivityRepeater> repeaters, int totalCount, bool isCurrent})
     buildLiveActivityHeard({
   required List<({String repeaterId, double snr, OverlayPingType type})> top,
-  required int topTotalCount,
+  required Set<String> topHeardIds,
   required ({String repeaterId, double snr})? rxSlot,
   required DateTime? topAt,
   required DateTime? rxAt,
@@ -65,7 +71,7 @@ import 'live_activity_models.dart';
     }
   }
 
-  var totalCount = topIsCurrent ? topTotalCount : 0;
+  var totalCount = topIsCurrent ? topHeardIds.length : 0;
   if (rxIsCurrent && rxSlot != null && rxSlot.snr.isFinite) {
     final id = rxSlot.repeaterId.toUpperCase();
     if (shown.add(id)) {
@@ -78,8 +84,8 @@ import 'live_activity_models.dart';
         snrColor: ExternalSurfaceGeoBuilder.snrColor(rxSlot.snr),
       ));
     }
-    final pingHeardIt = top.any((row) => row.repeaterId.toUpperCase() == id);
-    if (!pingHeardIt) totalCount++;
+    final pingCountedIt = topIsCurrent && topHeardIds.contains(id);
+    if (!pingCountedIt) totalCount++;
   }
   if (totalCount < repeaters.length) totalCount = repeaters.length;
 

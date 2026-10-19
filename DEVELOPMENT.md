@@ -242,6 +242,15 @@ catalogue, which keep server names. A change goes through
 `_siriRepeaterCatalogRevision`, call `_notifyMapNow()` (the overlay rebuilds on
 `mapRevision`) and schedule the Live Activity, watch and Siri sync.
 
+The "Repeater Names in Top Heard" setting (`UserPreferences.topHeardShowNames`,
+Settings > Map, off by default and phone-local like the nicknames) lets a Top
+Heard row with no nickname show the repeater's server name in place of the hex.
+`RepeaterNicknames.labelFor(useServerName:)` cuts the name to
+`RepeaterNicknames.maxLength` (8) grapheme clusters plus "…". A name of
+'Unknown' or a hidden 🚫 name keeps the hex. It uses the same unique-match rule
+as a nickname, and a nickname always wins. It affects only the in-app Top Heard
+box; the Live Activity and watch have their own name rules above.
+
 On the map, the minimized repeater pill shows the nickname as a small tag after
 the name. The expanded repeater sheet has a Nickname button beside Manage, the
 same height and shape, reading "Nickname" until one is set and then the
@@ -2338,10 +2347,14 @@ future breaking change makes undecodable still reaches the "update the iPhone
 app" prompt instead of going silently stale.
 
 **One heard list.** The map's Top Heard box (`_topRepeatersOverlay`, the
-latest ping's top three by SNR, plus the passive RX slot) is the single source
+latest ping's rows by SNR, plus the passive RX slot) is the single source
 for the watch's heard rows (`ExternalSurfaceGeoBuilder.buildHeard`) and the
 Live Activity's rows (`buildLiveActivityHeard` in
-`lib/services/live_activity/live_activity_heard.dart`). It is replaced only by a
+`lib/services/live_activity/live_activity_heard.dart`). The stored list holds up
+to `UserPreferences.topHeardRowsMax` (8) rows. The in-app box shows
+`topHeardRows` of them (3 to 8, Settings > Map > Top Heard Rows), and the watch
+and Live Activity take the first three (`_surfaceTopHeardRows`), which keeps the
+watch's `maxHeard` cap from dropping the RX row. It is replaced only by a
 ping that heard something (direct TX echoes, discovery nodes, a successful trace
 at its window's close), so a silent ping leaves the last heard set in place on
 all three; the Live Activity marks rows from before the latest send as last

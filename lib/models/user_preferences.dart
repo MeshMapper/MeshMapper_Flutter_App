@@ -116,11 +116,25 @@ class UserPreferences {
   /// Auto-stop auto-ping after 30 minutes of idle (no movement)
   final bool autoStopAfterIdle;
 
-  /// Show top 3 repeaters by SNR on the map during wardriving
+  /// Show the Top Heard repeaters overlay (best SNR first) on the map during
+  /// wardriving
   final bool showTopRepeaters;
 
-  /// Double the size of the Top 3 repeaters overlay for easier reading
+  /// Double the size of the Top Heard overlay for easier reading
   final bool largerTopRepeaters;
+
+  /// Fewest and most rows the Top Heard overlay can show, and the default.
+  static const int topHeardRowsMin = 3;
+  static const int topHeardRowsMax = 8;
+  static const int topHeardRowsDefault = 3;
+
+  /// Rows the in-app Top Heard overlay shows (the RX row is extra). The Live
+  /// Activity, CarPlay and watch always show 3.
+  final int topHeardRows;
+
+  /// Top Heard rows with no nickname show the repeater's server name instead
+  /// of its hex ID.
+  final bool topHeardShowNames;
 
   /// Live Activity heard rows show resolved repeater names (fewer, named
   /// rows). When false the card packs a two-column hex grid instead.
@@ -204,6 +218,8 @@ class UserPreferences {
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
     this.largerTopRepeaters = false,
+    this.topHeardRows = topHeardRowsDefault,
+    this.topHeardShowNames = false,
     this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
@@ -271,6 +287,8 @@ class UserPreferences {
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
       largerTopRepeaters: (json['largerTopRepeaters'] as bool?) ?? false,
+      topHeardRows: _topHeardRowsFromJson(json['topHeardRows']),
+      topHeardShowNames: (json['topHeardShowNames'] as bool?) ?? false,
       liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
@@ -323,6 +341,14 @@ class UserPreferences {
     return value;
   }
 
+  /// A stored Top Heard row count, clamped to the supported range. A missing
+  /// or non-numeric value (or NaN/infinity) gives [topHeardRowsDefault], so a
+  /// bad stored value never reaches the UI.
+  static int _topHeardRowsFromJson(Object? value) {
+    if (value is! num || !value.isFinite) return topHeardRowsDefault;
+    return value.toInt().clamp(topHeardRowsMin, topHeardRowsMax);
+  }
+
   /// Convert to JSON (for persistence)
   Map<String, dynamic> toJson() {
     return {
@@ -363,6 +389,8 @@ class UserPreferences {
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
       'largerTopRepeaters': largerTopRepeaters,
+      'topHeardRows': topHeardRows,
+      'topHeardShowNames': topHeardShowNames,
       'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
@@ -419,6 +447,8 @@ class UserPreferences {
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
     bool? largerTopRepeaters,
+    int? topHeardRows,
+    bool? topHeardShowNames,
     bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
@@ -478,6 +508,8 @@ class UserPreferences {
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
       largerTopRepeaters: largerTopRepeaters ?? this.largerTopRepeaters,
+      topHeardRows: topHeardRows ?? this.topHeardRows,
+      topHeardShowNames: topHeardShowNames ?? this.topHeardShowNames,
       liveActivityShowNames:
           liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,
@@ -562,6 +594,8 @@ class UserPreferences {
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
         other.showTopRepeaters == showTopRepeaters &&
+        other.topHeardRows == topHeardRows &&
+        other.topHeardShowNames == topHeardShowNames &&
         other.liveActivityShowNames == liveActivityShowNames &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
@@ -613,6 +647,8 @@ class UserPreferences {
       minPingDistanceMeters,
       autoStopAfterIdle,
       showTopRepeaters,
+      topHeardRows,
+      topHeardShowNames,
       liveActivityShowNames,
       markerStyle,
       gpsMarkerStyle,
