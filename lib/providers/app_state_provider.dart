@@ -482,10 +482,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// in-app Top Heard Rows setting is.
   static const int _surfaceTopHeardRows = 3;
 
-  /// How many repeaters the latest ping heard in all, regardless of how many
-  /// rows are stored or shown. The Live Activity's "HEARD NOW n" header counts
-  /// them.
-  int _topRepeatersOverlayTotalCount = 0;
+  /// Every repeater the latest ping heard (upper-case display IDs), regardless
+  /// of how many rows are stored or shown. The Live Activity's "HEARD NOW n"
+  /// header counts them, plus the RX repeater only when it is not one of them.
+  Set<String> _topRepeatersOverlayHeardIds = const {};
 
   /// The fullest identity known for each overlay row, keyed by the display hash
   /// the row is shown under.
@@ -1419,7 +1419,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _topRepeatersOverlay = fresh.take(UserPreferences.topHeardRowsMax).toList();
-    _topRepeatersOverlayTotalCount = fresh.length;
+    _topRepeatersOverlayHeardIds = bestSnr.keys.toSet();
     _topRepeatersOverlayUpdatedAt = DateTime.now();
   }
 
@@ -1482,7 +1482,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Clear all overlay state (top heard rows + RX slot).
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
-    _topRepeatersOverlayTotalCount = 0;
+    _topRepeatersOverlayHeardIds = const {};
     _topRepeatersOverlayUpdatedAt = null;
     _overlayIdentityById = const {};
     _rxOverlaySlot = null;
@@ -3557,7 +3557,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     bool isCurrent,
   }) _buildLiveActivityRepeaters() => buildLiveActivityHeard(
         top: _topRepeatersOverlay.take(_surfaceTopHeardRows).toList(),
-        topTotalCount: _topRepeatersOverlayTotalCount,
+        topHeardIds: _topRepeatersOverlayHeardIds,
         rxSlot: _rxOverlaySlot,
         topAt: _topRepeatersOverlayUpdatedAt,
         rxAt: _liveActivityRxUpdatedAt,
