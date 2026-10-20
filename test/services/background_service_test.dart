@@ -118,12 +118,89 @@ void main() {
         expect(fake.starts, 1);
       });
     });
+
+    test('a live stop ends a service this session did not start', () {
+      fakeAsync((async) {
+        // Started by BootReceiver: running, but not marked running here.
+        fake.running = true;
+        expect(BackgroundServiceManager.isRunning, isFalse);
+
+        var done = false;
+        BackgroundServiceManager.stopLiveService('orphaned service')
+            .then((_) => done = true);
+        async.flushMicrotasks();
+        expect(fake.invoked, ['stop']);
+        expect(done, isFalse, reason: 'waits for the service to go');
+
+        fake.running = false;
+        async.elapse(const Duration(milliseconds: 200));
+        expect(done, isTrue);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('a live stop sends nothing when no service is running', () {
+      fakeAsync((async) {
+        var done = false;
+        BackgroundServiceManager.stopLiveService('orphaned service')
+            .then((_) => done = true);
+        async.flushMicrotasks();
+        expect(done, isTrue);
+        expect(fake.invoked, isEmpty);
+      });
+    });
+
+    test('a live stop cancels a start waiting on an old stop', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.startService(title: 'A', body: 'a');
+        async.flushMicrotasks();
+        expect(fake.starts, 1);
+        BackgroundServiceManager.stopService();
+        fake.running = true; // The old service has not gone yet.
+
+        // The new mode's start waits; Close App lands meanwhile.
+        BackgroundServiceManager.startService(title: 'B', body: 'b');
+        async.elapse(const Duration(milliseconds: 250));
+        BackgroundServiceManager.stopLiveService('exit app');
+        fake.running = false;
+        async.elapse(const Duration(seconds: 5));
+
+        expect(fake.starts, 1, reason: 'no service after Close App');
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('a live stop whose check fails sends nothing and does not throw', () {
+      fakeAsync((async) {
+        fake.running = true;
+        fake.isRunningThrows = true;
+        var threw = false;
+        var done = false;
+        BackgroundServiceManager.stopLiveService('orphaned service')
+            .then((_) => done = true, onError: (Object _) => threw = true);
+        async.flushMicrotasks();
+        expect(threw, isFalse);
+        expect(done, isTrue);
+        expect(fake.invoked, isEmpty);
+      });
+    });
+
+    test('a live stop leaves iOS alone', () {
+      fakeAsync((async) {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        fake.running = true;
+        BackgroundServiceManager.stopLiveService('exit app');
+        async.flushMicrotasks();
+        expect(fake.invoked, isEmpty);
+      });
+    });
   });
 }
 
 class _FakeService implements FlutterBackgroundService {
   bool running = false;
   bool stayDown = false;
+  bool isRunningThrows = false;
   int starts = 0;
   final List<String> invoked = [];
 
@@ -135,7 +212,10 @@ class _FakeService implements FlutterBackgroundService {
   }
 
   @override
-  Future<bool> isRunning() async => running;
+  Future<bool> isRunning() async {
+    if (isRunningThrows) throw StateError('channel');
+    return running;
+  }
 
   @override
   void invoke(String method, [Map<String, dynamic>? arg]) {

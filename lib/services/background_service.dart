@@ -50,10 +50,8 @@ class BackgroundServiceManager {
 
   /// Initialize the background service.
   /// Called lazily on first startService() call — never at app startup.
-  /// On Android, configure() may start the foreground service as a side effect
-  /// (service resurrection), so this MUST only be called when we actually
-  /// intend to start the service. Startup orphan cleanup uses
-  /// cleanupOrphanedService() which cancels the notification directly.
+  /// Startup orphan cleanup uses cleanupOrphanedService(), which stops a
+  /// running service without configure().
   static Future<void> initialize() async {
     // Skip on web - no background service support
     if (kIsWeb) {
@@ -94,6 +92,9 @@ class BackgroundServiceManager {
         androidConfiguration: AndroidConfiguration(
           onStart: _onStart,
           autoStart: false, // We'll start it manually when auto-mode is enabled
+          // Defaults to true, and the plugin's BootReceiver then starts the
+          // service with nothing attached after every reboot and app update.
+          autoStartOnBoot: false,
           isForegroundMode: true,
           notificationChannelId: _notificationChannelId,
           initialNotificationTitle: 'MeshMapper',
@@ -112,8 +113,8 @@ class BackgroundServiceManager {
         ),
       );
 
-      // Defense-in-depth: configure() may unexpectedly start the service
-      // (e.g., Android resurrecting a previously-killed foreground service).
+      // Defense-in-depth: a service this session did not start may already
+      // be running (BootReceiver acting on a saved autoStartOnBoot).
       final isRunning = await _service!.isRunning();
       if (isRunning) {
         debugLog(
@@ -207,11 +208,13 @@ class BackgroundServiceManager {
   }
 
   /// Wait (bounded) for a service that was sent 'stop' to actually stop, and
-  /// log how long it took. Never throws.
+  /// log how long it took. [onTimeout] ends the log line when it gives up.
+  /// Never throws.
   static Future<void> _awaitPendingStop(
     FlutterBackgroundService service,
-    String what,
-  ) async {
+    String what, {
+    String onTimeout = 'starting anyway',
+  }) async {
     _stopPending = true;
     final elapsed = await waitUntilStopped(
       isRunning: service.isRunning,
@@ -221,7 +224,7 @@ class BackgroundServiceManager {
     _stopPending = false;
     if (elapsed == null) {
       debugWarn('[BACKGROUND] $what still running after '
-          '${_stopWaitLimit.inMilliseconds} ms, starting anyway');
+          '${_stopWaitLimit.inMilliseconds} ms, $onTimeout');
     } else {
       debugLog('[BACKGROUND] $what stopped after ${elapsed.inMilliseconds} ms');
     }
@@ -324,6 +327,36 @@ class BackgroundServiceManager {
     }
   }
 
+  /// Stop the Android service if it is running, whoever started it, and wait
+  /// (bounded) for it to go. [stopService] trusts [_isRunning], which is false
+  /// in a fresh session, so it cannot stop a service BootReceiver started or
+  /// one left behind when the app was swiped away. Does not call configure():
+  /// isRunning() and 'stop' work on the plugin's channel without it, and
+  /// configure() would save the boot-start setting again. Never throws.
+  static Future<void> stopLiveService(String what) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+
+    final service = _service ?? FlutterBackgroundService();
+    try {
+      if (!await service.isRunning()) return;
+    } catch (e) {
+      debugWarn('[BACKGROUND] Could not check for a running service ($what): '
+          '$e');
+      return;
+    }
+
+    debugLog('[BACKGROUND] Stopping running service ($what)');
+    // A start waiting out an earlier stop must not go ahead after this one.
+    _stopGeneration++;
+    try {
+      service.invoke('stop');
+    } catch (e) {
+      debugError('[BACKGROUND] Failed to send stop ($what): $e');
+    }
+    _isRunning = false;
+    await _awaitPendingStop(service, what, onTimeout: 'giving up');
+  }
+
   /// Update the notification with the current wardriving title and body.
   /// Called periodically to show TX/RX counts and queue size.
   static Future<void> updateNotification({
@@ -360,19 +393,24 @@ class BackgroundServiceManager {
   static bool get isInitialized => _isInitialized;
 
   /// Clean up any orphaned foreground service from a previous app session.
-  /// On Android, the foreground service can survive app process death.
-  /// Call this at app startup to ensure no stale notification persists.
+  /// Call this at app startup, from a cold main(): the isolate that drove any
+  /// earlier service is gone, so a service running now is an orphan.
   ///
-  /// This intentionally does NOT call BackgroundService.configure()/initialize(),
-  /// because configure() with isForegroundMode:true can cause Android to
-  /// resurrect a killed foreground service as a side effect — producing a
-  /// phantom notification hours later (the "3am notification" bug).
+  /// Where orphans come from: the plugin's autoStartOnBoot defaulted to true
+  /// and configure() saved it, so its BootReceiver started the service after
+  /// every reboot and app update (MY_PACKAGE_REPLACED), with nothing attached
+  /// and a stuck "Starting wardriving..." notification. That was the "3am
+  /// notification" (#83, #178) and the notification Close App could not clear
+  /// (#604). A swiped-away app also leaves its service running
+  /// (stopWithTask is false). initialize() now saves false and _onStart
+  /// clears it on installs that saved true.
+  ///
+  /// Cancelling notification [_notificationId] is not enough: Android keeps a
+  /// running foreground service's notification, so this also stops the
+  /// service itself via [stopLiveService]. It never calls configure().
   ///
   /// We DO initialize the local-notifications plugin first: cancel() silently
-  /// no-ops until the plugin's platform channel is initialized, which is why
-  /// the orphaned notification kept reappearing after a reboot (#178).
-  /// Initializing the notifications plugin has no foreground-service side
-  /// effects — only configure() does.
+  /// no-ops until the plugin's platform channel is initialized.
   static Future<void> cleanupOrphanedService() async {
     if (kIsWeb) return;
     try {
@@ -394,6 +432,7 @@ class BackgroundServiceManager {
     } catch (e) {
       debugError('[BACKGROUND] Failed to cleanup orphaned notification: $e');
     }
+    await stopLiveService('orphaned service');
   }
 
   /// Called when the background service starts (Android).
@@ -436,6 +475,17 @@ class BackgroundServiceManager {
         title: currentTitle,
         content: 'Starting wardriving...',
       );
+
+      // Clear a boot-start flag saved by older builds, so this start (often
+      // the BootReceiver's own, on the update that installs this build) is
+      // the last one it makes. Done after the listeners above: events that
+      // arrive before a listener exists are dropped, so awaiting first could
+      // lose a 'stop'.
+      try {
+        await service.setAutoStartOnBootMode(false);
+      } catch (_) {
+        // Best effort: initialize() also saves false on the next mode start.
+      }
     }
   }
 

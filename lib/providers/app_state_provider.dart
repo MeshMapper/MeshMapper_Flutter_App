@@ -7431,8 +7431,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _preferences.closeAppAfterDisconnect &&
         Platform.isAndroid) {
       debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
-      // Small delay to ensure cleanup completes
-      Future.delayed(const Duration(milliseconds: 500), () {
+      // Small delay to ensure cleanup completes. Same stop as exitApp(): a
+      // service this session did not start outlives SystemNavigator.pop().
+      Future.delayed(const Duration(milliseconds: 500), () async {
+        await BackgroundServiceManager.stopLiveService(
+            'close after disconnect');
         SystemNavigator.pop();
       });
     }
@@ -13480,10 +13483,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> exitApp() async {
     debugLog('[APP] Exit app requested');
 
-    // Disconnect first if connected
+    // Disconnect first if connected. closeApp: false because the exit below
+    // already stops the service and closes the app.
     if (isConnected) {
-      await disconnect();
+      await disconnect(closeApp: false);
     }
+
+    // The service runs with stopWithTask="false", so it outlives the
+    // activity. stopService() only stops one this session started; this
+    // stops whatever is running (Android only, a no-op elsewhere).
+    await BackgroundServiceManager.stopLiveService('exit app');
 
     // Exit the app (Android only - iOS doesn't allow programmatic app exit)
     if (Platform.isAndroid) {
