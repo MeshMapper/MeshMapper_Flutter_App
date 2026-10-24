@@ -46,7 +46,30 @@ void main() {
     // A raw socket, because HttpServer does not report the client hanging up.
     final hungUp = Completer<void>();
     final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    var connections = 0;
     raw.listen((socket) async {
+      if (++connections > 1) {
+        // The follow-up request: a small, complete answer.
+        final body = json.encode({
+          'success': true,
+          'polygons': [
+            {
+              'code': 'AKL',
+              'polygon': [
+                [1, 2],
+                [3, 4],
+              ],
+            },
+          ],
+        });
+        socket.listen((_) {}, onError: (_) {});
+        socket.write('HTTP/1.1 200 OK\r\n'
+            'Content-Type: application/json\r\n'
+            'Content-Length: ${body.length}\r\n\r\n$body');
+        await socket.flush();
+        await socket.close();
+        return;
+      }
       socket.listen((_) {}, onDone: () {
         if (!hungUp.isCompleted) hungUp.complete();
       }, onError: (_) {
@@ -81,6 +104,15 @@ void main() {
     expect(client.sent, 1);
     // The phone closed the connection: the download really stopped.
     await hungUp.future.timeout(const Duration(seconds: 5));
+
+    // The aborted connection is not reused: the same client asks again and
+    // gets a whole answer.
+    final again = await api
+        .fetchBorderPolygons(lat: -36.85, lon: 174.76, appVersion: 'APP-TEST')
+        .timeout(const Duration(seconds: 5));
+    expect(again!.polygons.single['code'], 'AKL');
+    expect(client.sent, 2);
+    expect(connections, 2);
   });
 
   test('a /border answer within the allowance is parsed', () async {
@@ -89,6 +121,8 @@ void main() {
       request.response
         ..headers.contentType = ContentType.json
         ..write(json.encode({
+          'success': true,
+          'border_hash': 'abc123',
           'polygons': [
             {
               'code': 'AKL',
@@ -107,8 +141,56 @@ void main() {
     final result = await api.fetchBorderPolygons(
         lat: -36.85, lon: 174.76, appVersion: 'APP-TEST');
 
-    expect(result, hasLength(1));
-    expect(result!.first['code'], 'AKL');
+    expect(result!.polygons, hasLength(1));
+    expect(result.polygons.first['code'], 'AKL');
+    expect(result.borderHash, 'abc123');
+  });
+
+  test('an answer without border_hash is returned with no hash', () async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server!.listen((request) async {
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(json.encode({
+          'success': true,
+          'border_hash': '',
+          'polygons': [
+            {'code': 'AKL', 'polygon': []},
+          ],
+        }));
+      await request.response.close();
+    });
+    client = _LocalClient(Uri.parse('http://127.0.0.1:${server!.port}'));
+    final api = ApiService(client: client);
+
+    final result = await api.fetchBorderPolygons(
+        lat: -36.85, lon: 174.76, appVersion: 'APP-TEST');
+
+    expect(result!.polygons, hasLength(1));
+    expect(result.borderHash, isNull);
+  });
+
+  test('a 503 border_unavailable is a failure', () async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server!.listen((request) async {
+      request.response
+        ..statusCode = 503
+        ..headers.contentType = ContentType.json
+        ..headers.set('Retry-After', '300')
+        ..write(json.encode({
+          'success': false,
+          'reason': 'border_unavailable',
+        }));
+      await request.response.close();
+    });
+    client = _LocalClient(Uri.parse('http://127.0.0.1:${server!.port}'));
+    final api = ApiService(client: client);
+
+    final result = await api.fetchBorderPolygons(
+        lat: -36.85, lon: 174.76, appVersion: 'APP-TEST');
+
+    expect(result, isNull);
+    expect(client.sent, 1);
   });
 
   test('a server that never answers the headers is aborted too', () async {
@@ -123,5 +205,7 @@ void main() {
         .timeout(const Duration(seconds: 5));
 
     expect(result, isNull);
+    // An abort is never sent again.
+    expect(client.sent, 1);
   });
 }

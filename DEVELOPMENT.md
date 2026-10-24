@@ -1804,15 +1804,24 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
 - **Border loading** (`lib/services/border_loader.dart`). A group's `/border` answer can be
   several MB, so `BorderLoader` gates every request made from the zone check: one at a time
   (the guard holds until the request has really ended), one load per context and `border_hash`,
-  and after a failed or empty answer a pause of 5, then 15, then 30 minutes (reset by a new
-  context, a new hash or a success). `ApiService.fetchBorderPolygons` sends an
-  `http.AbortableRequest` and aborts it at 60 s, which closes the socket; a plain Future
-  `.timeout` would leave the body downloading in the background. When `/status` sends
-  `zone.border_hash` (the same for every member of a group, see
-  `MeshMapper_Server/docs/APP_API.md`), the last polygons per context are kept in the
-  `region_borders` lazy Hive box (`HiveBorderCacheStore`, four contexts) and a matching hash is
-  served from it without asking `/border`, also across a zone transfer and a restart. With no
-  hash the app loads once per context, as before.
+  and after a failed, empty or misplaced answer a pause of 5, then 15, then 30 minutes (reset by
+  a new context, a new hash or a success). `ApiService.fetchBorderPolygons` sends an
+  `http.AbortableRequest` and aborts each attempt at 60 s, which closes the socket; a plain
+  Future `.timeout` would leave the body downloading in the background. An abort is never
+  replayed; the one `_send` replay (a reused connection closed before any header) gets its own
+  60 s. `/border` is sent the fix `/status` placed the phone with (`_lastZoneCheckPosition`),
+  and an answer must contain the zone and, in a group, only members (`bordersFitZone`), else
+  it is dropped as a failure. A `/border` body carries its own `border_hash` only when every
+  polygon is real (see `MeshMapper_Server/docs/APP_API.md`); only such an answer is saved,
+  under that hash, to the `region_borders` lazy Hive box (polygons) plus the small
+  `region_borders_index` box (hash and save time, kept in memory), four contexts, compacted
+  after a replace or eviction, JSON work in `compute()`. The `/status` `zone.border_hash` only
+  decides whether the saved copy is current: a match is served without asking `/border`, also
+  across a zone transfer and a restart, and a known miss is not read again. An answer with no
+  body hash (degraded, or an older server) and the HTTP 503 `border_unavailable` are never
+  saved; the first is shown and loads once per context, the second backs off. Clearing the
+  borders for another context (or the context moving on mid-request) forgets the loaded
+  context, so returning to it loads it again.
 - **What stays the member.** `zone.code` is still the session's identity everywhere the server
   reads it: the `/auth` `iata`, `_sessionZoneCode`, every upload, the wire tags, the custom API
   forward (`iataGetter`) and the offline `iataOverride`, `Repeater.iata` and the Siri repeater

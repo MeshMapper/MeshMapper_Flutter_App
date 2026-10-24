@@ -11,6 +11,7 @@ import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/mvt_cells.dart';
 import 'api_queue_service.dart' show altitudeLabelSummary;
+import 'border_loader.dart' show BorderAnswer;
 import 'meshcore/regional_carpeater_filter.dart';
 import 'network_state_service.dart';
 
@@ -647,25 +648,27 @@ class ApiService {
 
   /// Fetch regional boundary polygons from the MeshMapper API.
   ///
-  /// Returns a list of `{code, polygon}` maps where `polygon` is a list of
-  /// `[lat, lon]` pairs (as sent by the server). Returns `null` on failure
-  /// or maintenance mode.
+  /// Returns the `{code, polygon}` maps (`polygon` is a list of `[lat, lon]`
+  /// pairs as sent by the server) with the body's `border_hash`, which the
+  /// server sends only on a complete answer. Returns `null` on failure, on
+  /// maintenance mode and on the HTTP 503 `border_unavailable` answer (a
+  /// polygon the server could not read; see docs/APP_API.md in
+  /// MeshMapper_Server).
   ///
-  /// A group's answer can be megabytes, so the request gets a long allowance
-  /// and is aborted when it runs out. A plain Future timeout would leave the
-  /// body downloading in the background, and the next zone check would start
-  /// another one on top of it. The returned future only completes once the
-  /// request has really ended.
-  Future<List<Map<String, dynamic>>?> fetchBorderPolygons({
+  /// A group's answer can be megabytes, so each attempt gets a long
+  /// allowance and is aborted when it runs out. A plain Future timeout would
+  /// leave the body downloading in the background, and the next zone check
+  /// would start another one on top of it. The returned future only
+  /// completes once the request has really ended. An abort is never sent
+  /// again; the one replay [_send] makes (the server closed a reused
+  /// connection before any header) gets its own allowance, so the call can
+  /// take up to twice [_borderTimeout].
+  Future<BorderAnswer?> fetchBorderPolygons({
     required double lat,
     required double lon,
     required String appVersion,
   }) async {
     final stopwatch = Stopwatch()..start();
-    final abort = Completer<void>();
-    final abortTimer = Timer(_borderTimeout, () {
-      if (!abort.isCompleted) abort.complete();
-    });
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final payload = {
@@ -677,15 +680,23 @@ class ApiService {
       };
 
       Future<http.Response> post() async {
-        final request = http.AbortableRequest('POST', Uri.parse(borderUrl),
-            abortTrigger: abort.future)
-          ..headers['Content-Type'] = 'application/json'
-          ..body = json.encode(payload);
-        final streamed = await _client.send(request);
-        return http.Response.fromStream(streamed);
+        final abort = Completer<void>();
+        final abortTimer = Timer(_borderTimeout, () {
+          if (!abort.isCompleted) abort.complete();
+        });
+        try {
+          final request = http.AbortableRequest('POST', Uri.parse(borderUrl),
+              abortTrigger: abort.future)
+            ..headers['Content-Type'] = 'application/json'
+            ..body = json.encode(payload);
+          final streamed = await _client.send(request);
+          return await http.Response.fromStream(streamed);
+        } finally {
+          abortTimer.cancel();
+        }
       }
 
-      // The abort ends the request at _borderTimeout. The outer timeout is
+      // The abort ends an attempt at _borderTimeout. The outer timeout is
       // only a backstop for a client that ignores the abort trigger, so the
       // caller's in-flight guard can never stay set forever.
       final response = await _send(
@@ -722,14 +733,22 @@ class ApiService {
 
       if (data == null) return null;
       if (_checkMaintenanceMode(data)) return null;
+      if (response.statusCode != 200 || data['success'] == false) {
+        // 503 border_unavailable among them: never shown, never saved.
+        return null;
+      }
 
       final polygons = data['polygons'];
       if (polygons is! List) return null;
+      final hash = data['border_hash'];
 
-      return polygons
-          .whereType<Map>()
-          .map((p) => Map<String, dynamic>.from(p))
-          .toList();
+      return BorderAnswer(
+        polygons
+            .whereType<Map>()
+            .map((p) => Map<String, dynamic>.from(p))
+            .toList(),
+        borderHash: hash is String && hash.isNotEmpty ? hash : null,
+      );
     } catch (e) {
       stopwatch.stop();
       if (e is http.RequestAbortedException) {
@@ -739,8 +758,6 @@ class ApiService {
         debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
       }
       return null;
-    } finally {
-      abortTimer.cancel();
     }
   }
 

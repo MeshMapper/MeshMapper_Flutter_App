@@ -11040,7 +11040,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (newZoneCode.isNotEmpty) {
           _fetchRepeatersForZone(
               newZoneCode); // fire-and-forget — don't block zone check
-          _fetchBorderPolygons(newZoneCode); // fire-and-forget
+          _fetchBorderPolygons(newZoneCode,
+              fix: position); // fire-and-forget
         }
       } else {
         _regionBorders = [];
@@ -12025,12 +12026,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// context is the zone or its group (see [_repeaterContextKey]); `/border`
   /// already returns every member of a group, so a move between members
   /// keeps the polygons.
-  Future<void> _fetchBorderPolygons(String iata) async {
+  ///
+  /// `/border` is sent [fix], the fix `/status` placed the phone with
+  /// (default [_lastZoneCheckPosition]), never the live one, which may have
+  /// moved on; an answer that does not fit the zone is discarded anyway.
+  Future<void> _fetchBorderPolygons(String iata, {Position? fix}) async {
     final key = _repeaterContextKey;
-    final position = _currentPosition;
-    if (key == null || position == null) return;
+    final position = fix ?? _lastZoneCheckPosition ?? _currentPosition;
+    final zone = zoneCode;
+    if (key == null || position == null || zone == null) return;
+    final members = zoneGroup?.members;
     final hash = _currentZone?['border_hash'];
 
+    var asked = false;
     final result = await _borderLoader.ensure(
       contextKey: key,
       borderHash: hash is String && hash.isNotEmpty ? hash : null,
@@ -12039,19 +12047,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _regionBorders = [];
         notifyListeners();
       },
-      fetch: () => _apiService.fetchBorderPolygons(
-        lat: position.latitude,
-        lon: position.longitude,
-        appVersion: _appVersion,
-      ),
+      accept: (polygons) =>
+          bordersFitZone(polygons, zoneCode: zone, groupMembers: members),
+      fetch: () {
+        asked = true;
+        return _apiService.fetchBorderPolygons(
+          lat: position.latitude,
+          lon: position.longitude,
+          appVersion: _appVersion,
+        );
+      },
     );
-    if (result == null) return;
+    if (_isDisposed) return;
     if (_repeaterContextKey != key) {
-      // The zone moved on while the request ran; the next zone check loads
-      // the new context.
+      if (result == null && !asked) return;
+      // The zone moved on while this ran. Whatever is shown belongs to the
+      // old context, so clear it and load the new one now rather than on
+      // the next zone tick.
       _borderLoader.forget();
+      if (_regionBorders.isNotEmpty) {
+        _regionBorders = [];
+        notifyListeners();
+      }
+      final next = zoneCode;
+      if (next != null && _inZone == true) unawaited(_fetchBorderPolygons(next));
       return;
     }
+    if (result == null) return;
     _regionBorders = result;
     debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
     notifyListeners();
