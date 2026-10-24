@@ -727,7 +727,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits. In Hybrid, a held TX ping is never swapped for a discovery.',
+                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits. In Hybrid, a held GRP_TXT is never replaced by a discovery request, so it is the first ping into a clear square and can paint it green.',
                 style: TextStyle(fontSize: 13),
               ),
               SizedBox(height: 12),
