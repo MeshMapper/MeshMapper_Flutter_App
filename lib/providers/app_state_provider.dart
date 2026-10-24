@@ -36,6 +36,7 @@ import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
 import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
+import '../services/border_loader.dart';
 import '../services/debug_file_logger.dart';
 import '../services/disconnect_alert_decision.dart';
 import '../services/offline_session_service.dart';
@@ -1104,8 +1105,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Regional boundary polygons (from /border API — always displayed on map)
   List<Map<String, dynamic>> _regionBorders = [];
-  String? _bordersLoadedForZone;
-  bool _bordersFetchInProgress = false;
+  final BorderLoader _borderLoader =
+      BorderLoader(cache: kIsWeb ? null : HiveBorderCacheStore());
 
   // Regional channels from API (for UI display)
   List<String> _regionalChannels = [];
@@ -9061,7 +9062,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _nearestZone = null;
       _lastZoneCheckPosition = null;
       _regionBorders = [];
-      _bordersLoadedForZone = null;
+      _borderLoader.forget();
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
     } else {
       // Stop auto-save timer when leaving offline mode
@@ -9146,7 +9147,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _nearestZone = null;
       _lastZoneCheckPosition = null;
       _regionBorders = [];
-      _bordersLoadedForZone = null;
+      _borderLoader.forget();
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
 
       // Smart Pinging has no server to ask in Offline Mode.
@@ -11043,7 +11044,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       } else {
         _regionBorders = [];
-        _bordersLoadedForZone = null;
+        _borderLoader.forget();
         _currentZone = null;
         _syncRecentCoverage();
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
@@ -11688,9 +11689,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _invalidateRepeatersForContext();
       await _fetchRepeatersForZone(newZoneCode);
 
-      // Fetch updated boundary polygons for the new zone
-      _bordersLoadedForZone = null;
-      _regionBorders = [];
+      // Boundary polygons for the new zone. A context or hash the loader
+      // already holds keeps its borders (or comes from the cache); anything
+      // else clears them just before the request.
       _fetchBorderPolygons(newZoneCode); // fire-and-forget
 
       // 18. Re-enable heartbeat
@@ -12018,35 +12019,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Fetch regional boundary polygons for the current zone.
-  /// Called after a successful zone check; idempotent per context (the
-  /// zone, or its group, see [_repeaterContextKey]) so the /border endpoint
-  /// is only hit once per zone transition. `/border` already returns every
-  /// member of a group, so a move between members keeps the polygons.
+  /// Called after every successful zone check; [BorderLoader] decides
+  /// whether `/border` is actually asked (once per context and
+  /// `border_hash`, never two at a time, backing off after a failure). The
+  /// context is the zone or its group (see [_repeaterContextKey]); `/border`
+  /// already returns every member of a group, so a move between members
+  /// keeps the polygons.
   Future<void> _fetchBorderPolygons(String iata) async {
     final key = _repeaterContextKey;
-    if (key == null || _bordersLoadedForZone == key) return;
-    if (_bordersFetchInProgress) return;
-    if (_currentPosition == null) return;
+    final position = _currentPosition;
+    if (key == null || position == null) return;
+    final hash = _currentZone?['border_hash'];
 
-    _bordersFetchInProgress = true;
-    try {
-      final result = await _apiService.fetchBorderPolygons(
-        lat: _currentPosition!.latitude,
-        lon: _currentPosition!.longitude,
-        appVersion: _appVersion,
-      );
-      if (result != null && result.isNotEmpty) {
-        _regionBorders = result;
-        _bordersLoadedForZone = key;
-        debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
+    final result = await _borderLoader.ensure(
+      contextKey: key,
+      borderHash: hash is String && hash.isNotEmpty ? hash : null,
+      onStale: () {
+        if (_regionBorders.isEmpty) return;
+        _regionBorders = [];
         notifyListeners();
-      } else {
-        debugWarn(
-            '[BORDER] No polygons returned for zone $iata — will retry on next zone check');
-      }
-    } finally {
-      _bordersFetchInProgress = false;
+      },
+      fetch: () => _apiService.fetchBorderPolygons(
+        lat: position.latitude,
+        lon: position.longitude,
+        appVersion: _appVersion,
+      ),
+    );
+    if (result == null) return;
+    if (_repeaterContextKey != key) {
+      // The zone moved on while the request ran; the next zone check loads
+      // the new context.
+      _borderLoader.forget();
+      return;
     }
+    _regionBorders = result;
+    debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
+    notifyListeners();
   }
 
   // ============================================

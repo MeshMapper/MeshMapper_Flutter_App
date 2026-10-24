@@ -1797,10 +1797,22 @@ after both `_currentZone = newZone` assignments in the `/status` handler.
   (`fetchRepeaters(iata)`; the member already answers for the whole group) and the borders from
   the central `/border` endpoint, keyed on the phone's position (`_fetchBorderPolygons`), but
   both are KEYED on `_repeaterContextKey`, which is `coverageHostCode`:
-  `_repeatersLoadedForIata`, `_bordersLoadedForZone`, the in-flight fetch dedupe,
+  `_repeatersLoadedForIata`, `BorderLoader.loadedKey`, the in-flight fetch dedupe,
   `_invalidateRepeatersForContext` and the scope lifecycle's "list still current" check all
   compare the key, so a move inside the group neither clears nor refetches either list, and two
   members racing a fetch collapse to one request.
+- **Border loading** (`lib/services/border_loader.dart`). A group's `/border` answer can be
+  several MB, so `BorderLoader` gates every request made from the zone check: one at a time
+  (the guard holds until the request has really ended), one load per context and `border_hash`,
+  and after a failed or empty answer a pause of 5, then 15, then 30 minutes (reset by a new
+  context, a new hash or a success). `ApiService.fetchBorderPolygons` sends an
+  `http.AbortableRequest` and aborts it at 60 s, which closes the socket; a plain Future
+  `.timeout` would leave the body downloading in the background. When `/status` sends
+  `zone.border_hash` (the same for every member of a group, see
+  `MeshMapper_Server/docs/APP_API.md`), the last polygons per context are kept in the
+  `region_borders` lazy Hive box (`HiveBorderCacheStore`, four contexts) and a matching hash is
+  served from it without asking `/border`, also across a zone transfer and a restart. With no
+  hash the app loads once per context, as before.
 - **What stays the member.** `zone.code` is still the session's identity everywhere the server
   reads it: the `/auth` `iata`, `_sessionZoneCode`, every upload, the wire tags, the custom API
   forward (`iataGetter`) and the offline `iataOverride`, `Repeater.iata` and the Siri repeater

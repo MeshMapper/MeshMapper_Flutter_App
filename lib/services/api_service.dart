@@ -153,6 +153,7 @@ class ApiService {
   final http.Client _client;
   final NetworkStateSource _networkState;
   final Duration _deviceCatalogTimeout;
+  final Duration _borderTimeout;
   final DateTime Function() _now;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
@@ -261,10 +262,12 @@ class ApiService {
     http.Client? client,
     NetworkStateSource? networkState,
     Duration deviceCatalogTimeout = const Duration(seconds: 10),
+    Duration borderTimeout = const Duration(seconds: 60),
     DateTime Function()? now,
   })  : _client = client ?? http.Client(),
         _networkState = networkState ?? NetworkStateService.instance,
         _deviceCatalogTimeout = deviceCatalogTimeout,
+        _borderTimeout = borderTimeout,
         _now = now ?? DateTime.now;
 
   /// Fetches the public model catalog without affecting session callbacks.
@@ -647,12 +650,22 @@ class ApiService {
   /// Returns a list of `{code, polygon}` maps where `polygon` is a list of
   /// `[lat, lon]` pairs (as sent by the server). Returns `null` on failure
   /// or maintenance mode.
+  ///
+  /// A group's answer can be megabytes, so the request gets a long allowance
+  /// and is aborted when it runs out. A plain Future timeout would leave the
+  /// body downloading in the background, and the next zone check would start
+  /// another one on top of it. The returned future only completes once the
+  /// request has really ended.
   Future<List<Map<String, dynamic>>?> fetchBorderPolygons({
     required double lat,
     required double lon,
     required String appVersion,
   }) async {
     final stopwatch = Stopwatch()..start();
+    final abort = Completer<void>();
+    final abortTimer = Timer(_borderTimeout, () {
+      if (!abort.isCompleted) abort.complete();
+    });
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final payload = {
@@ -663,15 +676,21 @@ class ApiService {
         'key': apiKey,
       };
 
+      Future<http.Response> post() async {
+        final request = http.AbortableRequest('POST', Uri.parse(borderUrl),
+            abortTrigger: abort.future)
+          ..headers['Content-Type'] = 'application/json'
+          ..body = json.encode(payload);
+        final streamed = await _client.send(request);
+        return http.Response.fromStream(streamed);
+      }
+
+      // The abort ends the request at _borderTimeout. The outer timeout is
+      // only a backstop for a client that ignores the abort trigger, so the
+      // caller's in-flight guard can never stay set forever.
       final response = await _send(
         'POST /wardrive-api.php/border',
-        () => _client
-            .post(
-              Uri.parse(borderUrl),
-              headers: {'Content-Type': 'application/json'},
-              body: json.encode(payload),
-            )
-            .timeout(const Duration(seconds: 10)),
+        () => post().timeout(_borderTimeout + const Duration(seconds: 15)),
       );
 
       stopwatch.stop();
@@ -713,8 +732,15 @@ class ApiService {
           .toList();
     } catch (e) {
       stopwatch.stop();
-      debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
+      if (e is http.RequestAbortedException) {
+        debugError('[BORDER] POST /wardrive-api.php/border aborted after '
+            '${_borderTimeout.inSeconds}s');
+      } else {
+        debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
+      }
       return null;
+    } finally {
+      abortTimer.cancel();
     }
   }
 
