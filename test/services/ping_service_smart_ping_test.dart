@@ -683,15 +683,15 @@ void main() {
         reason: 'a banked ping must not go out on top of a live discovery');
     expect(ping.bankedPing, BankedPingType.tx);
 
-    // Control: let that discovery finish into a covered square, so it banks
-    // itself and leaves nothing in flight. The very same clear square now
-    // releases, which is what makes the refusal above about the discovery and
-    // not about one of the other guards.
+    // Control: let that discovery finish into a covered square, so it defers
+    // (leaving the banked TX ping in place) and leaves nothing in flight. The
+    // very same clear square now releases, which is what makes the refusal
+    // above about the discovery and not about one of the other guards.
     coverage.answer = RecentCoverage.covered;
     gps.freshPositionGate!.complete();
     await tester.pump();
     expect(ping.pingInProgress, isFalse);
-    expect(ping.bankedPing, BankedPingType.discovery);
+    expect(ping.bankedPing, BankedPingType.tx);
 
     coverage.answer = RecentCoverage.clear;
     expect(ping.maybeSendBankedPing(_pos(lat: 45.01)), isTrue);
@@ -828,6 +828,43 @@ void main() {
     await tester.pump(const Duration(seconds: 8));
     expect(scheduled.last, txLegWaitMs,
         reason: 'a released discovery must hand the next leg to TX');
+
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+  });
+
+  testWidgets('a hybrid discovery leg never replaces a banked TX ping',
+      (tester) async {
+    // Hybrid favours the TX ping: once one is held, the discovery legs that
+    // defer after it leave it in the bank, so the first ping into a fresh
+    // square is the one that can come back two-way.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping =
+        _buildWith(gps, coverage, discoveryWindowTimer: discoveryWindow);
+    final reported = <BankedPingType>[];
+    ping.onPingDeferred = (lat, lon, held) => reported.add(held);
+
+    // Hybrid opens on discovery, which the covered square banks: no TX ping
+    // is held yet, so the discovery takes the slot.
+    await ping.enableAutoPing(hybridMode: true);
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // The TX leg defers in the same square and takes the slot over.
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // The next discovery leg defers too and leaves the TX ping in place.
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx,
+        reason: 'a deferred discovery must not replace a banked TX ping');
+    // The square's DEFER still names what was actually held each time.
+    expect(reported, [
+      BankedPingType.discovery,
+      BankedPingType.tx,
+      BankedPingType.discovery,
+    ]);
 
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();

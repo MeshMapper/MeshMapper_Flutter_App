@@ -181,7 +181,9 @@ class PingService {
   ///
   /// Smart Pinging holds a ping back rather than dropping it. Only one is ever
   /// held: a later deferral overwrites an earlier one, so what goes out is
-  /// whatever was most recently due.
+  /// whatever was most recently due. The one exception is Hybrid, where a
+  /// held TX ping is never replaced by a deferred discovery. A held discovery
+  /// still goes out if a fresh square comes before any TX ping is deferred.
   BankedPingType? _bankedPing;
 
   // Discovery tracking
@@ -2101,9 +2103,16 @@ class PingService {
       if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
           RecentCoverage.covered) {
         _skipReason = skipReasonRecentlyCovered;
-        _bankedPing = BankedPingType.discovery;
-        debugLog(
-            '[DISC] Square recently covered, discovery deferred and banked');
+        // A held TX ping keeps the slot (Hybrid): the first ping into a fresh
+        // square should be the one that can come back two-way.
+        if (_bankedPing == BankedPingType.tx) {
+          debugLog('[DISC] Square recently covered, discovery deferred, '
+              'banked TX ping kept');
+        } else {
+          _bankedPing = BankedPingType.discovery;
+          debugLog(
+              '[DISC] Square recently covered, discovery deferred and banked');
+        }
         _pingInProgress = false;
         onPingDeferred?.call(
             position.latitude, position.longitude, BankedPingType.discovery);
