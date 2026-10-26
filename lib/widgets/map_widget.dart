@@ -6285,7 +6285,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
     final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
     final blob = gridSize == 100 ? 1 : 0;
-    // Every cell draws (web parity — it draws all). Only the lines are capped:
+    // Every cell draws (web parity: it draws all). Only the lines are capped:
     // capping the cells farthest-first dropped the ones nearest a busy
     // repeater and left a pale hole round it.
     final cells = repeaterCoverageCells(matched, repeater,

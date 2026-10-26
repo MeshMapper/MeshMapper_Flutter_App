@@ -1,3 +1,5 @@
+import 'dart:ui' show SemanticsAction, Tristate;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/providers/app_state_provider.dart' show AutoMode;
@@ -187,6 +189,36 @@ void main() {
             );
             handle.dispose();
           });
+
+          if (layout != _Layout.landscape) {
+            testWidgets('${mode.name}: the label is read once, badge on or off',
+                (tester) async {
+              final handle = tester.ensureSemantics();
+              final base = layout.baseLabel(mode);
+              for (final requestActive in [false, true]) {
+                await _pump(tester, layout, mode, requestActive: requestActive);
+                final node = tester.getSemantics(find
+                    .bySemanticsLabel(RegExp('^${RegExp.escape(base)}'))
+                    .first);
+                final label = node.label;
+                expect(RegExp(RegExp.escape(base)).allMatches(label).length, 1,
+                    reason: 'the base label must not repeat: "$label"');
+                expect(label, isNot(contains('Scopes')),
+                    reason: 'the pill text is read through the suffix only');
+                expect(
+                    label.startsWith(
+                        scopesBadgeSemanticsLabel(base, requestActive)),
+                    isTrue,
+                    reason: label);
+                // Still a tappable, enabled button for TalkBack and VoiceOver.
+                final data = node.getSemanticsData();
+                expect(data.flagsCollection.isButton, isTrue);
+                expect(data.flagsCollection.isEnabled, Tristate.isTrue);
+                expect(data.hasAction(SemanticsAction.tap), isTrue);
+              }
+              handle.dispose();
+            });
+          }
 
           testWidgets('${mode.name}: the overhanging pill is not clipped',
               (tester) async {

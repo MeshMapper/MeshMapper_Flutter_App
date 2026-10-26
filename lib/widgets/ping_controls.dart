@@ -618,29 +618,33 @@ class _PingActionButtonState extends State<PingActionButton> {
                           ),
                         ),
                       ),
-                    // Scopes badge while asking for scopes
+                    // Scopes badge while asking for scopes. Read through the
+                    // wrapper's label instead, so not read on its own.
                     if (widget.showScopesBadge)
                       const Positioned(
                         top: -4,
                         right: -8,
-                        child: ScopesBadge(),
+                        child: ExcludeSemantics(child: ScopesBadge()),
                       ),
                   ],
                 ),
               ),
               const SizedBox(height: 4),
-              // Label - always same height
-              Text(
-                widget.label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight:
-                      widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                  color: showColor
-                      ? (widget.isActive
-                          ? effectiveColor
-                          : colorScheme.onSurface)
-                      : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+              // Label - always same height. The wrapper's Semantics already
+              // reads it, so it is excluded here to stop it reading twice.
+              ExcludeSemantics(
+                child: Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight:
+                        widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                    color: showColor
+                        ? (widget.isActive
+                            ? effectiveColor
+                            : colorScheme.onSurface)
+                        : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                  ),
                 ),
               ),
               // Subtitle OR the "Active" status text - always reserve space.
@@ -679,6 +683,8 @@ class _PingActionButtonState extends State<PingActionButton> {
     );
 
     return Semantics(
+      button: true,
+      enabled: widget.enabled,
       label: scopesBadgeSemanticsLabel(widget.label, widget.showScopesBadge),
       child: button,
     );
@@ -2090,17 +2096,20 @@ class _CompactPingActionButtonState extends State<CompactPingActionButton> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     const SizedBox(width: 5),
-                                    Text(
-                                      widget.label!,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: widget.isActive
-                                            ? FontWeight.w600
-                                            : FontWeight.w500,
-                                        color: showColor
-                                            ? effectiveColor
-                                            : colorScheme.onSurfaceVariant
-                                                .withValues(alpha: 0.5),
+                                    // Read by the wrapper's Semantics.
+                                    ExcludeSemantics(
+                                      child: Text(
+                                        widget.label!,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: widget.isActive
+                                              ? FontWeight.w600
+                                              : FontWeight.w500,
+                                          color: showColor
+                                              ? effectiveColor
+                                              : colorScheme.onSurfaceVariant
+                                                  .withValues(alpha: 0.5),
+                                        ),
                                       ),
                                     ),
                                   ],
@@ -2112,12 +2121,13 @@ class _CompactPingActionButtonState extends State<CompactPingActionButton> {
                   ),
                 ),
               ),
-              // Scopes badge while asking for scopes
+              // Scopes badge while asking for scopes. Read through the
+              // wrapper's label instead, so not read on its own.
               if (widget.showScopesBadge)
                 const Positioned(
                   top: -6,
                   right: -6,
-                  child: ScopesBadge(),
+                  child: ExcludeSemantics(child: ScopesBadge()),
                 ),
             ],
           ),
@@ -2126,6 +2136,8 @@ class _CompactPingActionButtonState extends State<CompactPingActionButton> {
     );
 
     return Semantics(
+      button: true,
+      enabled: widget.enabled,
       label: scopesBadgeSemanticsLabel(
           widget.label ?? '', widget.showScopesBadge),
       child: button,
