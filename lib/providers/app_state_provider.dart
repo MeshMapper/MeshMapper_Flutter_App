@@ -1809,6 +1809,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   int? get zoneSlotsAvailable => _currentZone?['slots_available'] as int?;
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
+
+  /// The zone's flood veto for the current radio preset, as /status (or a
+  /// later /auth) reported it. Null when the server sent no `flood_disabled`
+  /// key (an older server); `slotsChipState` then falls back to guessing
+  /// from `slots_max == 0`.
+  bool? get zoneFloodDisabled {
+    final zone = _currentZone;
+    if (zone == null || !zone.containsKey('flood_disabled')) return null;
+    return zone['flood_disabled'] == true;
+  }
   String? get nearestZoneName => _nearestZone?['name'] as String?;
   String? get nearestZoneCode => _nearestZone?['code'] as String?;
   double? get nearestZoneDistanceKm =>
@@ -10885,6 +10895,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         lon: position.longitude,
         accuracyMeters: position.accuracy,
         appVersion: _appVersion,
+        radioFreq: liveRadioConfig ?? _lastRadioConfig,
       );
 
       debugLog(
@@ -11086,6 +11097,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _currentZone!['slots_max'] = authResult['slots_max'];
       debugLog(
           '[CAPACITY] Updated slots_max from auth: ${authResult['slots_max']}');
+    }
+    // /auth resolves flood for the live radio preset, so it outranks a
+    // /status answer that may have used a stale cached preset.
+    if (authResult.containsKey('flood_disabled')) {
+      _currentZone!['flood_disabled'] = authResult['flood_disabled'] == true;
+      debugLog('[CAPACITY] Updated flood_disabled from auth: '
+          '${authResult['flood_disabled']}');
     }
 
     // Sync at_capacity with tx_allowed

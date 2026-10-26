@@ -585,6 +585,7 @@ class ApiService {
     required double lon,
     required double accuracyMeters,
     required String appVersion,
+    String? radioFreq,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -596,6 +597,9 @@ class ApiService {
         'ver': appVersion,
         'timestamp': timestamp,
         'key': apiKey,
+        // The radio preset picks which of the zone's preset rows answers
+        // slots_max and flood_disabled. Without it the server uses the `*` row.
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
 
       final response = await _send(

@@ -13,6 +13,7 @@ import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/slots_chip.dart';
 import '../utils/store_links.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 import '../services/permission_disclosure_service.dart';
@@ -1582,30 +1583,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       locationColor = Colors.grey;
     }
 
-    // Slots info
-    final slotsAvailable = appState.zoneSlotsAvailable;
-    final slotsMax = appState.zoneSlotsMax;
-    final hasSlots = slotsAvailable != null && slotsMax != null;
-
-    // A flood-disabled region hands out no TX slots at all. Before connecting
-    // the auth flag isn't known yet, so fall back to the shape of the zone: a
-    // 0-max zone isn't FULL, it simply offers no TX slots. Either way it's a
-    // regional setting, so show info blue and drop the misleading 0/0 count.
-    final passiveOnly = appState.floodDisabled || slotsMax == 0;
-
-    // Slots color based on availability
-    Color slotsColor;
-    if (passiveOnly) {
-      slotsColor = Colors.blue;
-    } else if (!hasSlots) {
-      slotsColor = Colors.grey;
-    } else if (slotsAvailable == 0) {
-      slotsColor = Colors.red;
-    } else if (slotsAvailable <= 2) {
-      slotsColor = Colors.orange;
-    } else {
-      slotsColor = Colors.green;
-    }
+    // Slots info. Flood is per radio preset and independent of the slot
+    // count, so a 0-slot preset with flood on reads "0 Slots", not "Flood Off".
+    final slotsChip = slotsChipState(
+      authFloodDisabled: appState.floodDisabled,
+      zoneFloodDisabled: appState.zoneFloodDisabled,
+      slotsAvailable: appState.zoneSlotsAvailable,
+      slotsMax: appState.zoneSlotsMax,
+    );
 
     return Container(
       width: double.infinity,
@@ -1656,14 +1641,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
             // Slots chip
             _buildChip(
-              icon: passiveOnly ? Icons.waves : Icons.people_outline,
-              text: passiveOnly
-                  ? 'Flood Off'
-                  : hasSlots
-                      ? '$slotsAvailable/$slotsMax Open'
-                      : '--',
-              color: slotsColor,
-              onTap: passiveOnly ? () => _showFloodDisabledInfo(context) : null,
+              icon: slotsChip.icon,
+              text: slotsChip.label,
+              color: slotsChip.color,
+              onTap: slotsChip.tappable
+                  ? () => _showFloodDisabledInfo(context)
+                  : null,
             ),
           ],
         ),
