@@ -115,7 +115,8 @@ class GeneralSettingsPage extends StatelessWidget {
               ),
             ]),
 
-          // Exit Options (Android only)
+          // Exit Options (Android only). The Close App button itself sits on
+          // the Settings tab.
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
             SettingsSectionCard(title: 'Exit', children: [
               SwitchListTile(
@@ -127,45 +128,7 @@ class GeneralSettingsPage extends StatelessWidget {
                 onChanged: (value) =>
                     appState.setCloseAppAfterDisconnect(value),
               ),
-              ListTile(
-                leading:
-                    const Icon(Icons.power_settings_new, color: Colors.red),
-                title: const Text('Close App'),
-                subtitle: const Text('Exit the app completely'),
-                onTap: () => _showCloseAppConfirmation(context, appState),
-              ),
             ]),
-        ],
-      ),
-    );
-  }
-
-  void _showCloseAppConfirmation(
-      BuildContext context, AppStateProvider appState) {
-    final isConnected = appState.isConnected;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Close App'),
-        content: Text(
-          isConnected
-              ? 'This will disconnect from the device and close the app. Continue?'
-              : 'This will close the app. Continue?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              appState.exitApp();
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Close App'),
-          ),
         ],
       ),
     );

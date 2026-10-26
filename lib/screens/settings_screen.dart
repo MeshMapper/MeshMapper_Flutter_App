@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -7,6 +8,7 @@ import '../utils/constants.dart';
 import 'settings/about_settings_page.dart';
 import 'settings/account_settings_page.dart';
 import 'settings/api_endpoints_settings_page.dart';
+import 'settings/close_app_tile.dart';
 import 'settings/data_settings_page.dart';
 import 'settings/developer_settings_page.dart';
 import 'settings/general_settings_page.dart';
@@ -15,7 +17,8 @@ import 'settings/settings_section_card.dart';
 import 'settings/wardriving_settings_page.dart';
 import 'watch_diagnostics_screen.dart';
 
-/// Settings tab: one row per settings folder, each opening its own page.
+/// Settings tab: one row per settings folder, each opening its own page,
+/// plus Close App at the bottom on Android.
 ///
 /// The folder pages live in `settings/`. This screen only decides which rows
 /// to show; every tile, dialog and platform gate lives on the page it belongs
@@ -112,6 +115,9 @@ class SettingsScreen extends StatelessWidget {
                 builder: (_) => const DeveloperSettingsPage(),
               ),
           ]),
+          // iOS does not let an app exit itself, and the web build cannot.
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+            const SettingsSectionCard(children: [CloseAppTile()]),
         ],
       ),
     );
