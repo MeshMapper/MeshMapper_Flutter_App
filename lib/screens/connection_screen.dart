@@ -1694,12 +1694,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
   }
 
-  /// Explains a flood-disabled region.
+  /// Explains a flood veto for the radio's current preset.
   ///
   /// The chip has room for eight characters, which cannot say that Trace Mode
   /// still works, so the detail lives here. Layout mirrors
-  /// [_showAuthMethodInfo]; wording matches the region-veto dialog in
-  /// MainScaffold so users see one consistent explanation.
+  /// [_showAuthMethodInfo].
   void _showFloodDisabledInfo(BuildContext context) {
     final bodyStyle = TextStyle(
       fontSize: 14,
@@ -1761,9 +1760,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                     Text(
                       'This region has grown large enough that flood traffic '
                       'started hurting the mesh, so the regional mesh chose '
-                      'to turn it off. Active and Hybrid modes are '
-                      'unavailable across the whole MeshMapper region you '
-                      'are in. It is not a capacity limit.',
+                      'to turn it off for your radio\'s settings (frequency, '
+                      'bandwidth and spreading factor). Active and Hybrid '
+                      'modes are unavailable on these settings. It is not a '
+                      'capacity limit.',
                       style: bodyStyle,
                     ),
                     const SizedBox(height: 12),
