@@ -182,8 +182,10 @@ class PingService {
   /// Smart Pinging holds a ping back rather than dropping it. Only one is ever
   /// held: a later deferral overwrites an earlier one, so what goes out is
   /// whatever was most recently due. The one exception is Hybrid, where a
-  /// held TX ping is never replaced by a deferred discovery. A held discovery
-  /// still goes out if a fresh square comes before any TX ping is deferred.
+  /// held TX ping is never replaced by a discovery: a deferred discovery
+  /// leaves it held, and a discovery leg that finds the square not covered
+  /// sends the held TX in its place. A held discovery still goes out if a
+  /// fresh square comes before any TX ping is deferred.
   BankedPingType? _bankedPing;
 
   // Discovery tracking
@@ -2015,6 +2017,8 @@ class PingService {
     // window is running, so the flag alone cannot tell an armed window from an
     // attempt that bowed out. The finally needs that distinction.
     var armedWindow = false;
+    // Set when a held TX ping takes this leg instead (Hybrid).
+    var handToTx = false;
     final epoch = _sendEpoch;
 
     try {
@@ -2114,9 +2118,28 @@ class PingService {
               '[DISC] Square recently covered, discovery deferred and banked');
         }
         _pingInProgress = false;
-        onPingDeferred?.call(
-            position.latitude, position.longitude, BankedPingType.discovery);
+        // Names what is actually held, so a square first entered on this leg
+        // while a TX is held reports the TX.
+        onPingDeferred?.call(position.latitude, position.longitude,
+            _bankedPing ?? BankedPingType.discovery);
         _scheduleNextDiscovery();
+        return;
+      }
+
+      // A held TX ping is never replaced by a discovery (Hybrid). The release
+      // check could not see this fix: the in-progress latch above refuses it,
+      // getFreshPosition() bypasses the stream, and it only releases on a
+      // definite 'clear' while this lane also proceeds on 'unknown'. So this
+      // leg goes to the TX instead. The send itself is dispatched from the
+      // finally, once the latch is cleared, since sendTxPing takes it again.
+      if (_hybridModeEnabled &&
+          _bankedPing == BankedPingType.tx &&
+          _gpsService.canPingAtPosition(position)) {
+        debugLog('[DISC] Banked TX ping takes this leg, discovery not sent');
+        _bankedPing = null;
+        _skipReason = null;
+        _pingInProgress = false;
+        handToTx = true;
         return;
       }
 
@@ -2221,6 +2244,14 @@ class PingService {
       if (!armedWindow && epoch == _sendEpoch) _pingInProgress = false;
       if (!armedWindow && _pendingDisable) {
         await _executePendingDisable('discovery ended without window');
+      } else if (handToTx && epoch == _sendEpoch) {
+        // The timer callback flipped the alternation past this leg when it
+        // dispatched it. The TX runs in its place, so the next leg is a
+        // discovery, as in maybeSendBankedPing(). The TX re-arms the lane
+        // from its own window or skip path.
+        _nextPingIsDiscovery = true;
+        debugLog('[PING] Releasing banked TX ping in place of a discovery');
+        unawaited(_sendAutoPing());
       }
     }
   }

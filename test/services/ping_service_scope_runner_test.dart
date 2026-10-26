@@ -842,8 +842,11 @@ void main() {
           s.onScheduled = (ms, reason) {
             if (reason == PingService.skipReasonRecentlyCovered) {
               txDeferred++;
-              // Only the TX leg is covered: the discovery leg goes out.
+              // Only the TX leg is covered: the discovery leg goes out. The
+              // banked TX would take a clear discovery leg, so it is held
+              // inside its own 25 m rule to keep that leg a discovery.
               s.coverage = RecentCoverage.clear;
+              s.gps.tooClose = true;
             }
           };
           s.conn.onDiscoveryWrite = () {

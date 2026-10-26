@@ -595,8 +595,15 @@ untouched. On by default with a 14 day window.
   the backstop for a phone that never reaches a clear square.
 - **The bank**: one slot. `PingService._bankedPing` holds a `BankedPingType`, either `tx`
   (Active or Hybrid) or `discovery` (Passive or Hybrid), readable through `bankedPing`. A
-  later deferral overwrites an earlier one, so what eventually goes out is whichever type was
-  most recently due. `maybeSendBankedPing(position)` releases it and returns true when it
+  later deferral overwrites an earlier one, except that in Hybrid a held TX ping is never
+  replaced by a discovery: a deferred discovery leaves the TX held (and its DEFER names the
+  TX), and a discovery leg whose fresh fix is not covered (`clear` or `unknown`) and passes
+  the TX distance rule sends the held TX in its place. That leg clears the bank and the
+  in-progress latch, sets `_nextPingIsDiscovery` back to true and dispatches the TX from the
+  attempt's `finally`, so the next leg is a discovery and the TX re-arms the lane itself. The
+  release check alone cannot cover this: it is refused while the discovery holds the latch
+  across its fresh fix, that fix bypasses the position stream, and it only releases on
+  `clear`. `maybeSendBankedPing(position)` releases it and returns true when it
   dispatched one. Dispatched rather than delivered: both send paths take their own fresh fix
   and re-validate, so a released ping can still be stopped inside the send. The GPS position
   listener in `AppStateProvider` calls it on every fix, placed after the airborne early return,
@@ -613,7 +620,8 @@ untouched. On by default with a 14 day window.
   airborne check of its own the way a TX send does through `canPing()`). On release it cancels
   the pending auto and discovery timers and sets `_nextPingIsDiscovery` explicitly rather than
   toggling it, so Hybrid's alternation stays correct however many deferrals came first.
-- **Clearing the bank**: a ping that proceeds to send clears it, and so do auto-mode start,
+- **Clearing the bank**: a ping that proceeds to send clears it (a discovery leg with a TX
+  held sends that TX instead, see above), and so do auto-mode start,
   stop, mode switch and `dispose()`. `clearBankedPing()` clears it from `_syncRecentCoverage`
   when the lookup goes inactive, because with the lookup off `isCovered` answers `clear` for
   every fix and would otherwise release the hold on the next GPS tick. Every other skip of a
