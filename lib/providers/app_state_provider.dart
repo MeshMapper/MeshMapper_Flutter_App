@@ -7727,7 +7727,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// here is released without being awaited (that release is a second /auth
   /// POST that can sit for 30 s, and the successor is blocked on this
   /// settling). `failed` never leaves a minted session behind. [tag] and
-  /// [what] name the caller in the logs.
+  /// [what] name the caller in the logs. [fix] is the position to send; when
+  /// null it is picked here.
   Future<SessionRecoveryResult> _mintAndApplyReplacementSession({
     required MeshCoreConnection connection,
     required String publicKey,
@@ -7735,6 +7736,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     required bool Function() owns,
     required String tag,
     required String what,
+    Position? fix,
   }) async {
     final deviceName = _isAnonymousRenamed
         ? 'Anonymous'
@@ -7744,7 +7746,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugWarn('$tag Refusing $what without a device name');
       return SessionRecoveryResult.failed;
     }
-    final position = _currentPosition;
+    // The fix the connect /auth picks ([fix] when the caller picked it
+    // already): a coarse current fix sent as-is is refused gps_inaccurate,
+    // and a refused recovery ends the drive.
+    final position = fix ?? await _pickAuthFix();
+    if (!owns()) return SessionRecoveryResult.superseded;
     if (position == null) {
       debugWarn('$tag Refusing $what without a position');
       return SessionRecoveryResult.failed;
@@ -8135,6 +8141,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (!owns()) return SessionRecoveryResult.superseded;
 
+      // Picked before the release: a coarse fix can wait a few seconds for a
+      // better one, and that wait must not sit in the gap with no session.
+      final authFix = await _pickAuthFix();
+      if (!owns()) return SessionRecoveryResult.superseded;
+
       if (_apiService.hasSession) {
         // keepPolicy: the UI reads txAllowed, the channels and the enforce
         // flags on every notify, and a plain release zeroes them for the two
@@ -8170,6 +8181,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         owns: owns,
         tag: '[ZONE]',
         what: 'group handoff',
+        fix: authFix,
       );
       if (minted != SessionRecoveryResult.recovered) return withoutSession(minted);
 
