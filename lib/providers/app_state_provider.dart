@@ -99,6 +99,7 @@ import '../services/repeater_admin/repeater_admin_models.dart';
 import '../services/repeater_admin/repeater_admin_module.dart';
 import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/constants.dart';
+import '../utils/distance_formatter.dart';
 import '../utils/geo_validation.dart';
 import '../utils/public_key.dart';
 import '../utils/repeater_collision.dart';
@@ -230,6 +231,21 @@ Future<bool> uploadQueueBounded(
     debugError('[APP] Queue upload before release failed: $e');
     return false;
   }
+}
+
+/// The Go Online refusal when the server says this spot is in no zone,
+/// naming the nearest zone when the answer carried one. Offline Mode stays
+/// on, and so does wardriving: the check runs before anything is stopped.
+@visibleForTesting
+String goOnlineOutsideZoneMessage(Map<String, dynamic>? nearestZone,
+    {bool isImperial = false}) {
+  const outside = 'You are outside every MeshMapper zone.';
+  const staysOn = 'Offline Mode stays on.';
+  final name = nearestZone?['name'] as String?;
+  final km = (nearestZone?['distance_km'] as num?)?.toDouble();
+  if (name == null || km == null) return '$outside $staysOn';
+  final dist = formatKilometers(km, isImperial: isImperial);
+  return '$outside Nearest zone is $name, $dist away. $staysOn';
 }
 
 /// Whether a connected radio's companion firmware is too old for scope
@@ -9266,6 +9282,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Asks the server whether this spot is in a zone without touching any
+  /// state, so a Go Online the zone check would refuse is refused before it
+  /// stops wardriving. Null means go ahead; otherwise the error to show. Only
+  /// a definite refusal blocks: an in-zone answer still goes through the full
+  /// zone check and auth below.
+  Future<String?> _goOnlineZonePreflight() async {
+    final position = await _pickAuthFix();
+    if (position == null) return null;
+    final result = await _apiService.checkZoneStatus(
+      lat: position.latitude,
+      lon: position.longitude,
+      accuracyMeters: position.accuracy,
+      appVersion: _appVersion,
+      radioFreq: liveRadioConfig ?? _lastRadioConfig,
+    );
+    if (result == null) {
+      debugError('[APP] Cannot switch to online mode: zone check got no '
+          'answer');
+      return _getErrorMessage('network_error', null);
+    }
+    if (result['success'] != true) {
+      final reason = result['reason'] as String?;
+      debugError('[APP] Cannot switch to online mode: zone check refused '
+          '($reason)');
+      return _getErrorMessage(reason, result['message'] as String?);
+    }
+    if (result['in_zone'] == false) {
+      debugError('[APP] Cannot switch to online mode: not in a zone');
+      return goOnlineOutsideZoneMessage(
+          result['nearest_zone'] as Map<String, dynamic>?,
+          isImperial: _preferences.isImperial);
+    }
+    return null;
+  }
+
   Future<({bool success, String? error})> _switchToOnlineModeSteps() async {
     _isSwitchingMode = true;
     _modeSwitchError = null;
@@ -9273,15 +9324,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     try {
-      // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
-      await _stopAutoPingGracefully();
-
-      // 2. Save accumulated offline pings as session file. The only save on
-      //    this path: the stop above holds its own back so the file is written
-      //    once, here, after everything it flushed has landed in the queue.
-      await _saveOfflineSession();
-
-      // 4. Request new auth session
+      // Every check that can refuse the switch runs before anything stops.
+      // A refusal used to land after wardriving had stopped and the offline
+      // session had been closed, so each failed tap ended the drive and split
+      // it into another file.
       // Use "Anonymous" if renamed, otherwise real name
       final deviceName = _isAnonymousRenamed
           ? 'Anonymous'
@@ -9308,6 +9354,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       }
 
+      final zoneRefusal = await _goOnlineZonePreflight();
+      if (zoneRefusal != null) {
+        _modeSwitchError = zoneRefusal;
+        return (success: false, error: _modeSwitchError);
+      }
+
+      // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
+      await _stopAutoPingGracefully();
+
+      // 2. Save accumulated offline pings as session file. The only save on
+      //    this path: the stop above holds its own back so the file is written
+      //    once, here, after everything it flushed has landed in the queue.
+      await _saveOfflineSession();
+
       // Clear offline mode before zone check so checkZoneStatus() doesn't skip the API call
       _preferences = _preferences.copyWith(offlineMode: false);
       _apiQueueService.offlineMode = false;
@@ -9317,8 +9377,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       if (zoneCode == null) {
         debugError('[APP] Cannot switch to online mode: not in a zone');
-        _modeSwitchError =
-            'Could not determine your zone. Check GPS and internet connection.';
+        _modeSwitchError = _inZone == false
+            ? goOnlineOutsideZoneMessage(_nearestZone,
+                isImperial: _preferences.isImperial)
+            : 'Could not determine your zone. Check GPS and internet connection.';
         return (success: false, error: _modeSwitchError);
       }
 
@@ -9332,6 +9394,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _meshCoreConnection?.deviceInfo?.manufacturer ??
           'Unknown';
 
+      // The connect /auth's fix choice: the raw current fix is refused
+      // gps_inaccurate when it is coarse, and by now wardriving has stopped.
+      final authFix = await _pickAuthFix() ?? _currentPosition!;
+
       var result = await _apiService.requestAuth(
         reason: 'connect',
         publicKey: _devicePublicKey!,
@@ -9341,9 +9407,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         iataCode: zoneCode ?? _preferences.iataCode,
         model: modelString,
         radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-        lat: _currentPosition!.latitude,
-        lon: _currentPosition!.longitude,
-        accuracyMeters: _currentPosition!.accuracy,
+        lat: authFix.latitude,
+        lon: authFix.longitude,
+        accuracyMeters: authFix.accuracy,
       );
 
       // Check for maintenance mode
@@ -9414,9 +9480,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           iataCode: zoneCode ?? _preferences.iataCode,
           model: modelString,
           radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-          lat: _currentPosition!.latitude,
-          lon: _currentPosition!.longitude,
-          accuracyMeters: _currentPosition!.accuracy,
+          lat: authFix.latitude,
+          lon: authFix.longitude,
+          accuracyMeters: authFix.accuracy,
         );
 
         if (registerResult == null) {
