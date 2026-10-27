@@ -207,6 +207,31 @@ Future<bool> awaitSessionRecoveryBounded(
   }
 }
 
+/// How long a Disconnect or Close App tap waits for the queued pings to
+/// upload before it releases the session anyway.
+@visibleForTesting
+const Duration disconnectQueueUploadTimeout = Duration(seconds: 5);
+
+/// Run [upload], bounded by [limit]. True when it finished, false when it
+/// timed out or threw. A slow or dead network must not hold the teardown
+/// open with the UI already showing Disconnecting, and a failed upload must
+/// not abandon it: the queue is cleared and the session released either way.
+@visibleForTesting
+Future<bool> uploadQueueBounded(
+  Future<void> Function() upload, {
+  Duration limit = disconnectQueueUploadTimeout,
+}) async {
+  try {
+    await upload().timeout(limit);
+    return true;
+  } on TimeoutException {
+    return false;
+  } catch (e) {
+    debugError('[APP] Queue upload before release failed: $e');
+    return false;
+  }
+}
+
 /// Whether a connected radio's companion firmware is too old for scope
 /// discovery (below [AppStateProvider.kScopeDiscoveryCompanionVersionCode]).
 /// The Scope Discovery switch still saves either way; this only decides
@@ -633,6 +658,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
+
+  /// Set while [exitApp] runs, so a second Close App cannot pop the app in
+  /// the middle of the first one's disconnect.
+  bool _exitInProgress = false;
 
   /// Bumped by every transport connect entry point. A connection attempt that
   /// finds its captured generation stale has been superseded by a newer
@@ -7214,10 +7243,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _abandonAutoReconnect(releaseExtras: info.extras, flushQueue: false);
   }
 
-  /// Disconnect from current device
+  /// Disconnect from current device.
+  ///
+  /// [flushQueue] uploads what is still queued before the session is
+  /// released: the user's own Disconnect and Close App set it. Teardowns the
+  /// server or a block forced (session error, maintenance, airborne) leave it
+  /// off, so their queue is dropped as before.
   Future<void> disconnect({
     bool closeApp = true,
     Map<String, dynamic>? releaseExtras,
+    bool flushQueue = false,
   }) async {
     _finishLiveActivitySession();
     _invalidateLiveSessionRecovery();
@@ -7291,11 +7326,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
 
-    // Stop RX wardriving if active (flushes batches to queue)
-    _rxLogger?.stopWardriving(trigger: 'disconnect');
+    // Stop RX wardriving if active (flushes batches to queue). Awaited so the
+    // batches are queued before the upload below; a failed flush must not
+    // abandon the teardown.
+    try {
+      await _rxLogger?.stopWardriving(trigger: 'disconnect');
+    } catch (e) {
+      debugError('[RX LOG] Final RX flush on disconnect failed: $e');
+    }
 
     // Save offline pings before clearing queue (no-op if not in offline mode or no pings)
     await _saveOfflineSession();
+
+    // Send what is still queued while the session is valid. The last TX
+    // waits 5 s for its upload and an RX batch up to 15 s, so a Disconnect
+    // tap inside that window used to drop them. Bounded so the tap stays
+    // quick on a bad network.
+    if (flushQueue && _apiService.hasSession && !_preferences.offlineMode) {
+      debugLog('[APP] Uploading queued pings before session release');
+      final uploaded = await uploadQueueBounded(() async {
+        await _apiQueueService.waitForUploadToFinish(
+            limit: disconnectQueueUploadTimeout);
+        // A batch carries at most 50 items, and a queue that grew out of
+        // coverage needs several. Stop once a round leaves nothing or moves
+        // nothing (items still waiting out a retry).
+        var left = -1;
+        for (var round = 0; round < 5; round++) {
+          await _apiQueueService.forceUploadWithHoldWait();
+          final now = _apiQueueService.queueSize;
+          if (now == 0 || now == left) break;
+          left = now;
+        }
+      });
+      if (!uploaded) {
+        debugWarn('[APP] Queued pings not all uploaded before release');
+      }
+    }
 
     // ALWAYS START FRESH - clear any queued data on disconnect
     // Pings without a valid session cannot be uploaded later
@@ -10476,6 +10542,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// This may trigger auto-disconnect
   Future<void> handleSessionError(String? reason, String? message,
       {String? subReason}) async {
+    // A teardown is already running. Its last upload can be answered with a
+    // session error, and acting on that answer would start a second
+    // disconnect inside the first and pop the error tab over it.
+    if (_userRequestedDisconnect &&
+        _connectionStep == ConnectionStep.disconnecting) {
+      debugLog('[SESSION] $reason during disconnect, already tearing down');
+      return;
+    }
+
     final userMessage = _getErrorMessage(reason, message, subReason: subReason);
     final isStationaryRevoke =
         reason == 'session_revoked' && subReason == 'stationary';
@@ -13529,22 +13604,34 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Exit the app completely (Android only)
   /// Uses SystemNavigator.pop() which is the recommended way to exit on Android
   Future<void> exitApp() async {
+    // The upload before the release can take a few seconds, and a second tap
+    // in that window saw isConnected false and closed the app before the
+    // session was released and the radio's name and channel restored.
+    if (_exitInProgress) {
+      debugLog('[APP] Exit already in progress');
+      return;
+    }
+    _exitInProgress = true;
     debugLog('[APP] Exit app requested');
 
-    // Disconnect first if connected. closeApp: false because the exit below
-    // already stops the service and closes the app.
-    if (isConnected) {
-      await disconnect(closeApp: false);
-    }
+    try {
+      // Disconnect first if connected. closeApp: false because the exit below
+      // already stops the service and closes the app.
+      if (isConnected) {
+        await disconnect(closeApp: false, flushQueue: true);
+      }
 
-    // The service runs with stopWithTask="false", so it outlives the
-    // activity. stopService() only stops one this session started; this
-    // stops whatever is running (Android only, a no-op elsewhere).
-    await BackgroundServiceManager.stopLiveService('exit app');
+      // The service runs with stopWithTask="false", so it outlives the
+      // activity. stopService() only stops one this session started; this
+      // stops whatever is running (Android only, a no-op elsewhere).
+      await BackgroundServiceManager.stopLiveService('exit app');
 
-    // Exit the app (Android only - iOS doesn't allow programmatic app exit)
-    if (Platform.isAndroid) {
-      SystemNavigator.pop();
+      // Exit the app (Android only - iOS doesn't allow programmatic app exit)
+      if (Platform.isAndroid) {
+        SystemNavigator.pop();
+      }
+    } finally {
+      _exitInProgress = false;
     }
   }
 

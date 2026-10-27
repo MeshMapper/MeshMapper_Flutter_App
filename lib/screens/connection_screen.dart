@@ -298,7 +298,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         icon: Icons.link_off,
         label: 'Disconnect',
         color: Colors.red,
-        onPressed: () async => await appState.disconnect(),
+        onPressed: () async => await appState.disconnect(flushQueue: true),
       );
     }
 

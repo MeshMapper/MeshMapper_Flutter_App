@@ -69,11 +69,12 @@ class RxLogger {
     isWardriving = true;
   }
 
-  /// Stop passive RX wardriving and flush all batches
-  void stopWardriving({String trigger = 'user_stop'}) {
+  /// Stop passive RX wardriving and flush all batches. Returns the flush, so
+  /// a caller about to upload the queue can wait for the batches to land.
+  Future<void> stopWardriving({String trigger = 'user_stop'}) {
     debugLog('[RX LOG] Stopping passive RX wardriving: trigger=$trigger');
     isWardriving = false;
-    flushAllBatches(trigger: trigger);
+    return flushAllBatches(trigger: trigger);
   }
 
   /// Handle incoming packet for passive logging

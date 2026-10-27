@@ -2057,6 +2057,9 @@ class ApiService {
     }
 
     try {
+      // The session this batch is sent under (submitWardriveData reads the
+      // same field before its first await).
+      final sentSessionId = _sessionId;
       final result = await submitWardriveData(pings);
 
       if (result == null) {
@@ -2076,6 +2079,17 @@ class ApiService {
 
       // Check for session errors that require disconnect
       final reason = result['reason'] as String?;
+
+      // A refusal for a session this service no longer holds (released by a
+      // Disconnect, or replaced by a reconnect or recovery while the POST was
+      // out) says nothing about the current one. Acting on it cleared a fresh
+      // session and tore down the new connection. Same rule as the release
+      // answer: only the session it was about is forgotten.
+      if (_sessionId != sentSessionId) {
+        debugLog('[API] Upload batch refused ($reason) for a session already '
+            'released or replaced, ignoring');
+        return UploadResult.held;
+      }
 
       // All errors that require session invalidation and disconnect
       const criticalErrors = {
