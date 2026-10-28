@@ -69,3 +69,10 @@ SignFailureAction signFailureAction(String code) => switch (code) {
       'busy' => SignFailureAction.backoff,
       _ => SignFailureAction.silent,
     };
+
+/// Whether a failed sign was the radio refusing part way: it took
+/// CMD_SIGN_START, then answered ERR (`err`). On MeshCore-Solo and mishmesh
+/// fork firmware that is a memory fault only a reboot clears, so a manual
+/// link says to reboot instead of "try again later". A stray ERR from another
+/// command can land here too; rebooting does no harm then.
+bool signFailureNeedsRadioReboot(String code) => code == 'err';

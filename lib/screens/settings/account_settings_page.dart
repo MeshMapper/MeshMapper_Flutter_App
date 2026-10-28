@@ -256,6 +256,15 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         if (wait != null) {
           AppToast.warning(
               context, 'Too many attempts. Try again in ${_waitLabel(wait)}.');
+        } else if (outcome.radioCouldNotSign) {
+          // Waiting never helps here: some fork firmware can only sign
+          // again after a reboot.
+          AppToast.error(
+            context,
+            'Your radio could not sign the link request. Reboot the radio '
+            'and try again.',
+            duration: const Duration(seconds: 6),
+          );
         } else {
           AppToast.error(context, 'Could not link right now. Try again later');
         }

@@ -13460,7 +13460,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         debugWarn('[ACCOUNT] Sign failed (${e.code}) — staying silent');
       }
-      return const PortalLinkOutcome(PortalLinkStatus.failed);
+      return PortalLinkOutcome(PortalLinkStatus.failed,
+          radioCouldNotSign: signFailureNeedsRadioReboot(e.code));
     } catch (e) {
       debugWarn('[ACCOUNT] Sign failed (${e.runtimeType}) — staying silent');
       return const PortalLinkOutcome(PortalLinkStatus.failed);

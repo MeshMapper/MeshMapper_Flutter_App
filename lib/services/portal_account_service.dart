@@ -315,12 +315,17 @@ class PortalLinkOutcome {
   /// this attempt did not happen. Null for every other outcome.
   final Duration? retryAfter;
 
+  /// The radio refused part way through signing the link request (see
+  /// `signFailureNeedsRadioReboot`). Only a manual link shows it.
+  final bool radioCouldNotSign;
+
   const PortalLinkOutcome(
     this.status, {
     this.adoptionDeviceCount = 0,
     this.adoptedCount = 0,
     this.accountName,
     this.retryAfter,
+    this.radioCouldNotSign = false,
   });
 }
 

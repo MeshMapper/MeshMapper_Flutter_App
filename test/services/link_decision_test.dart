@@ -67,4 +67,26 @@ void main() {
   test('a lowercase pubkey is still acceptable input', () {
     expect(call(pubkey: goodPubkey.toLowerCase()), LinkFlowDecision.prompt);
   });
+
+  // Issue 627: two L1 Pro radios on mishmesh firmware accepted the sign
+  // start, then answered ERR 4, and the manual link said "Try again later"
+  // when only a reboot helps.
+  group('signFailureNeedsRadioReboot', () {
+    test('an ERR after the sign started asks for a reboot', () {
+      expect(signFailureNeedsRadioReboot('err'), isTrue);
+    });
+
+    for (final code in [
+      'unsupported',
+      'busy',
+      'aborted',
+      'malformed_response',
+      'data_too_long',
+      'bad_signature_length',
+    ]) {
+      test('$code does not', () {
+        expect(signFailureNeedsRadioReboot(code), isFalse);
+      });
+    }
+  });
 }
