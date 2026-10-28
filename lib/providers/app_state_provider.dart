@@ -29,6 +29,7 @@ import '../models/user_preferences.dart';
 import '../services/airborne_release.dart';
 import '../services/api_queue_service.dart';
 import '../utils/coverage_refresh.dart';
+import '../utils/map_style_urls.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/store_links.dart';
 import '../services/api_service.dart';
@@ -77,6 +78,8 @@ import '../services/status/android_notification.dart';
 import '../services/status/session_phase_resolver.dart';
 import '../services/status/session_status.dart';
 import '../services/status/session_status_resolver.dart';
+import '../services/android_auto/android_auto_bridge_service.dart';
+import '../services/android_auto/android_auto_map_projection.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
 import '../services/watch/watch_models.dart';
@@ -346,6 +349,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final LiveActivityService _liveActivityService = LiveActivityService();
   final WatchBridgeService _watchBridge = WatchBridgeService();
   final AppIntentBridgeService _appIntentBridge = AppIntentBridgeService();
+  final AndroidAutoBridgeService _androidAutoBridge =
+      AndroidAutoBridgeService();
   bool _hasEverPairedWatch = false;
 
   /// Last position handed to the watch, kept so a dropped GPS fix leaves the
@@ -2338,6 +2343,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       preflightKeyBuilder: _buildSiriSnapshotPreflightKey,
       immediate: immediate,
     );
+    // Android Auto renders the same projection. The bridge returns at once
+    // unless a head unit is attached, so phones that never meet a car pay
+    // nothing here.
+    _androidAutoBridge.schedule(
+      _buildAndroidAutoSnapshotMap,
+      preflightKeyBuilder: _buildAndroidAutoPreflightKey,
+      immediate: immediate,
+    );
     // The watch mirrors state even with no session running — otherwise you
     // could never start one from the wrist.
     _scheduleWatchSync(immediate: immediate);
@@ -2876,6 +2889,76 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     ).toMap();
   }
 
+  /// The Siri projection, trimmed to what a car screen can show, plus the
+  /// map the car draws for itself.
+  ///
+  /// The head unit lists a handful of rows at most and names repeaters from
+  /// the observations themselves, so the repeater catalog and the long tail of
+  /// the heard history would only cost channel bandwidth on every refresh.
+  Map<String, Object?>? _buildAndroidAutoSnapshotMap() {
+    final snapshot = _buildSiriSnapshotMap();
+    if (snapshot == null) return null;
+    snapshot.remove('repeaters');
+    final heard = snapshot['recentHeard'];
+    if (heard is List && heard.length > _androidAutoMaximumHeard) {
+      snapshot['recentHeard'] = heard.take(_androidAutoMaximumHeard).toList();
+    }
+    final position = _currentPosition;
+    final fallback = _lastKnownPosition;
+    snapshot['map'] = AndroidAutoMapProjection.build(
+      latitude: position?.latitude ?? fallback?.lat,
+      longitude: position?.longitude ?? fallback?.lon,
+      heading: position?.heading,
+      style: mapStyleUrlFor(_preferences.mapStyle),
+      coverageHostCode: coverageHostCode,
+      mapTilesEnabled: _preferences.mapTilesEnabled,
+      gridSize: _preferences.coverageGridSize,
+      radioFilter: radioFilterQuery,
+      recentDays: coverageOverlayDays,
+      colorVisionType: _preferences.colorVisionType,
+      coverageOpacity: _preferences.coverageOverlayOpacity,
+      patchCells: coveragePatchCells.values,
+      patchVersion: _coveragePatchVersion,
+    );
+    // The phone header's noise floor reading, coloured here so the car's
+    // badge uses exactly the phone's scale.
+    final noiseFloor = _currentNoiseFloor;
+    snapshot['header'] = {
+      'noiseFloor': noiseFloor,
+      'noiseFloorColor': noiseFloor == null
+          ? null
+          : PingColors.noiseFloorColor(noiseFloor.toDouble()).toARGB32(),
+    };
+    return snapshot;
+  }
+
+  /// [_buildSiriSnapshotPreflightKey] plus every input of the car's map.
+  ///
+  /// Position is bucketed to about ten metres and heading to ten degrees, so a
+  /// parked car with a jittering fix does not rebuild the snapshot each tick.
+  String _buildAndroidAutoPreflightKey() {
+    final position = _currentPosition;
+    final fallback = _lastKnownPosition;
+    final lat = position?.latitude ?? fallback?.lat;
+    final lon = position?.longitude ?? fallback?.lon;
+    final heading = position?.heading;
+    return jsonEncode([
+      _buildSiriSnapshotPreflightKey(),
+      lat == null || !lat.isFinite ? null : (lat * 1e4).round(),
+      lon == null || !lon.isFinite ? null : (lon * 1e4).round(),
+      heading == null || !heading.isFinite ? null : heading ~/ 10,
+      _preferences.mapStyle,
+      _preferences.mapTilesEnabled,
+      _preferences.colorVisionType,
+      _preferences.coverageOverlayOpacity,
+      coverageOverlayContext,
+      _coveragePatchVersion,
+      _currentNoiseFloor,
+    ]);
+  }
+
+  static const int _androidAutoMaximumHeard = 12;
+
   /// Cheap semantic projection used to avoid rebuilding the bounded App Group
   /// snapshot on every provider notification. Log/catalog revisions cover the
   /// expensive collections; the remaining values mirror every scalar emitted
@@ -3143,6 +3226,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       command: sessionCommand,
       completion: completion,
     );
+  }
+
+  /// Runs a car tap through the same admission as every other surface.
+  ///
+  /// Unlike the watch this awaits the real outcome: the car shows a toast for
+  /// the result, and a driver should hear "Could not start" rather than see a
+  /// Start that silently did nothing.
+  Future<ExternalCommandCompletion> _handleAndroidAutoCommand(
+    ExternalSessionCommand command,
+  ) async {
+    final admission = admitExternalSessionCommand(command);
+    return executeExternalSessionCommand(command, admission);
   }
 
   Future<ExternalCommandCompletion> _connectToLastCompanion(
@@ -3868,6 +3963,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (_appIntentBridge.isSupportedPlatform) {
       _appIntentBridge.attachCommandHandler(_handleSiriCommand);
+    }
+    if (_androidAutoBridge.isSupportedPlatform) {
+      _androidAutoBridge.attach(
+        commandHandler: _handleAndroidAutoCommand,
+        // A car that just connected has nothing on screen yet. Push the
+        // current state now rather than waiting for the next notify.
+        onSessionChanged: (active) {
+          if (active) _scheduleLiveActivitySync(immediate: true);
+        },
+      );
     }
 
     // Initialize debug logging (enabled by default, respects user preference)
@@ -14061,6 +14166,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _liveActivityService.dispose();
     _appIntentBridge.dispose();
+    _androidAutoBridge.dispose();
     _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
     _watchBridge.dispose();
     WidgetsBinding.instance.removeObserver(this);

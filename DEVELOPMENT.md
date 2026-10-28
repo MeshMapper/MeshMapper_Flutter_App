@@ -1091,6 +1091,89 @@ The app never checks its own version: it sends `APP-<x.y.z>` (store) or `APP-<ep
 - **Airborne pause**: while the airborne latch is set, no fix is appended to the offline recording (`ApiQueueService.setOfflineRecordingPaused`); the session itself ends through the normal airborne block. See GPS & Zone Validation.
 - **File**: `lib/services/offline_session_service.dart`
 
+### Android Auto
+
+MeshMapper's Map tab, on Android Auto head units. The car is a remote control
+and status display for the session running on the phone: it never touches the
+radio, GPS or API itself.
+
+- **Native** (`android/app/src/main/kotlin/net/meshmapper/app/auto/`):
+  `MeshMapperCarAppService` (Car App Library, category `NAVIGATION`, the only
+  category allowed to draw its own map) opens `CarMapScreen`, a
+  NavigationTemplate laid out like the phone's Map tab:
+  - The map itself is drawn by `CarMapRenderer`: a MapLibre `MapView` in a
+    `Presentation` on a private `VirtualDisplay` backed by the car's Surface. It
+    draws the user's base style, the vector coverage overlay with the same
+    palette and opacity, the session's freshly patched cells on top, recently
+    heard repeaters, and the position arrow.
+  - The camera follows the car heading up by default, with the car placed
+    lower in the view, and keeps its last bearing while stopped. Panning stops
+    following. The centre button re-centres after a pan and otherwise switches
+    between heading up and north up.
+  - The status bar and counter chips become a status card drawn on the map at
+    the top left (`CarStatusText` builds its lines, including the phase
+    countdown, "Next disc 13s"). The phone header's noise floor and companion
+    battery become a box at the top right. Both are our own views on the
+    surface, not host templates, so their type size matches the phone.
+  - The right-hand map buttons become the map action strip (pan, zoom in,
+    zoom out, centre).
+  - The controls panel becomes the action strip (Start Passive or Stop, Ping,
+    a car-only map style cycle, and More for `DashboardScreen`, which has the
+    other start modes in `StartModeScreen` and the heard list in `HeardScreen`).
+
+  `CarStatusStore` is the process-wide meeting point, because the car can
+  connect before the phone app is opened and the activity can go away while
+  the car still shows MeshMapper. With no Flutter engine attached, the car
+  says "Open MeshMapper on your phone". Template screens redraw at most once a
+  second.
+- **Channel** `meshmapper/android_auto` (`MeshMapperAndroidAutoService.kt` ⇄
+  `lib/services/android_auto/android_auto_bridge_service.dart`). Dart → native:
+  `attach` (returns whether a car is connected) and `publishSnapshot`. Native →
+  Dart: `carSessionChanged(bool)` and `command`. A command is an
+  `ExternalSessionCommand` map with source `androidAuto`, answered with an
+  `ExternalCommandCompletion` map that the car shows as a toast.
+- **Snapshot**: `_buildAndroidAutoSnapshotMap` is the Siri projection without
+  the repeater catalog, capped at 12 heard rows, plus a `map` block built by
+  `AndroidAutoMapProjection`. That block holds position, style, the coverage
+  tile URL from the shared `coverageTileUrlTemplate`, palette, opacity, and the
+  newest 400 patch cells, plus a `header` block with the noise floor and its
+  colour from `PingColors`. Every rule is resolved in Dart so the car cannot
+  drift from the phone. It is published only while a car session is open.
+  `CarSnapshot.kt` parses it; keep its keys in step with
+  `siri_snapshot_models.dart` and `android_auto_map_projection.dart`.
+- **Safety**: every tap goes through `admitExternalSessionCommand` and
+  `executeExternalSessionCommand`, the same gates as the phone's buttons, the
+  watch and Siri, so a stale car template can never transmit. Passive is the
+  one-tap Start; transmit modes need an extra screen.
+
+**Testing.** Install the Desktop Head Unit (SDK Manager → SDK Tools → Android
+Auto Desktop Head Unit Emulator). In the phone's Android Auto settings:
+1. Tap the version number ten times to unlock developer settings.
+2. Enable **Unknown sources**. Without it the car validator logs
+   `Package DENIED` for any build not installed from Play.
+3. Turn on **Add new cars to Android Auto**, or the head unit is refused with
+   `car connection is not allowed`.
+4. Tap **Start head unit server**.
+
+Then run `adb forward tcp:5277 tcp:5277` and
+`$ANDROID_HOME/extras/google/auto/desktop-head-unit`, keeping its stdin open,
+because it exits on EOF. Debug builds accept any host
+(`HostValidator.ALLOW_ALL_HOSTS_VALIDATOR`); release builds accept only the Car
+App Library's allowlisted hosts. To capture the car screen,
+`adb shell dumpsys SurfaceFlinger --display-id` lists
+`com.google.android.projection.gearhead/…`; pass that id to
+`adb exec-out screencap -p -d <id>`.
+
+**Real cars.** A real head unit only lists apps installed from Play. A
+sideloaded build is refused with `CAR.VALIDATOR: Package DENIED; failed all
+other checks` even with Unknown sources on, while the Desktop Head Unit still
+shows it. To test in a car, install through a Play internal testing track.
+
+**Play Store.** Play only accepts real turn-by-turn apps in the navigation
+category, so a public release of this car map needs that decision first. A Play-safe variant
+would use the template-only POI category with a host-drawn map (pins, no
+coverage overlay).
+
 ### Background Service
 
 Keeps BLE and GPS active when the app is backgrounded during auto-ping.
@@ -2796,6 +2879,7 @@ debugError('[API] Failed to post batch: $error');
 | `[BLE]` | Bluetooth connection and device communication |
 | `[CONN]` | MeshCore connection protocol operations |
 | `[SIRI]` | Siri App Intents bridge and snapshot publishing |
+| `[CAR]` | Android Auto bridge: car session, snapshot publishing, car commands |
 | `[EXTERNAL]` | External command execution (shared Siri/watch lane) |
 | `[GPS]` | GPS/geolocation operations |
 | `[PING]` | Ping sending and validation |
