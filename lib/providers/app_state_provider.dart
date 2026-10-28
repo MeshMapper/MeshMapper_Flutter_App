@@ -233,6 +233,17 @@ Future<bool> uploadQueueBounded(
   }
 }
 
+/// Seconds before the next zone check after [failures] checks in a row got no
+/// answer: 5, 10, 20, 40, then every 60. A flat 5 s retried a dead network
+/// twelve times a minute for as long as it lasted (500 tries in one Android
+/// log), and in a server outage every phone would do the same to /status.
+@visibleForTesting
+int zoneCheckNetworkRetrySeconds(int failures) {
+  if (failures >= 5) return 60;
+  if (failures <= 1) return 5;
+  return 5 << (failures - 1);
+}
+
 /// Whether the error log holds an error the user has not had on screen.
 /// [logged] counts every error ever logged and [seen] is that count when the
 /// Errors tab was last showing. Counts, not times: a phone clock stepped
@@ -637,6 +648,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _zoneCheckRetryCountdown =
       0; // Seconds until next retry (0 = not counting)
   Timer? _zoneCheckRetryTimer; // Fires to trigger the retry
+  int _zoneCheckNetworkFailures = 0; // In a row; any real answer resets it
   Timer? _zoneCheckCountdownTimer; // Ticks every 1s for UI countdown
 
   // Maintenance mode state
@@ -4146,10 +4158,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // this branch would ask the server about zones once a second for hours.
       // Not on a coarse fix either: a jumpy weak fix often lands 100 m away,
       // and its 403 used to replace a good result moments old.
+      // Nor while a no-answer retry is counting down: driving in an outage
+      // hit /status every 100 m and reset the backoff each time.
       if (!isConnected &&
           !_preferences.offlineMode &&
           !_gpsService.isAirborne &&
           GpsService.isAccurateForZoneCheck(position) &&
+          !(_zoneCheckCountdownTimer != null &&
+              _zoneCheckErrorReason == 'network') &&
           _shouldRecheckZone(position)) {
         // Throttle log to once per 30s to avoid spam while driving
         final now = DateTime.now();
@@ -10987,6 +11003,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneCheckError = null;
     _zoneCheckErrorReason = null;
     _zoneCheckRetryCountdown = 0;
+    _zoneCheckNetworkFailures = 0;
     // Don't notifyListeners here — caller will do it or checkZoneStatus will
   }
 
@@ -10998,8 +11015,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// already counting down, so a stream of coarse fixes cannot reset it.
   void _noteZoneCheckWaitingForGps(Position position) {
     if (_inZone != null) return;
+    // A no-answer retry keeps its backed-off slot: replacing it with this
+    // 10 s wait made a coarse fix cut the backoff short.
     if (_zoneCheckCountdownTimer != null &&
-        _zoneCheckErrorReason == 'gps_inaccurate') {
+        (_zoneCheckErrorReason == 'gps_inaccurate' ||
+            _zoneCheckErrorReason == 'network')) {
       return;
     }
     final accuracy = position.accuracy.toStringAsFixed(0);
@@ -11094,9 +11114,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Update position even on failure to prevent zone check flooding
         // (without this, every GPS update re-triggers a zone check while driving)
         _lastZoneCheckPosition = position;
-        debugError('[GEOFENCE] Zone status check failed: no response from API');
+        final retrySeconds =
+            zoneCheckNetworkRetrySeconds(++_zoneCheckNetworkFailures);
+        debugError('[GEOFENCE] Zone status check failed: no response from API '
+            '(retry in ${retrySeconds}s)');
         _scheduleZoneCheckRetry(
-          seconds: 5,
+          seconds: retrySeconds,
           error: 'Verify your internet connection',
           reason: 'network',
         );

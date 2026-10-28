@@ -2023,7 +2023,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    countdown > 0
+                    countdown > 0 && !appState.isCheckingZone
                         ? 'Retrying in ${countdown}s...'
                         : 'Retrying...',
                     textAlign: TextAlign.center,
@@ -2032,7 +2032,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                       color: Colors.grey.shade500,
                     ),
                   ),
-                  const SizedBox(height: 32),
+                  // The automatic retry backs off to once a minute, so a
+                  // connection that comes back can be tried straight away.
+                  TextButton.icon(
+                    onPressed: appState.isCheckingZone
+                        ? null
+                        : () => appState.checkZoneStatus(),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Retry Now'),
+                  ),
+                  const SizedBox(height: 24),
                   FilledButton.icon(
                     onPressed: () => appState.setOfflineMode(true),
                     icon: const Icon(Icons.cloud_off),
