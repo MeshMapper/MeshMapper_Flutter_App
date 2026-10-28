@@ -233,6 +233,15 @@ Future<bool> uploadQueueBounded(
   }
 }
 
+/// Whether the error log holds an error the user has not had on screen.
+/// [logged] counts every error ever logged and [seen] is that count when the
+/// Errors tab was last showing. Counts, not times: a phone clock stepped
+/// backwards would stamp new errors before the seen mark and hide them.
+@visibleForTesting
+bool errorLogHasUnseen(
+        {required bool hasEntries, required int logged, required int seen}) =>
+    hasEntries && logged > seen;
+
 /// The Go Online refusal when the server says this spot is in no zone,
 /// naming the nearest zone when the answer carried one. Offline Mode stays
 /// on, and so does wardriving: the check runs before anything is stopped.
@@ -553,6 +562,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // User error log entries
   final List<UserErrorEntry> _errorLogEntries = [];
+
+  // Errors logged so far, how many of them the user has had on screen, and
+  // whether the Errors tab is showing now. The Log tab's dot means an unseen
+  // error, not any error: it used to clear only with Clear all logs.
+  int _errorsLogged = 0;
+  int _errorsSeen = 0;
+  bool _errorLogOnScreen = false;
 
   // User preferences
   UserPreferences _preferences = const UserPreferences();
@@ -1545,6 +1561,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<ScopeLogEntry> get scopeLogEntries => _scopeLog.entries;
   List<UserErrorEntry> get errorLogEntries =>
       List.unmodifiable(_errorLogEntries);
+
+  /// True while the error log holds an error the user has not seen yet.
+  bool get hasUnseenErrors => errorLogHasUnseen(
+      hasEntries: _errorLogEntries.isNotEmpty,
+      logged: _errorsLogged,
+      seen: _errorsSeen);
+
+  /// Told by the Log screen whenever the Errors tab comes on or goes off
+  /// screen. Everything logged so far counts as seen once it is showing.
+  void setErrorLogOnScreen(bool onScreen) {
+    if (_errorLogOnScreen == onScreen) return;
+    _errorLogOnScreen = onScreen;
+    if (!onScreen || !hasUnseenErrors) return;
+    _errorsSeen = _errorsLogged;
+    notifyListeners();
+  }
   List<UnifiedPingLogEntry> get unifiedPingLogEntries => mergeUnifiedPingLog(
         tx: _txLogEntries,
         rx: _rxLogEntries,
@@ -9045,6 +9077,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _lastDeferredMarkerLon = null;
     _siriObservationRevision++;
     _errorLogEntries.clear();
+    _errorsSeen = _errorsLogged;
     _clearOverlayState();
     _notifyMapNow();
   }
@@ -9097,6 +9130,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_errorLogEntries.length > _maxErrorEntries) {
       _errorLogEntries.removeAt(0);
     }
+    _errorsLogged++;
+    // Already looking at the Errors tab: it is seen as it arrives.
+    if (_errorLogOnScreen) _errorsSeen = _errorsLogged;
     if (autoSwitch) {
       _requestErrorLogSwitch = true; // Auto-switch to error log
     }

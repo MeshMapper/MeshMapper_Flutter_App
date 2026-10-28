@@ -13,7 +13,10 @@ import '../widgets/rx_path_chain.dart';
 
 /// Log screen with two tabs: All Pings (unified TX+RX+DISC+TRC) and Errors
 class LogScreen extends StatefulWidget {
-  const LogScreen({super.key});
+  /// True while the Log tab is the one on screen.
+  final bool active;
+
+  const LogScreen({super.key, this.active = false});
 
   @override
   State<LogScreen> createState() => _LogScreenState();
@@ -28,12 +31,33 @@ class _LogScreenState extends State<LogScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_reportErrorTabOnScreen);
+    _reportErrorTabOnScreen();
+  }
+
+  @override
+  void didUpdateWidget(LogScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active) _reportErrorTabOnScreen();
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_reportErrorTabOnScreen);
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// Tells the provider whether the Errors tab is on screen, which is what
+  /// clears the Log tab's dot. After the frame, because the scaffold's tab
+  /// change reaches here during a build.
+  void _reportErrorTabOnScreen() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context
+          .read<AppStateProvider>()
+          .setErrorLogOnScreen(widget.active && _tabController.index == 1);
+    });
   }
 
   @override

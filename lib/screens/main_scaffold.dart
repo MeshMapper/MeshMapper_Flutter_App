@@ -41,13 +41,15 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _startupPromptsSettled = false;
   bool _onboardingGuideOpen = false;
 
-  final List<Widget> _screens = [
-    const HomeScreen(),
-    const LogScreen(),
-    const GraphScreen(),
-    const ConnectionScreen(),
-    const SettingsScreen(),
-  ];
+  // Built per frame so the Log screen knows when it is the tab on screen:
+  // the IndexedStack keeps every tab alive, so being built says nothing.
+  List<Widget> get _screens => [
+        const HomeScreen(),
+        LogScreen(active: _selectedIndex == 1),
+        const GraphScreen(),
+        const ConnectionScreen(),
+        const SettingsScreen(),
+      ];
 
   @override
   void initState() {
@@ -636,7 +638,7 @@ class _MainScaffoldState extends State<MainScaffold> {
             icon: Icons.list_alt_outlined,
             activeIcon: Icons.list_alt,
             index: 1,
-            showBadge: appState.errorLogEntries.isNotEmpty,
+            showBadge: appState.hasUnseenErrors,
           ),
           _buildCompactNavItem(
             icon: Icons.history_outlined,
@@ -720,11 +722,11 @@ class _MainScaffoldState extends State<MainScaffold> {
         ),
         BottomNavigationBarItem(
           icon: Badge(
-            isLabelVisible: appState.errorLogEntries.isNotEmpty,
+            isLabelVisible: appState.hasUnseenErrors,
             child: const Icon(Icons.list_alt_outlined),
           ),
           activeIcon: Badge(
-            isLabelVisible: appState.errorLogEntries.isNotEmpty,
+            isLabelVisible: appState.hasUnseenErrors,
             child: const Icon(Icons.list_alt),
           ),
           label: 'Log',
