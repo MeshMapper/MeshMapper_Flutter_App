@@ -1781,16 +1781,35 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                           left: Radius.circular(7)),
                     ),
                     alignment: Alignment.center,
-                    child: Text(
-                      'Internal',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: (!externalAntenna && externalAntennaSet)
-                            ? FontWeight.w600
-                            : FontWeight.w500,
-                        color: (!externalAntenna && externalAntennaSet)
-                            ? Colors.orange
-                            : colorScheme.onSurfaceVariant,
+                    // The quick guide's icon for this choice; scales down
+                    // rather than overflow the narrow landscape panel.
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.directions_car,
+                            size: 13,
+                            color: (!externalAntenna && externalAntennaSet)
+                                ? Colors.orange
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'Internal',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight:
+                                  (!externalAntenna && externalAntennaSet)
+                                      ? FontWeight.w600
+                                      : FontWeight.w500,
+                              color: (!externalAntenna && externalAntennaSet)
+                                  ? Colors.orange
+                                  : colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -1815,16 +1834,35 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                           right: Radius.circular(7)),
                     ),
                     alignment: Alignment.center,
-                    child: Text(
-                      'External',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: (externalAntenna && externalAntennaSet)
-                            ? FontWeight.w600
-                            : FontWeight.w500,
-                        color: (externalAntenna && externalAntennaSet)
-                            ? Colors.orange
-                            : colorScheme.onSurfaceVariant,
+                    // The quick guide's icon for this choice; scales down
+                    // rather than overflow the narrow landscape panel.
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.cell_tower,
+                            size: 13,
+                            color: (externalAntenna && externalAntennaSet)
+                                ? Colors.orange
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'External',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight:
+                                  (externalAntenna && externalAntennaSet)
+                                      ? FontWeight.w600
+                                      : FontWeight.w500,
+                              color: (externalAntenna && externalAntennaSet)
+                                  ? Colors.orange
+                                  : colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),

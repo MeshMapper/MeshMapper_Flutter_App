@@ -107,6 +107,7 @@ class ConnectionPanel extends StatelessWidget {
                 _buildSegmentButton(
                   context,
                   label: 'Internal',
+                  icon: Icons.directions_car,
                   isSelected: isSet && !hasExternal,
                   onTap: () {
                     debugLog('[UI] Antenna button pressed: Internal');
@@ -119,6 +120,7 @@ class ConnectionPanel extends StatelessWidget {
                 _buildSegmentButton(
                   context,
                   label: 'External',
+                  icon: Icons.cell_tower,
                   isSelected: isSet && hasExternal,
                   onTap: () {
                     debugLog('[UI] Antenna button pressed: External');
@@ -136,20 +138,31 @@ class ConnectionPanel extends StatelessWidget {
     );
   }
 
+  /// One antenna choice. [icon] matches the quick guide's picture of it.
   Widget _buildSegmentButton(
     BuildContext context, {
     required String label,
+    required IconData icon,
     required bool isSelected,
     required VoidCallback onTap,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final color = isSelected
+        ? (isDark
+            ? Colors.white
+            : const Color(0xFF1E293B)) // slate-800 for light
+        : (isDark
+            ? const Color(0xFF94A3B8)
+            : const Color(0xFF64748B)); // slate-400/500
 
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeInOut,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        // Tighter than the old 16 so the icon costs no width: the label
+        // column beside the toggle has to keep "Remembered for <radio>".
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         decoration: BoxDecoration(
           color: isSelected
               ? (isDark
@@ -166,19 +179,20 @@ class ConnectionPanel extends StatelessWidget {
                 ]
               : null,
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-            color: isSelected
-                ? (isDark
-                    ? Colors.white
-                    : const Color(0xFF1E293B)) // slate-800 for light
-                : (isDark
-                    ? const Color(0xFF94A3B8)
-                    : const Color(0xFF64748B)), // slate-400/500
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 3),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ],
         ),
       ),
     );
