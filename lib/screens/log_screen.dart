@@ -277,12 +277,17 @@ class _AllPingsTabState extends State<AllPingsTab> {
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
 
+  /// Its own controller, not the inherited primary one: both log tabs sit in
+  /// one TabBarView and would share it, which a Scrollbar refuses.
+  final ScrollController _scrollController = ScrollController();
+
   /// Current filtered entries (used by CSV export)
   List<UnifiedPingLogEntry> _filteredEntries = [];
 
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -517,29 +522,34 @@ class _AllPingsTabState extends State<AllPingsTab> {
                     ],
                   ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                  itemCount: filtered.length,
-                  itemBuilder: (context, index) {
-                    final unified = filtered[index];
-                    final showAmbiguity =
-                        _shouldShowAmbiguity(unified, widget.repeaters);
-                    return switch (unified.type) {
-                      PingLogType.tx => _buildTxCard(context, unified.asTx,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.rx => _buildRxCard(context, unified.asRx,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.disc => _buildDiscCard(
-                          context, unified.asDisc,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.trace => _buildTraceCard(
-                          context, unified.asTrace,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.scopes => _buildScopeCard(
-                          context, unified.asScopes,
-                          showAmbiguity: showAmbiguity),
-                    };
-                  },
+              : Scrollbar(
+                  controller: _scrollController,
+                  interactive: true,
+                  child: ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                    itemCount: filtered.length,
+                    itemBuilder: (context, index) {
+                      final unified = filtered[index];
+                      final showAmbiguity =
+                          _shouldShowAmbiguity(unified, widget.repeaters);
+                      return switch (unified.type) {
+                        PingLogType.tx => _buildTxCard(context, unified.asTx,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.rx => _buildRxCard(context, unified.asRx,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.disc => _buildDiscCard(
+                            context, unified.asDisc,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.trace => _buildTraceCard(
+                            context, unified.asTrace,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.scopes => _buildScopeCard(
+                            context, unified.asScopes,
+                            showAmbiguity: showAmbiguity),
+                      };
+                    },
+                  ),
                 ),
         ),
       ],
@@ -1635,13 +1645,28 @@ class ScopeLogCard extends StatelessWidget {
 // Error Log Tab (unchanged)
 // =============================================================================
 
-class _ErrorLogTab extends StatelessWidget {
+class _ErrorLogTab extends StatefulWidget {
   final List<UserErrorEntry> entries;
 
   const _ErrorLogTab({required this.entries});
 
   @override
+  State<_ErrorLogTab> createState() => _ErrorLogTabState();
+}
+
+class _ErrorLogTabState extends State<_ErrorLogTab> {
+  /// See [_AllPingsTabState._scrollController].
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final entries = widget.entries;
     if (entries.isEmpty) {
       return Center(
         child: Column(
@@ -1658,14 +1683,19 @@ class _ErrorLogTab extends StatelessWidget {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: entries.length,
-      itemBuilder: (context, index) {
-        // Most recent first
-        final entry = entries[entries.length - 1 - index];
-        return _buildErrorEntry(context, entry);
-      },
+    return Scrollbar(
+      controller: _scrollController,
+      interactive: true,
+      child: ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(16),
+        itemCount: entries.length,
+        itemBuilder: (context, index) {
+          // Most recent first
+          final entry = entries[entries.length - 1 - index];
+          return _buildErrorEntry(context, entry);
+        },
+      ),
     );
   }
 
