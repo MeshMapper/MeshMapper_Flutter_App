@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
@@ -12,6 +13,25 @@ import 'gps_simulator_service.dart';
 import 'android_altitude_channel.dart';
 import 'fix_altitude.dart';
 import 'fix_altitude_resolver.dart';
+
+/// Whether a position stream error means the user declined Google's
+/// "Location Accuracy" dialog rather than turned location off, so GPS should
+/// move to Android's own location service, which never shows that dialog.
+/// The plugin reports both as location services disabled; only a decline
+/// leaves the device location setting on. Declining used to loop: the error
+/// marked GPS disabled, the dialog closing resumed the app, the resume
+/// restarted GPS, and the restart showed the dialog again (#595).
+@visibleForTesting
+bool shouldUseAndroidLocationManager({
+  required bool isAndroid,
+  required bool alreadyUsing,
+  required Object error,
+  required bool deviceLocationOn,
+}) =>
+    isAndroid &&
+    !alreadyUsing &&
+    error is LocationServiceDisabledException &&
+    deviceLocationOn;
 
 /// GPS service for location tracking
 /// Ported from wardrive.js geolocation logic
@@ -114,6 +134,29 @@ class GpsService {
   /// skip the following TX ping at walking pace.
   Position? _lastActivityPosition;
   StreamSubscription<Position>? _positionSubscription;
+
+  /// Android only: read GPS through Android's location service instead of
+  /// Google's. See [shouldUseAndroidLocationManager]. Saved under
+  /// [_androidLocationManagerKey] so later runs start there and never show
+  /// Google's dialog again.
+  bool _useAndroidLocationManager = false;
+  bool _androidLocationManagerLoaded = false;
+  static const String _androidLocationManagerKey =
+      'gps_android_location_manager';
+
+  /// The stream settings: the plugin default (Google's fused provider on
+  /// Android), or Android's own location service once that is in use.
+  /// `useMSLAltitude` stays off either way; see the note at the stream.
+  LocationSettings _streamSettings() => _useAndroidLocationManager
+      ? AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10,
+          forceLocationManager: true,
+        )
+      : const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10,
+        );
 
   /// Airborne latch state. See [trackAirborne].
   int _airborneStreak = 0;
@@ -388,6 +431,7 @@ class GpsService {
     debugLog('[GPS] startWatching() called, current status: $_status');
     resetAirborne();
     _altitude.reset();
+    await _loadAndroidLocationManagerChoice();
 
     // Ensure only one active position stream subscription exists.
     // startWatching() can be called multiple times (e.g. after permission flow).
@@ -447,16 +491,14 @@ class GpsService {
     // Configure location settings for position stream
     // Note: No timeLimit - we want continuous GPS tracking even when stationary
     // The distanceFilter handles update frequency (10m for RX batch checks at 25m)
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        // No `AndroidSettings(useMSLAltitude: true)`: the altitude reference
-        // rule in fix_altitude.dart relies on the plugin never substituting
-        // an NMEA sea level value. Enabling it would invalidate the pre
-        // Android 14 ellipsoid label.
-        accuracy: LocationAccuracy.high,
-        distanceFilter:
-            10, // Trigger every 10m movement (check RX batches at 25m)
-      ),
+    // No `AndroidSettings(useMSLAltitude: true)`: the altitude reference rule
+    // in fix_altitude.dart relies on the plugin never substituting an NMEA
+    // sea level value. Enabling it would invalidate the pre Android 14
+    // ellipsoid label. The 10 m distance filter triggers the RX batch checks
+    // (at 25 m).
+    late final StreamSubscription<Position> subscription;
+    subscription = Geolocator.getPositionStream(
+      locationSettings: _streamSettings(),
     ).listen(
       (position) {
         debugLog(
@@ -479,17 +521,23 @@ class GpsService {
         // GPS signal acquired
         _updateStatus(GpsStatus.locked);
       },
-      onError: (error) {
+      onError: (Object error) async {
         debugError('[GPS SERVICE] Position stream error: $error');
+        if (await _switchToAndroidLocationManagerIfDeclined(error)) return;
+        // A restart replaced this stream while the check above awaited: the
+        // error is the old stream's and must not mark the new one disabled.
+        if (!identical(_positionSubscription, subscription)) return;
         _updateStatus(GpsStatus.disabled);
       },
     );
+    _positionSubscription = subscription;
 
     // Get initial position
     debugLog('[GPS] Requesting initial position (15s timeout)...');
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        forceAndroidLocationManager: _useAndroidLocationManager,
         timeLimit: const Duration(seconds: 15),
       );
       debugLog(
@@ -503,10 +551,64 @@ class GpsService {
       // would cause duplicate position events (~0.15ms apart).
       _updateStatus(GpsStatus.locked);
     } catch (e) {
+      // This one-off read shows its own copy of Google's dialog, and its
+      // decline switches GPS just like the stream's.
+      if (await _switchToAndroidLocationManagerIfDeclined(e)) return;
       debugLog(
           '[GPS] Initial position request failed: $e (will wait for stream updates)');
       // Will receive updates from stream
     }
+  }
+
+  /// Reads the saved location service choice, once per run (Android only).
+  Future<void> _loadAndroidLocationManagerChoice() async {
+    if (_androidLocationManagerLoaded || kIsWeb || !Platform.isAndroid) return;
+    _androidLocationManagerLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(_androidLocationManagerKey) == true) {
+        _useAndroidLocationManager = true;
+        debugLog('[GPS] Using the Android location service (Google Location '
+            'Accuracy was declined on an earlier run)');
+      }
+    } catch (e) {
+      debugWarn('[GPS] Could not read the location service choice: $e');
+    }
+  }
+
+  /// Moves GPS to Android's location service when [error] is a declined
+  /// Google "Location Accuracy" dialog, saves the choice and restarts the
+  /// watcher. True when this or another caller made the switch for this
+  /// error, so the caller must not mark GPS disabled.
+  Future<bool> _switchToAndroidLocationManagerIfDeclined(Object error) async {
+    final isAndroid = !kIsWeb && Platform.isAndroid;
+    if (!isAndroid || _useAndroidLocationManager) return false;
+    if (error is! LocationServiceDisabledException) return false;
+    var deviceLocationOn = false;
+    try {
+      deviceLocationOn = await Geolocator.isLocationServiceEnabled();
+    } catch (_) {}
+    // The stream and the first one-off read can be declined together:
+    // whichever finishes the check second finds the switch already made.
+    if (_useAndroidLocationManager) return true;
+    if (!shouldUseAndroidLocationManager(
+        isAndroid: isAndroid,
+        alreadyUsing: false,
+        error: error,
+        deviceLocationOn: deviceLocationOn)) {
+      return false;
+    }
+    _useAndroidLocationManager = true;
+    debugWarn('[GPS] Google Location Accuracy declined with device location '
+        'on: using the Android location service from now on');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_androidLocationManagerKey, true);
+    } catch (e) {
+      debugWarn('[GPS] Could not save the location service choice: $e');
+    }
+    await startWatching();
+    return true;
   }
 
   /// Stop watching position
@@ -699,6 +801,7 @@ class GpsService {
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        forceAndroidLocationManager: _useAndroidLocationManager,
         timeLimit: timeout,
       );
       debugLog(
@@ -735,6 +838,7 @@ class GpsService {
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        forceAndroidLocationManager: _useAndroidLocationManager,
         timeLimit: const Duration(seconds: 15),
       );
       if (!isValidLatLng(position.latitude, position.longitude)) {
