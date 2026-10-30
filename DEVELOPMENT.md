@@ -608,7 +608,7 @@ untouched. On by default with a 14 day window.
   is untouched: the next attempt is still scheduled at the normal interval, so the timer stays
   the backstop for a phone that never reaches a clear square. In Hybrid the discovery leg also
   asks about TX: a square that is clear for discovery but still covered for TX (flood only,
-  cyan square) sends the discovery and keeps the banked TX waiting, instead of handing the leg
+  green square) sends the discovery and keeps the banked TX waiting, instead of handing the leg
   to the TX.
 - **The bank**: one slot. `PingService._bankedPing` holds a `BankedPingType`, either `tx`
   (Active or Hybrid) or `discovery` (Passive or Hybrid), readable through `bankedPing`. A

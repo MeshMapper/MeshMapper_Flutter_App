@@ -65,9 +65,10 @@ class UserPreferences {
   /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
   final int smartPingDays;
 
-  /// Smart Pinging holds a TX ping back only for a green square (a heard
-  /// echo); a discovery-only square no longer delays it. The region's value
-  /// wins while it enforces Smart Pinging.
+  /// Smart Pinging holds a flood (TX) ping back only for a green square (a
+  /// heard echo), and never holds a discovery request. Off, a green or cyan
+  /// square holds both. The region's value wins while it enforces Smart
+  /// Pinging.
   final bool smartPingFloodOnly;
 
   /// Limit the map overlay to the effective Smart Pinging coverage window.

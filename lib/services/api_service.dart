@@ -233,8 +233,9 @@ class ApiService {
   /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
   int get apiSmartPingDays => _apiSmartPingDays;
 
-  /// Whether Smart Pinging holds a TX ping back only for a green square;
-  /// only binding when [enforceSmartPing] is true. True when the field is
+  /// Whether Smart Pinging holds a flood (TX) ping back only for a green
+  /// square and never holds a discovery request; only binding when
+  /// [enforceSmartPing] is true. True when the field is
   /// missing or anything other than false / 0.
   bool get apiSmartPingFloodOnly => _apiSmartPingFloodOnly;
 

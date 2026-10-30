@@ -2128,8 +2128,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ? _apiService.apiSmartPingDays
       : _preferences.smartPingDays;
 
-  /// Whether only a green square delays a TX ping: the server's when
-  /// enforced, else the user's.
+  /// Whether flood (TX) pings wait only in green squares and discovery
+  /// requests are never held: the server's when enforced, else the user's.
   bool get smartPingFloodOnly => _apiService.enforceSmartPing
       ? _apiService.apiSmartPingFloodOnly
       : _preferences.smartPingFloodOnly;
