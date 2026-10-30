@@ -65,6 +65,11 @@ class UserPreferences {
   /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
   final int smartPingDays;
 
+  /// Smart Pinging holds a TX ping back only for a green square (a heard
+  /// echo); a discovery-only square no longer delays it. The region's value
+  /// wins while it enforces Smart Pinging.
+  final bool smartPingFloodOnly;
+
   /// Limit the map overlay to the effective Smart Pinging coverage window.
   final bool smartPingRecentCoverageOnly;
 
@@ -206,6 +211,7 @@ class UserPreferences {
     this.hybridModeEnabled = true,
     this.smartPingEnabled = true,
     this.smartPingDays = SmartPingDays.defaultDays,
+    this.smartPingFloodOnly = true,
     this.smartPingRecentCoverageOnly = false,
     this.scopeDiscoveryEnabled = false,
     this.scopeDiscoveryDays = ScopeDiscoveryDays.defaultDays,
@@ -265,6 +271,7 @@ class UserPreferences {
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
+      smartPingFloodOnly: (json['smartPingFloodOnly'] as bool?) ?? true,
       smartPingRecentCoverageOnly:
           (json['smartPingRecentCoverageOnly'] as bool?) ?? false,
       showDeferredMarkers: (json['showDeferredMarkers'] as bool?) ?? true,
@@ -380,6 +387,7 @@ class UserPreferences {
       'hybridModeEnabled': hybridModeEnabled,
       'smartPingEnabled': smartPingEnabled,
       'smartPingDays': smartPingDays,
+      'smartPingFloodOnly': smartPingFloodOnly,
       'smartPingRecentCoverageOnly': smartPingRecentCoverageOnly,
       'scopeDiscoveryEnabled': scopeDiscoveryEnabled,
       'scopeDiscoveryDays': scopeDiscoveryDays,
@@ -439,6 +447,7 @@ class UserPreferences {
     bool? hybridModeEnabled,
     bool? smartPingEnabled,
     int? smartPingDays,
+    bool? smartPingFloodOnly,
     bool? smartPingRecentCoverageOnly,
     bool? scopeDiscoveryEnabled,
     int? scopeDiscoveryDays,
@@ -498,6 +507,7 @@ class UserPreferences {
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
       smartPingEnabled: smartPingEnabled ?? this.smartPingEnabled,
       smartPingDays: smartPingDays ?? this.smartPingDays,
+      smartPingFloodOnly: smartPingFloodOnly ?? this.smartPingFloodOnly,
       smartPingRecentCoverageOnly:
           smartPingRecentCoverageOnly ?? this.smartPingRecentCoverageOnly,
       scopeDiscoveryEnabled: scopeDiscoveryEnabled ?? this.scopeDiscoveryEnabled,
@@ -591,6 +601,7 @@ class UserPreferences {
         other.hybridModeEnabled == hybridModeEnabled &&
         other.smartPingEnabled == smartPingEnabled &&
         other.smartPingDays == smartPingDays &&
+        other.smartPingFloodOnly == smartPingFloodOnly &&
         other.smartPingRecentCoverageOnly == smartPingRecentCoverageOnly &&
         other.scopeDiscoveryEnabled == scopeDiscoveryEnabled &&
         other.scopeDiscoveryDays == scopeDiscoveryDays &&
@@ -645,6 +656,7 @@ class UserPreferences {
       hybridModeEnabled,
       smartPingEnabled,
       smartPingDays,
+      smartPingFloodOnly,
       smartPingRecentCoverageOnly,
       scopeDiscoveryEnabled,
       scopeDiscoveryDays,

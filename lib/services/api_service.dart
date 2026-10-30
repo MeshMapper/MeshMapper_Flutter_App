@@ -185,6 +185,7 @@ class ApiService {
   int _apiHopBytes = 1;
   bool _enforceSmartPing = false;
   int _apiSmartPingDays = 14;
+  bool _apiSmartPingFloodOnly = true;
   bool _scopeDiscoveryOffered = false;
   bool _enforceScopeDiscovery = false;
   int _apiScopeRefreshDays = 14;
@@ -231,6 +232,11 @@ class ApiService {
   /// The Smart Pinging window (days) the server sent; only binding when
   /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
   int get apiSmartPingDays => _apiSmartPingDays;
+
+  /// Whether Smart Pinging holds a TX ping back only for a green square;
+  /// only binding when [enforceSmartPing] is true. True when the field is
+  /// missing or anything other than false / 0.
+  bool get apiSmartPingFloodOnly => _apiSmartPingFloodOnly;
 
   /// Whether the last live auth carried the `scope_discovery` key at all.
   /// The key's PRESENCE is the gate: a server that predates the feature never
@@ -1030,9 +1036,12 @@ class ApiService {
               (smartDays is int && smartDays >= 1 && smartDays <= 365)
                   ? smartDays
                   : 14;
+          final floodOnly = data['smart_ping_flood_only'];
+          _apiSmartPingFloodOnly = !(floodOnly == false || floodOnly == 0);
           if (_enforceSmartPing) {
             debugLog(
-                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window');
+                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window, '
+                '${_apiSmartPingFloodOnly ? 'flood only' : 'all pings'}');
           }
 
           // Scope discovery (APP_API.md). The key's PRESENCE is the gate: a
@@ -1793,6 +1802,7 @@ class ApiService {
       _apiHopBytes = 1;
       _enforceSmartPing = false;
       _apiSmartPingDays = 14;
+      _apiSmartPingFloodOnly = true;
       final scopeWasOffered = _scopeDiscoveryOffered;
       final scopeWasEnforced = _enforceScopeDiscovery;
       _scopeDiscoveryOffered = false;

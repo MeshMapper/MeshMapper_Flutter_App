@@ -2128,6 +2128,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ? _apiService.apiSmartPingDays
       : _preferences.smartPingDays;
 
+  /// Whether only a green square delays a TX ping: the server's when
+  /// enforced, else the user's.
+  bool get smartPingFloodOnly => _apiService.enforceSmartPing
+      ? _apiService.apiSmartPingFloodOnly
+      : _preferences.smartPingFloodOnly;
+
   /// Companion firmware code (byte 1 of RESP_CODE_DEVICE_INFO) scope
   /// discovery needs to ask a repeater at all. Below it the setting still
   /// saves, but nothing is asked and nothing extra goes on the air.
