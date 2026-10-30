@@ -168,7 +168,7 @@ PingService _build(
     rxWindowTimer: RxWindowTimer(),
     discoveryWindowTimer: DiscoveryWindowTimer(),
     deviceId: 'TEST',
-  )..checkRecentCoverage = (lat, lon) => coverage.answer;
+  )..checkRecentCoverage = (lat, lon, kind) => coverage.answer;
   service.getSessionId = () => 'YYZ-20260916-0001';
   service.getNextPingCounter = () => 1;
   service.onAutoPingScheduled = (intervalMs, skipReason) =>

@@ -337,7 +337,7 @@ class _Scenario {
         conn.events.add('sched$ms@${clock.now().difference(t0).inMilliseconds}');
         onScheduled?.call(ms, reason);
       };
-    if (smartPing) ping.checkRecentCoverage = (_, __) => coverage;
+    if (smartPing) ping.checkRecentCoverage = (_, __, ___) => coverage;
     ping.setAutoPingInterval(intervalMs);
     if (withRunner) {
       ping.scopeRunnerFactory = ({required hardStop, required cancel}) {

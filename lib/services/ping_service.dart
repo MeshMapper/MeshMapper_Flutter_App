@@ -221,11 +221,12 @@ class PingService {
   /// Callback to get the power level in watts (0.3, 0.6, 1.0, 2.0) from user preferences
   double Function()? getPowerLevel;
 
-  /// Smart Pinging: whether the cell under a fix already has recent coverage.
-  /// Consulted by the auto TX validator and the auto discovery path only.
-  /// Null (or [RecentCoverage.unknown]) never blocks. Wired by the provider
-  /// to [RecentCoverageService.isCovered].
-  RecentCoverage Function(double lat, double lon)? checkRecentCoverage;
+  /// Smart Pinging: whether the cell under a fix already has recent coverage
+  /// for this kind of ping. Consulted by the auto TX validator and the auto
+  /// discovery path only. Null (or [RecentCoverage.unknown]) never blocks.
+  /// Wired by the provider to [RecentCoverageService.isCovered].
+  RecentCoverage Function(double lat, double lon, BankedPingType kind)?
+      checkRecentCoverage;
 
   /// Fired once each time smart pinging holds a ping, with the fix that was
   /// validated and which kind of ping was held. The provider dedupes it on
@@ -461,7 +462,8 @@ class PingService {
     // here and the interval tick already fails open; 'clear' is also the
     // answer once Smart Pinging is off, which is why the provider drops the
     // bank when the lookup goes inactive.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) !=
+    if (checkRecentCoverage?.call(
+            position.latitude, position.longitude, banked) !=
         RecentCoverage.clear) {
       return false;
     }
@@ -607,7 +609,8 @@ class PingService {
     // reads as held, not rate limited, and both Hybrid legs then agree. Banking
     // a too close ping is safe, since the release re-checks the 25 m rule
     // before it ever goes out. Only here (auto): manual pings always send.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+    if (checkRecentCoverage?.call(
+            position.latitude, position.longitude, BankedPingType.tx) ==
         RecentCoverage.covered) {
       return PingValidation.recentlyCovered;
     }
@@ -2104,7 +2107,8 @@ class PingService {
       }
 
       // Smart Pinging: a covered square gets no discovery request either.
-      if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+      if (checkRecentCoverage?.call(position.latitude, position.longitude,
+              BankedPingType.discovery) ==
           RecentCoverage.covered) {
         _skipReason = skipReasonRecentlyCovered;
         // A held TX ping keeps the slot (Hybrid): the first ping into a fresh
@@ -2126,14 +2130,22 @@ class PingService {
         return;
       }
 
+      // A square can be clear for discovery while still covered for TX, so
+      // ask about TX separately before deciding what the bank does.
+      final txCovered = checkRecentCoverage?.call(
+              position.latitude, position.longitude, BankedPingType.tx) ==
+          RecentCoverage.covered;
+
       // A held TX ping is never replaced by a discovery (Hybrid). The release
       // check could not see this fix: the in-progress latch above refuses it,
       // getFreshPosition() bypasses the stream, and it only releases on a
       // definite 'clear' while this lane also proceeds on 'unknown'. So this
-      // leg goes to the TX instead. The send itself is dispatched from the
-      // finally, once the latch is cleared, since sendTxPing takes it again.
+      // leg goes to the TX instead, unless the square is still covered for
+      // TX. The send itself is dispatched from the finally, once the latch is
+      // cleared, since sendTxPing takes it again.
       if (_hybridModeEnabled &&
           _bankedPing == BankedPingType.tx &&
+          !txCovered &&
           _gpsService.canPingAtPosition(position)) {
         debugLog('[DISC] Banked TX ping takes this leg, discovery not sent');
         _bankedPing = null;
@@ -2145,7 +2157,14 @@ class PingService {
 
       // Clear skip reason since we're proceeding
       _skipReason = null;
-      _bankedPing = null;
+      // A held TX in a square still covered for TX keeps waiting for a clear
+      // one: this discovery does not stand in for it.
+      if (_bankedPing == BankedPingType.tx && txCovered) {
+        debugLog(
+            '[DISC] Square covered for TX only, discovery sent, banked TX kept');
+      } else {
+        _bankedPing = null;
+      }
 
       // Signal "Sending..." to UI (the flag itself was latched above)
       onPingProgressChanged?.call();

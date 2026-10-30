@@ -178,7 +178,7 @@ PingService _build(
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: discoveryWindow,
       deviceId: 'TEST',
-    )..checkRecentCoverage = (lat, lon) => RecentCoverage.clear;
+    )..checkRecentCoverage = (lat, lon, kind) => RecentCoverage.clear;
   if (withSession) {
     service.getSessionId = () => 'YYZ-20260914-0001';
     service.getNextPingCounter = () => 1;
@@ -393,7 +393,7 @@ void main() {
     // easiest to stand one up on.
     final ping = _build(gps, conn, discoveryWindow)
       ..checkRecentCoverage =
-          (lat, lon) => throw StateError('coverage lookup failed');
+          (lat, lon, kind) => throw StateError('coverage lookup failed');
 
     // Park the opening discovery on its fresh fix, then stop Passive: the
     // latch turns the stop into a parked disable waiting on this attempt.
