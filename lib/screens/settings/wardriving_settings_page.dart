@@ -136,6 +136,24 @@ class WardrivingSettingsPage extends StatelessWidget {
               ),
             if (appState.smartPingEnabled)
               SwitchListTile(
+                secondary: const Icon(Icons.swap_horiz),
+                title: const Text('Delay only flood pings'),
+                subtitle: appState.enforceSmartPing
+                    ? Text(
+                        'Set by Regional Admin. ${_floodOnlySubtitle(appState.smartPingFloodOnly)}',
+                        style: const TextStyle(color: Colors.amber),
+                      )
+                    : Text(_floodOnlySubtitle(appState.smartPingFloodOnly)),
+                value: appState.smartPingFloodOnly,
+                onChanged: (isAutoMode || appState.enforceSmartPing)
+                    ? null
+                    : (value) {
+                        appState.updatePreferences(
+                            prefs.copyWith(smartPingFloodOnly: value));
+                      },
+              ),
+            if (appState.smartPingEnabled)
+              SwitchListTile(
                 secondary: const Icon(Icons.layers_outlined),
                 title: const Text('Show only recent coverage'),
                 subtitle: const Text(
@@ -727,7 +745,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits. In Hybrid, a held GRP_TXT is never replaced by a discovery request, so it is the first ping into a clear square and can paint it green.',
+                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits. In Hybrid, a held GRP_TXT is never replaced by a discovery request, so it is the first ping into a clear square and can paint it green. With Delay only flood pings on, discovery keeps going out while the GRP_TXT waits.',
                 style: TextStyle(fontSize: 13),
               ),
               SizedBox(height: 12),
@@ -735,7 +753,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                'A square with a two-way (green) or discovery (cyan) result inside your chosen window. Squares match your Coverage Grid setting, so what is deferred is what is already painted on the map.',
+                'With Delay only flood pings on (the default), a flood ping waits only in a square with a two-way (green) result inside your window, and discovery requests always go out. With it off, both wait in a square with a green or cyan result. Squares match your Coverage Grid setting, so what is deferred is what is already painted on the map.',
                 style: TextStyle(fontSize: 13),
               ),
               SizedBox(height: 12),
@@ -1155,6 +1173,10 @@ class WardrivingSettingsPage extends StatelessWidget {
       ),
     );
   }
+
+  String _floodOnlySubtitle(bool floodOnly) => floodOnly
+      ? 'Discovery always goes out. Flood pings wait only in green squares.'
+      : 'Flood pings and discovery wait in green or cyan squares.';
 
   String _smartPingDaysLabel(int days) => days == 1 ? '1 day' : '$days days';
 

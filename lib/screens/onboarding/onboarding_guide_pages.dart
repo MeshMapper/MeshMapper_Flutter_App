@@ -671,7 +671,7 @@ Widget buildSmartPingingPage(BuildContext context) {
         icon: Icons.pending_outlined,
         title: 'Deferred is normal',
         text:
-            'The app holds one ping and sends it as soon as you enter a square without recent two-way or discovery coverage.',
+            'The app holds one flood ping and sends it as soon as you enter a square without recent two-way coverage. Discovery requests are not held unless you turn off Delay only flood pings.',
         color: Colors.orange,
       ),
       GuideIconRow(

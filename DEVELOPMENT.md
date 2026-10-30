@@ -515,8 +515,10 @@ with Active or Trace mode in practice, since only Passive and Hybrid ever hold t
 
 ### Smart Pinging
 
-Auto mode defers TX pings and discovery requests in a grid square that already has a recent
-bidir (green) or disc (cyan) result. A deferred ping is held rather than dropped: it waits in a
+Auto mode defers pings in a grid square that already has a recent bidir (green) or disc (cyan)
+result. By default ("Delay only flood pings", `smartPingFloodOnly`) only a green square holds a
+TX ping and a discovery request is never held; with it off, a green or cyan square holds both.
+A deferred ping is held rather than dropped: it waits in a
 one-slot bank and goes out at the first fix in a square with no recent coverage. RX logging is
 never deferred (it is free). Manual pings, Trace mode and the auto-mode start check are
 untouched. On by default with a 14 day window.
@@ -525,7 +527,10 @@ untouched. On by default with a 14 day window.
   (any whole number of days from 1 to 365, typed into a number field; default 14; bounds in
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
   hidden while the switch is off. An (i) button beside the switch opens `_showSmartPingInfo`,
-  a dialog explaining the deferral in user-facing words.
+  a dialog explaining the deferral in user-facing words. A second switch, `smartPingFloodOnly`
+  ("Delay only flood pings", default true), sits under the window tile while Smart Pinging is
+  on. It is locked in auto mode, like the main switch, so it never changes mid-session, and
+  locked (amber "Set by Regional Admin.") while the region enforces Smart Pinging.
 - **Map trail**: a deferral adds a hollow yellow marker (`PingColors.deferred`, with
   color-vision palette variants) whenever the phone has moved the configured minimum ping
   distance since the last deferred marker, the same rule a real ping answers to, so a drive
@@ -557,18 +562,21 @@ untouched. On by default with a 14 day window.
   clear its patch; patch bodies belong to a region/grid/radio/window context, and an
   in-flight fetch from an old context is discarded. This changes the coverage squares,
   not the session's ping markers or the Smart Pinging send rules.
-- **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int). When
-  `smart_ping` is true the switch is locked on and the window is the server's; otherwise the
-  user's own values apply. The preference is never overwritten: `AppStateProvider`
-  exposes effective getters (`smartPingEnabled`, `smartPingDays`, `enforceSmartPing`), the
-  `discDropEnabled` pattern. A missing or invalid field means not enforced, 14 days
-  (`ApiService.enforceSmartPing`, `apiSmartPingDays`).
+- **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int) and
+  `smart_ping_flood_only` (bool). When `smart_ping` is true the switch is locked on and the
+  window and the flood only setting are the server's; otherwise the user's own values apply. The preference is never overwritten: `AppStateProvider`
+  exposes effective getters (`smartPingEnabled`, `smartPingDays`, `smartPingFloodOnly`,
+  `enforceSmartPing`), the `discDropEnabled` pattern. A missing or invalid field means not
+  enforced, 14 days, flood only on (`ApiService.enforceSmartPing`, `apiSmartPingDays`,
+  `apiSmartPingFloodOnly`: only `false` or `0` reads off).
 - **Data source**: `vector_tile.php?z=13&gsize=<grid>&f_days=<days>&f_types=green,cyan`
   (`ApiService.fetchRecentCoverageTile`, read from the coverage host: the group's own site when
   the zone is grouped, see Multi-region groups), decoded by `decodeCoverageCells`. The square
   is the cell of the user's Coverage Grid setting (300 m or 100 m), so what is deferred matches
   what is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not
   used.
+  The tile keeps each cell's colour: its `st` is read as green (1) or cyan (2), and the filter
+  stays `f_types=green,cyan` so one tile serves both settings.
   The fetch also carries the radio preset filter (`f_freq`, `f_bw`, `f_sf`, see Coverage
   Overlay), and `RecentCoverageService.configure(radioKey:)` drops every loaded tile when the
   preset changes, since a tile fetched under the old preset answers for the wrong layer.
@@ -581,24 +589,34 @@ untouched. On by default with a 14 day window.
   back carrying any cell other than green or cyan is treated as unfiltered (a region server
   without the `f_*` filter support) and ignored, so the lookup stays `unknown` there. Cells this
   session covered itself (a heard TX, an answered discovery) are marked covered at once
-  (`markCovered`). `isCovered` is synchronous and returns `covered`, `clear` or `unknown`.
+  (`markCovered(lat, lon, CoverageColor)`: a heard TX echo is `CoverageColor.green`, an answered
+  discovery `CoverageColor.cyan`, and green wins, so a later cyan never downgrades a green
+  mark). `isCovered(lat, lon, {required forTx})` is synchronous and returns `covered`, `clear`
+  or `unknown`. With `floodOnly` (set through `configure(..., floodOnly:)`) a discovery
+  (`forTx` false) always reads `clear` and only a green cell holds a TX; with it off either
+  colour holds both. Tiles keep both colours, so flipping `floodOnly` keeps them and only
+  changes how they are read.
 - **Fail open**: `unknown` (no tile yet), a fetch failure, Offline Mode, no zone, or the
   feature off all let the ping go out.
-- **The deferral**: `PingService.checkRecentCoverage` (wired to `isCovered`) is consulted by
-  `canPing()` before the distance check (covered wins: a fix that is both reads Deferred, not
+- **The deferral**: `PingService.checkRecentCoverage(lat, lon, BankedPingType kind)` (wired to
+  `isCovered(forTx: kind == tx)`) asks per ping kind. It is consulted by `canPing()` (as `tx`) before the distance check (covered wins: a fix that is both reads Deferred, not
   Skipped, so parked on already mapped ground is held rather than rate limited, and both Hybrid
-  legs agree) and by the auto discovery path alongside its distance check. It yields
+  legs agree) and by the auto discovery path (as `discovery`) alongside its distance check. It yields
   `PingValidation.recentlyCovered` and the skip reason
   `'recently covered'` (`PingService.skipReasonRecentlyCovered`), which rides the existing
   `onAutoPingScheduled` hook, and it banks the ping instead of dropping it. The interval timer
   is untouched: the next attempt is still scheduled at the normal interval, so the timer stays
-  the backstop for a phone that never reaches a clear square.
+  the backstop for a phone that never reaches a clear square. In Hybrid the discovery leg also
+  asks about TX: a square that is clear for discovery but still covered for TX (flood only,
+  cyan square) sends the discovery and keeps the banked TX waiting, instead of handing the leg
+  to the TX.
 - **The bank**: one slot. `PingService._bankedPing` holds a `BankedPingType`, either `tx`
   (Active or Hybrid) or `discovery` (Passive or Hybrid), readable through `bankedPing`. A
   later deferral overwrites an earlier one, except that in Hybrid a held TX ping is never
   replaced by a discovery: a deferred discovery leaves the TX held (and its DEFER names the
   TX), and a discovery leg whose fresh fix is not covered (`clear` or `unknown`) and passes
-  the TX distance rule sends the held TX in its place. That leg clears the bank and the
+  the TX distance rule sends the held TX in its place (when the square is still covered for TX
+  the discovery goes out and the TX stays banked). That leg clears the bank and the
   in-progress latch, sets `_nextPingIsDiscovery` back to true and dispatches the TX from the
   attempt's `finally`, so the next leg is a discovery and the TX re-arms the lane itself. The
   release check alone cannot cover this: it is refused while the discovery holds the latch
@@ -609,8 +627,8 @@ untouched. On by default with a 14 day window.
   listener in `AppStateProvider` calls it on every fix, placed after the airborne early return,
   and on a true it also clears the countdown's skip reason so the label does not keep reading
   "Deferred" while the released ping is going out.
-- **What lets a banked ping go**: the fix must answer `RecentCoverage.clear` (`unknown` is not
-  enough, and the interval tick already fails open there) and must satisfy the same 25 m
+- **What lets a banked ping go**: the fix must answer `RecentCoverage.clear` when asked with the
+  banked kind (`unknown` is not enough, and the interval tick already fails open there) and must satisfy the same 25 m
   minimum-distance rule the send path enforces, measured against the last TX or the last
   discovery to match the banked type. The release is refused while auto mode is off, in
   targeted (Trace) mode, with a disable pending, with a ping already in progress, with the
@@ -665,7 +683,8 @@ untouched. On by default with a 14 day window.
   row heard with no mode running, absent only when no getter is wired, which the server reads
   as unknown, and never on a `DEFER`, which the factory cannot stamp). (3) One `DEFER` item
   per fixed 300 m square per API session, `{type, lat, lon, timestamp, held}` with `held`
-  `tx` or `disc` and nothing else (no antenna, noise floor, power or altitude: the server pays
+  `tx` or `disc` and nothing else (`disc` only appears with Delay only flood pings off, since a
+  discovery is never held otherwise) (no antenna, noise floor, power or altitude: the server pays
   for the square, not the reading). `PingService.onPingDeferred` fires at the two deferral
   sites (the TX auto branch and the discovery send) with the validated fix; the provider
   dedupes it through `RecentCoverageService.markDeferred` (always the 300 m grid, whatever the

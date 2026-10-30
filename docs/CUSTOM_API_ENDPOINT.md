@@ -208,7 +208,7 @@ A targeted zero-hop trace to a specific repeater.
 
 ### DEFER (type: "DEFER")
 
-A square where the app's smart pinging held a TX ping or a discovery request because MeshMapper already had recent coverage there. The app reports it so MeshMapper can credit the square; you receive it because it may help a mapper keeping its own coverage.
+A square where the app's smart pinging held a TX ping or a discovery request because MeshMapper already had recent coverage there. The app reports it so MeshMapper can credit the square; you receive it because it may help a mapper keeping its own coverage. Discovery requests are only held when the user (or the region) has turned off Delay only flood pings.
 
 **A deferral is unverified.** MeshMapper checks each one against its own coverage data and silently discards any it cannot confirm, but the batch answer does not say which items were kept, and the app forwards the whole batch after the upload succeeds. Treat a `DEFER` as "the app believed this square was covered", not as a confirmed observation.
 
@@ -263,7 +263,7 @@ A repeater's answer to a direct scope discovery question, sent after a discovery
 
 ## Batch Examples
 
-A batch is whatever the app uploaded to MeshMapper in that round, so one request can mix every type above. `DEFER` items only appear from app version 1.4.0 onward, and only while the user has Smart Pinging on (the default) in Active, Passive or Hybrid mode, so your endpoint must accept batches both with and without them. `SCOPES` items only appear from the app version that ships this feature, and only while scope discovery is on, either enforced by the region or switched on by the user, so your endpoint must accept batches with and without them too. Dispatch on `type` and ignore any value you do not handle rather than rejecting the batch: a `4xx` is shown to the user as an error.
+A batch is whatever the app uploaded to MeshMapper in that round, so one request can mix every type above. `DEFER` items only appear from app version 1.4.0 onward, and only while the user has Smart Pinging on (the default) in Active or Hybrid mode, or in Passive mode with Delay only flood pings turned off, so your endpoint must accept batches both with and without them. `SCOPES` items only appear from the app version that ships this feature, and only while scope discovery is on, either enforced by the region or switched on by the user, so your endpoint must accept batches with and without them too. Dispatch on `type` and ignore any value you do not handle rather than rejecting the batch: a `4xx` is shown to the user as an error.
 
 **Batch without a DEFER** (a TX ping and a passive RX observation):
 
