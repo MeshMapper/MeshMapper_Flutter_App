@@ -5,5 +5,6 @@ import WidgetKit
 struct MeshMapperLiveActivityBundle: WidgetBundle {
   var body: some Widget {
     MeshMapperLiveActivity()
+    MeshMapperStatusWidget()
   }
 }

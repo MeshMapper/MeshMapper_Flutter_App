@@ -100,3 +100,6 @@ WhatToTest.txt
 
 # SwiftPM build products for the watch wire-rule tests
 ios/WatchLogicTests/.build/
+
+# Local phone build and test artifacts
+/.phone-build/

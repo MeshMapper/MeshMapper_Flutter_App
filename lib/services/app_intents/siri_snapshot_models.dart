@@ -10,18 +10,21 @@ class SiriConnectionSnapshot {
     required this.isConnected,
     this.deviceName,
     this.batteryPercent,
+    this.powerWatts,
     required this.gpsStatus,
   });
 
   final bool isConnected;
   final String? deviceName;
   final int? batteryPercent;
+  final double? powerWatts;
   final String gpsStatus;
 
   Map<String, Object?> toMap() => {
         'isConnected': isConnected,
         'deviceName': deviceName,
         'batteryPercent': batteryPercent,
+        'powerWatts': powerWatts,
         'gpsStatus': gpsStatus,
       };
 }
