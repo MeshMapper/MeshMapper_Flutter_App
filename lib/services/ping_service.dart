@@ -224,7 +224,8 @@ class PingService {
   /// Smart Pinging: whether the cell under a fix already has recent coverage
   /// for this kind of ping. Consulted by the auto TX validator and the auto
   /// discovery path only. Null (or [RecentCoverage.unknown]) never blocks.
-  /// Wired by the provider to [RecentCoverageService.isCovered].
+  /// Wired by the provider to [RecentCoverageService.isCovered], asked per
+  /// kind: a TX asks with forTx true, a discovery with forTx false.
   RecentCoverage Function(double lat, double lon, BankedPingType kind)?
       checkRecentCoverage;
 

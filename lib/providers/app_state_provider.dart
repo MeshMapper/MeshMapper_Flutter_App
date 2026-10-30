@@ -5678,7 +5678,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.checkRecentCoverage =
-        (lat, lon, kind) => _recentCoverage.isCovered(lat, lon);
+        (lat, lon, kind) => _recentCoverage.isCovered(lat, lon,
+            forTx: kind == BankedPingType.tx);
 
     // A marker per deferral once the phone has moved the minimum ping
     // distance, and one DEFER per fixed 300 m square per API session. The
@@ -5739,7 +5740,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onEchoReceived = (txPing, repeater, isNew) {
-      _recentCoverage.markCovered(txPing.latitude, txPing.longitude);
+      _recentCoverage.markCovered(
+          txPing.latitude, txPing.longitude, CoverageColor.green);
       debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
       debugLog(
           '[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
@@ -5879,7 +5881,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
-      _recentCoverage.markCovered(discPing.latitude, discPing.longitude);
+      _recentCoverage.markCovered(
+          discPing.latitude, discPing.longitude, CoverageColor.cyan);
       debugLog(
           '[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
       if (isNew) {
@@ -10348,6 +10351,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       gridSize: _preferences.coverageGridSize,
       days: smartPingDays,
       radioKey: radioFilterKey,
+      floodOnly: smartPingFloodOnly,
       // A group handoff has no session for its two round trips; the lookup
       // keeps its tiles, marks and banked ping through that gap.
       enabled: !sessionEnded &&
