@@ -55,7 +55,7 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
 | Field | Type | Description |
 |-------|------|-------------|
 | `heard_repeats` | `string` | Comma-separated repeater echoes: `"id(snr),id(snr)"` or `"None"` if no repeaters heard. IDs are upper-case hex: 2, 4 or 6 characters depending on the path's bytes per hop (8 is possible). SNR is in dB with two decimals, or `null` when the echo came through the user's own CARpeater (for example `"4E(null)"`). |
-| `wire_tag` | `string\|absent` | The anonymous tag the ping carried on air (e.g., `"MM:Ab3dEf9hIj"`). Can be absent: a TX that carried no tag, for example from an offline session saved by an older app version, has none. |
+| `wire_tag` | `string\|absent` | The encrypted tag the ping carried on air instead of its coordinates (e.g., `"MM:Ab3dEf9hIj"`). Only MeshMapper holds the key that decrypts it. Decrypted, it names the session and the ping that sent it, which is how MeshMapper matches a ping heard by an observer in another region back to its session (cross-region spillover). Can be absent: a TX that carried no tag, for example from an offline session saved by an older app version, has none. |
 | `ping_counter` | `integer\|absent` | The ping's number within the user's MeshMapper session. Sent only together with `wire_tag`. |
 
 Echoes that reached the user through more than one repeater are not in `heard_repeats`. They arrive as separate `RX` items at the TX ping's location.
