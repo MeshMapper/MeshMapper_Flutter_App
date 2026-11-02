@@ -102,6 +102,9 @@ EDITABLE_VERSION_STATES = {
     'PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED',
     'METADATA_REJECTED', 'INVALID_BINARY',
 }
+# A version becomes READY_FOR_REVIEW once it is an item of a review submission
+# that has not been submitted yet (submit stopped halfway); submit resumes it.
+READY_FOR_REVIEW = 'READY_FOR_REVIEW'
 # States of a version that has already been sent to App Review (or is past it)
 SUBMITTED_STATES = {
     'WAITING_FOR_REVIEW', 'IN_REVIEW', 'PENDING_DEVELOPER_RELEASE',
@@ -405,6 +408,11 @@ def already_submitted(version: dict) -> bool:
     attrs = version['attributes']
     return (attrs.get('appVersionState') in SUBMITTED_STATES or
             attrs.get('appStoreState') in SUBMITTED_STATES)
+
+
+def in_unsubmitted_submission(version: dict) -> bool:
+    attrs = version['attributes']
+    return READY_FOR_REVIEW in (attrs.get('appVersionState'), attrs.get('appStoreState'))
 
 
 def version_localizations(version):
@@ -966,6 +974,17 @@ def check_ready_to_submit(version):
     return build
 
 
+def submission_has_version(submission_id, version_id):
+    items, included = get_all('/v1/reviewSubmissions/%s/items' % submission_id,
+                              {'include': 'appStoreVersion'})
+    for item in items:
+        linked = ((item.get('relationships') or {}).get('appStoreVersion') or {}).get('data') or {}
+        if linked.get('id') == version_id:
+            return True
+    return any(i.get('type') == 'appStoreVersions' and i.get('id') == version_id
+               for i in included)
+
+
 def cmd_submit(args):
     plan = Plan(args.apply)
     app = app_id()
@@ -977,10 +996,14 @@ def cmd_submit(args):
     if already_submitted(version):
         print('already submitted (%s)' % version_state(version))
         return
-    if editable_version([version]) is None:
+    resuming = in_unsubmitted_submission(version)
+    if editable_version([version]) is None and not resuming:
         raise Fail('Version %s is %s and cannot be submitted.' % (args.version, version_state(version)))
 
     plan.section('Ready for review?')
+    if resuming:
+        plan.info('The version is already an item of a submission that was not submitted; '
+                  'resuming it.')
     build = check_ready_to_submit(version)
     plan.same('build', (build.get('attributes') or {}).get('version') or build['id'])
     plan.same("What's New", 'set on every localization')
@@ -990,7 +1013,7 @@ def cmd_submit(args):
     # an item that points at the App Store version, then submitted=true.
     plan.section('App Review submission')
     open_subs, _ = get_all('/v1/reviewSubmissions', {
-        'filter[app]': app, 'filter[platform]': 'IOS', 'filter[state]': 'READY_FOR_REVIEW'})
+        'filter[app]': app, 'filter[platform]': 'IOS', 'filter[state]': READY_FOR_REVIEW})
     sub = open_subs[0] if open_subs else None
     if sub:
         plan.same('review submission', 'reuse open %s' % sub['id'])
@@ -1007,9 +1030,11 @@ def cmd_submit(args):
                 'reviewSubmission': rel('reviewSubmissions', sub['id']),
                 'appStoreVersion': rel('appStoreVersions', version['id'])})
         except APIError as exc:
-            if exc.status != 409:
+            # ASC answers 409 for most state and validation errors, not only for
+            # a duplicate: carry on only when the version really is in the submission.
+            if exc.status != 409 or not submission_has_version(sub['id'], version['id']):
                 raise
-            print('     the version is already an item of this submission (HTTP 409)')
+            print('     the version is already an item of this submission')
         res = patch('reviewSubmissions', sub['id'], {'submitted': True})
         state = (((res or {}).get('data') or {}).get('attributes') or {}).get('state')
         print('     submission %s is now %s' % (sub['id'], state or 'submitted'))

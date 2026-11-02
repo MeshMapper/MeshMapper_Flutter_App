@@ -258,19 +258,54 @@ class SubmitFlowTest(unittest.TestCase):
         self.assertEqual(params['filter[platform]'], 'IOS')
         self.assertEqual(params['filter[state]'], 'READY_FOR_REVIEW')
 
-    def test_reuses_an_open_submission_and_treats_409_on_the_item_as_done(self) -> None:
-        routes = self.routes(**{})
+    @staticmethod
+    def items_of(*version_ids: str) -> dict:
+        return _data([{'id': 'item-' + vid, 'type': 'reviewSubmissionItems', 'relationships': {
+            'appStoreVersion': {'data': {'type': 'appStoreVersions', 'id': vid}}}}
+            for vid in version_ids])
+
+    @staticmethod
+    def conflict() -> asc_store.APIError:
+        return asc_store.APIError(
+            'POST', '/v1/reviewSubmissionItems', 409,
+            {'errors': [{'status': '409', 'code': 'ENTITY_ERROR', 'title': 'conflict'}]})
+
+    def open_submission_routes(self, items: dict, state: str | None = None) -> dict:
+        routes = self.routes()
         routes[('GET', '/v1/reviewSubmissions')] = _data(
             [{'id': 'sub1', 'attributes': {'state': 'READY_FOR_REVIEW'}}])
-        routes[('POST', '/v1/reviewSubmissionItems')] = asc_store.APIError(
-            'POST', '/v1/reviewSubmissionItems', 409,
-            {'errors': [{'status': '409', 'code': 'ENTITY_ERROR', 'title': 'duplicate'}]})
-        fake = FakeASC(routes)
+        routes[('POST', '/v1/reviewSubmissionItems')] = self.conflict()
+        routes[('GET', '/v1/reviewSubmissions/sub1/items')] = items
+        if state:
+            routes[('GET', '/v1/apps/%s/appStoreVersions' % APP)] = _data(
+                [_version('1.4.1', state, self.VER)])
+        return routes
+
+    def test_reuses_an_open_submission_and_continues_on_409_when_the_version_is_in_it(self) -> None:
+        fake = FakeASC(self.open_submission_routes(self.items_of(self.VER)))
         _, out = self.submit(fake, apply=True)
         kinds = [(m, p) for m, p, _ in fake.writes()]
         self.assertEqual(kinds, [('POST', '/v1/reviewSubmissionItems'),
                                  ('PATCH', '/v1/reviewSubmissions/sub1')])
         self.assertIn('WAITING_FOR_REVIEW', out)
+
+    def test_409_is_also_verified_through_the_included_version(self) -> None:
+        items = _data([{'id': 'item1', 'type': 'reviewSubmissionItems'}])
+        items['included'] = [{'id': self.VER, 'type': 'appStoreVersions'}]
+        fake = FakeASC(self.open_submission_routes(items))
+        self.submit(fake, apply=True)
+        self.assertEqual(fake.writes()[-1][:2], ('PATCH', '/v1/reviewSubmissions/sub1'))
+
+    def test_409_when_the_version_is_not_in_the_submission_is_raised(self) -> None:
+        for items in (self.items_of(), self.items_of('some-other-version')):
+            with self.subTest(items=items):
+                fake = FakeASC(self.open_submission_routes(items))
+                with self.assertRaises(asc_store.APIError) as ctx:
+                    self.submit(fake, apply=True)
+                self.assertEqual(ctx.exception.status, 409)
+                self.assertIn('conflict', str(ctx.exception))
+                self.assertEqual([(m, p) for m, p, _ in fake.writes()],
+                                 [('POST', '/v1/reviewSubmissionItems')])
 
     def test_other_item_errors_are_not_swallowed(self) -> None:
         routes = self.routes()
@@ -280,6 +315,43 @@ class SubmitFlowTest(unittest.TestCase):
         with self.assertRaises(asc_store.APIError):
             self.submit(fake, apply=True)
         self.assertNotIn('PATCH', [m for m, _, _ in fake.writes()])
+
+    def test_a_half_finished_submit_can_be_resumed(self) -> None:
+        # The item was added, then `submitted: true` failed. The version now
+        # reads READY_FOR_REVIEW (on either state field) and is no longer editable.
+        for field in ('appStoreState', 'appVersionState'):
+            with self.subTest(field=field):
+                routes = self.open_submission_routes(self.items_of(self.VER))
+                version = _version('1.4.1', 'x', self.VER)
+                version['attributes'] = {'versionString': '1.4.1', field: 'READY_FOR_REVIEW'}
+                routes[('GET', '/v1/apps/%s/appStoreVersions' % APP)] = _data([version])
+                fake = FakeASC(routes)
+                _, out = self.submit(fake, apply=True)
+                self.assertEqual(fake.writes()[-1], (
+                    'PATCH', '/v1/reviewSubmissions/sub1', {'data': {
+                        'type': 'reviewSubmissions', 'id': 'sub1',
+                        'attributes': {'submitted': True}}}))
+                self.assertIn('resuming', out)
+
+    def test_a_resumed_submit_still_checks_the_preconditions(self) -> None:
+        routes = self.open_submission_routes(self.items_of(self.VER), 'READY_FOR_REVIEW')
+        routes[('GET', '/v1/appScreenshotSets/s-watch/appScreenshots')] = _data([])
+        fake = FakeASC(routes)
+        with self.assertRaises(Fail):
+            self.submit(fake, apply=True)
+        self.assertEqual(fake.writes(), [])
+
+    def test_a_version_in_a_state_that_cannot_be_submitted_is_refused(self) -> None:
+        for state in ('REPLACED_WITH_NEW_VERSION', 'DEVELOPER_REMOVED_FROM_SALE'):
+            with self.subTest(state=state):
+                routes = self.routes()
+                routes[('GET', '/v1/apps/%s/appStoreVersions' % APP)] = _data(
+                    [_version('1.4.1', state, self.VER)])
+                fake = FakeASC(routes)
+                with self.assertRaises(Fail) as ctx:
+                    self.submit(fake, apply=True)
+                self.assertIn('cannot be submitted', str(ctx.exception))
+                self.assertEqual(fake.writes(), [])
 
     def test_already_submitted_exits_cleanly_without_writes(self) -> None:
         routes = self.routes()
@@ -463,6 +535,14 @@ class PrepareFlowTest(unittest.TestCase):
         fake = FakeASC(self.routes([live]))
         with self.assertRaises(Fail):
             self.prepare(fake, apply=False, version='1.4.0')
+
+    def test_prepare_still_refuses_a_version_waiting_in_an_unsubmitted_submission(self) -> None:
+        pending = _version('1.4.1', 'READY_FOR_REVIEW', 'ver1')
+        fake = FakeASC(self.routes([pending]))
+        with self.assertRaises(Fail) as ctx:
+            self.prepare(fake, apply=True)
+        self.assertIn('READY_FOR_REVIEW', str(ctx.exception))
+        self.assertEqual(fake.writes(), [])
 
     def test_waits_for_the_build_to_become_valid(self) -> None:
         editable = _version('1.4.1', 'PREPARE_FOR_SUBMISSION', 'ver1')
