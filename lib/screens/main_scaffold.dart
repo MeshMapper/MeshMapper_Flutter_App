@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../services/permission_disclosure_service.dart';
@@ -41,6 +42,10 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _startupPromptsSettled = false;
   bool _onboardingGuideOpen = false;
 
+  /// Debug-only store capture mode: opens on a chosen tab and skips the
+  /// startup prompts so screenshots show the screen, not a dialog.
+  bool get _capturing => kDebugMode && StoreCaptureConfig.active != null;
+
   // Built per frame so the Log screen knows when it is the tab on screen:
   // the IndexedStack keeps every tab alive, so being built says nothing.
   List<Widget> get _screens => [
@@ -54,6 +59,9 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   void initState() {
     super.initState();
+    if (kDebugMode && StoreCaptureConfig.active != null) {
+      _selectedIndex = StoreCaptureConfig.active!.screen.tabIndex;
+    }
     _onboardingGuidePresenter.coordinator
         .addListener(_onOnboardingReservationChanged);
     // Check disclosure after first frame (needs context)
@@ -89,7 +97,8 @@ class _MainScaffoldState extends State<MainScaffold> {
       }
 
       // Check if disclosure was already shown
-      final hasShown = await PermissionDisclosureService.hasShownDisclosure();
+      final hasShown =
+          _capturing || await PermissionDisclosureService.hasShownDisclosure();
       if (!hasShown) {
         // Show the disclosure dialog
         if (!mounted) return;
@@ -396,7 +405,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     final onboardingModalLaneReserved = _onboardingGate.reservesModalLane(
       isMobile: !kIsWeb,
       stateLoaded: appState.onboardingGuideStateLoaded,
-      isDue: appState.shouldShowOnboardingGuide,
+      isDue: appState.shouldShowOnboardingGuide && !_capturing,
     );
     final onboardingPresentationReserved =
         _onboardingGuidePresenter.coordinator.isReserved;
@@ -430,7 +439,7 @@ class _MainScaffoldState extends State<MainScaffold> {
           isMobile: !kIsWeb,
           startupPromptsSettled: _startupPromptsSettled,
           stateLoaded: appState.onboardingGuideStateLoaded,
-          isDue: appState.shouldShowOnboardingGuide,
+          isDue: appState.shouldShowOnboardingGuide && !_capturing,
         )) {
       _onboardingGate.markScheduled();
       _onboardingGuideOpen = true;

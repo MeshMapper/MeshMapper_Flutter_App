@@ -4,9 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import 'debug/store_capture.dart';
 import 'models/noise_floor_session.dart';
 import 'providers/app_state_provider.dart';
 import 'screens/main_scaffold.dart';
@@ -22,6 +24,13 @@ import 'utils/debug_logger_io.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Debug builds only: a store_capture.json in the documents directory turns
+  // on the sample-drive mode used for store screenshots.
+  if (kDebugMode) {
+    StoreCaptureConfig.active =
+        await StoreCaptureConfig.load(await getApplicationDocumentsDirectory());
+  }
 
   // Hold every startup line in memory until the stored preference says
   // whether a log file should exist at all. Opening one here and closing it

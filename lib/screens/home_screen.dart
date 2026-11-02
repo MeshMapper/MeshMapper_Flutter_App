@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
@@ -21,7 +23,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _showControlPanel = true;
-  bool _isControlsMinimized = false;
+  // Store capture mode (debug builds) starts with the controls out of the way.
+  bool _isControlsMinimized = kDebugMode && StoreCaptureConfig.active != null;
 
   /// Landscape mode: map controls expanded state (mutually exclusive with control panel)
   bool _mapControlsExpanded = false;
@@ -182,12 +185,10 @@ class _HomeScreenState extends State<HomeScreen> {
           style: TextStyle(fontSize: 18),
         ),
         Text(
-          appState.connectedDeviceName != null
-              ? _buildSubtitle(appState)
-              : 'Disconnected',
+          appState.headerRadioName ?? 'Disconnected',
           style: TextStyle(
             fontSize: 12,
-            color: appState.connectedDeviceName != null
+            color: appState.headerRadioName != null
                 ? Theme.of(context).colorScheme.onSurfaceVariant
                 : Colors.grey,
           ),
@@ -615,11 +616,11 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           // Device name
           Text(
-            appState.displayDeviceName ?? 'Disconnected',
+            appState.headerRadioName ?? 'Disconnected',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,
-              color: appState.connectedDeviceName != null
+              color: appState.headerRadioName != null
                   ? Colors.white
                   : Colors.grey.shade400,
             ),
@@ -1387,12 +1388,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
-  }
-
-  /// Build subtitle with device name only
-  /// Uses displayDeviceName which prefers SelfInfo name over BLE advertisement name
-  String _buildSubtitle(AppStateProvider appState) {
-    return appState.displayDeviceName ?? 'Unknown';
   }
 
   /// Build compact stat indicator for app bar

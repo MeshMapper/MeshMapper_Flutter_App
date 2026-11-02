@@ -16,6 +16,7 @@ import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
 import '../models/noise_floor_session.dart';
@@ -459,6 +460,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// SelfInfo name reflects user's chosen name in MeshCore; BLE name may be cached/stale
   String? get displayDeviceName =>
       _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
+
+  /// Radio name set by debug-only store capture mode. Display only: it never
+  /// feeds connection logic, which reads [connectedDeviceName].
+  String? _storeCaptureRadioName;
+
+  /// Radio name for the Home screen header, or null when no radio is
+  /// connected. Capture mode shows a fixed name so screenshots carry no
+  /// personal device name.
+  String? get headerRadioName =>
+      _storeCaptureRadioName ??
+      (connectedDeviceName != null ? (displayDeviceName ?? 'Unknown') : null);
 
   // Ping state
   PingStats _pingStats = const PingStats();
@@ -4217,6 +4229,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Final init state: gpsStatus=$_gpsStatus, '
         'inZone=$_inZone, isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}, '
         'offlineMode=${_preferences.offlineMode}');
+    if (kDebugMode && StoreCaptureConfig.active != null) {
+      unawaited(_seedStoreCapture());
+    }
     notifyListeners();
   }
 
@@ -14029,6 +14044,56 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _notifyMapNow() {
     _mapRevision++;
     notifyListeners();
+  }
+
+  /// Debug-only store capture mode: waits up to 10 s for the repeater list so
+  /// the sample drive hears real repeaters, then loads it. Never awaited by
+  /// init.
+  Future<void> _seedStoreCapture() async {
+    for (var waited = 0;
+        _repeaters.isEmpty && waited < 20 && !_isDisposed;
+        waited++) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    if (_isDisposed) return;
+    final now = DateTime.now();
+    applyStoreCaptureSample(buildStoreCaptureSample(
+      newest: DateTime(now.year, now.month, now.day, 9, 40),
+      repeaters:
+          _repeaters.map((r) => (id: r.id, lat: r.lat, lon: r.lon)).toList(),
+    ));
+    debugLog('[CAPTURE] seeded ${_txPings.length} TX, ${_rxPings.length} RX, '
+        'repeaters=${_repeaters.length}');
+  }
+
+  /// Debug-only store capture mode: puts the sample drive into the in-memory
+  /// lists the Map, Log and History screens read. Writes no Hive box and no
+  /// preference, and leaves [connectedDeviceName] alone.
+  void applyStoreCaptureSample(StoreCaptureSample s) {
+    _txPings
+      ..clear()
+      ..addAll(s.txPings);
+    _rxPings
+      ..clear()
+      ..addAll(s.rxPings);
+    _txLogEntries
+      ..clear()
+      ..addAll(s.txLog);
+    _rxLogEntries
+      ..clear()
+      ..addAll(s.rxLog);
+    _discLogEntries
+      ..clear()
+      ..addAll(s.disc);
+    _traceLogEntries
+      ..clear()
+      ..addAll(s.trace);
+    _storedNoiseFloorSessions.insertAll(0, s.sessions);
+    _pingStats = s.stats;
+    _currentNoiseFloor = s.noiseFloor;
+    _currentBatteryPercent = s.batteryPercent;
+    _storeCaptureRadioName = storeCaptureRadioName;
+    _notifyMapNow();
   }
 
   /// Bump the map revision but coalesce notifications to ~4/sec. Use for
