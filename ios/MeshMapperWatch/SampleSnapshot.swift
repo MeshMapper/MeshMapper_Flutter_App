@@ -51,10 +51,10 @@ enum SampleSnapshot {
     UserDefaults.standard.bool(forKey: "MeshMapperSampleData")
   }
 
-  /// Downtown Seattle, roughly — somewhere with enough spread to see marker
+  /// Downtown Ottawa, roughly — somewhere with enough spread to see marker
   /// density and line geometry at a realistic zoom.
-  private static let originLat = 47.6062
-  private static let originLon = -122.3321
+  private static let originLat = 45.4205
+  private static let originLon = -75.6950
 
   /// Metres travelled per emitted step, matching the phone's movement gate.
   ///
@@ -195,10 +195,10 @@ enum SampleSnapshot {
     }
 
     let repeaters: [WatchRepeater] = [
-      ("4E", "Capitol Hill", 0.010, 0.004, pink, true),
-      ("77", "Queen Anne", -0.006, 0.012, pink, true),
-      ("A2", "Beacon Hill", -0.012, -0.008, orange, false),
-      ("B9", "Magnolia", 0.004, -0.015, pink, false),
+      ("4E", "Centretown", 0.010, 0.004, pink, true),
+      ("77", "ByWard Market", -0.006, 0.012, pink, true),
+      ("A2", "The Glebe", -0.012, -0.008, orange, false),
+      ("B9", "Westboro", 0.004, -0.015, pink, false),
     ].map { id, name, dLat, dLon, color, heard in
       WatchRepeater(
         id: id,
@@ -219,10 +219,10 @@ enum SampleSnapshot {
     // hex characters per row, which is what the box has to survive on 40 mm.
     let long = UserDefaults.standard.bool(forKey: "MeshMapperLongIds")
     let heard: [WatchHeardNode] = [
-      (long ? "4E5D82" : "4E5D", "Capitol Hill", 8.5, 1420.0, green),
+      (long ? "4E5D82" : "4E5D", "Centretown", 8.5, 1420.0, green),
       (long ? "77A1B0" : "77A1", nil, 2.25, 2310.0, teal),
       (long ? "A2FF31" : "A2", nil, -14.5, nil, green),
-      (long ? "B914C2" : "B914", "Magnolia", 5.75, 2870.0, purple),
+      (long ? "B914C2" : "B914", "Westboro", 5.75, 2870.0, purple),
     ].map { id, name, snr, distance, typeColor in
       WatchHeardNode(
         id: id,
