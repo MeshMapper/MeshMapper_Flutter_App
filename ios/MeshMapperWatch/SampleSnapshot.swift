@@ -251,7 +251,7 @@ enum SampleSnapshot {
       phaseEndsAtMs: samplePhase.endsAtMs,
       phaseDurationMs: samplePhase.durationMs,
       isConnected: true,
-      zoneCode: "SEA",
+      zoneCode: "ONQC",
       txCount: 27,
       rxCount: 14,
       discoveryCount: 6,
