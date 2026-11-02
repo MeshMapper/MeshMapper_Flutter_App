@@ -31,7 +31,8 @@ const storeCaptureFallbackIds = [
 const _deviceId = 'store-capture';
 
 /// Index of the route point whose TX is forced to be a miss, so a drive always
-/// has at least one red ping whatever the random draw gives.
+/// has at least one red ping whatever the random draw gives. The newest ping
+/// (the GPS arrow) is the opposite: it is always heard.
 const _forcedMissIndex = 30;
 
 /// Bottom-bar tab the capture opens on.
@@ -167,7 +168,9 @@ StoreCaptureSample buildStoreCaptureSample({
   for (var i = 0; i < route.length; i++) {
     final (lat, lon) = route[i];
     final ts = newest.subtract(Duration(seconds: (last - i) * 22));
-    final miss = rnd.nextDouble() < 0.1 || i == _forcedMissIndex;
+    // The draw is always taken so the stream stays the same whatever is forced.
+    final draw = rnd.nextDouble();
+    final miss = i != last && (draw < 0.1 || i == _forcedMissIndex);
     final heard = miss ? <(String, double, int)>[] : heardAt(lat, lon);
     txPings.add(TxPing(
       latitude: lat,

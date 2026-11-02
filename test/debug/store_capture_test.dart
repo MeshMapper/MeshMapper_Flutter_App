@@ -40,6 +40,22 @@ void main() {
           _build().txPings.where((p) => p.heardRepeaters.isEmpty).length;
       expect(misses, greaterThanOrEqualTo(1));
       expect(misses, lessThanOrEqualTo(9));
+      expect(_build().txPings.last.heardRepeaters, isNotEmpty);
+    });
+
+    test('the newest ping is always heard', () {
+      final sets = [
+        repeaters,
+        <({String id, double lat, double lon})>[],
+        [
+          (id: 'CBC003', lat: 45.4210, lon: -75.6960),
+          (id: '60', lat: 45.4000, lon: -75.7200),
+        ],
+        [(id: 'BB0003', lat: 45.4300, lon: -75.6900)],
+      ];
+      for (final reps in sets) {
+        expect(_build(reps: reps).txPings.last.heardRepeaters, isNotEmpty);
+      }
     });
 
     test('heard ids come from the loaded repeaters', () {
@@ -54,6 +70,7 @@ void main() {
     test('falls back to fixed ids when no repeaters loaded', () {
       final s = _build(reps: []);
       expect(s.txPings, isNotEmpty);
+      expect(s.txPings.last.heardRepeaters, isNotEmpty);
       for (final p in s.txPings) {
         for (final h in p.heardRepeaters) {
           expect(storeCaptureFallbackIds, contains(h.repeaterId));
