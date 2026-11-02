@@ -662,5 +662,60 @@ class StateLabelTest(unittest.TestCase):
         self.assertEqual(asc_store.state_label(_version('1.4.1', 'REJECTED')), 'REJECTED')
 
 
+class UploadScreenshotPollTest(unittest.TestCase):
+    """Apple sometimes answers HTTP 500 for a screenshot it has only just received.
+    The wait for processing must ride that out instead of stopping the release."""
+
+    SHOT = '/v1/appScreenshots/shot1'
+
+    def _shot(self, state: str) -> dict:
+        return {'data': {'id': 'shot1', 'type': 'appScreenshots',
+                         'attributes': {'assetDeliveryState': {'state': state}}}}
+
+    def _run_upload(self, reads: list) -> tuple:
+        seq = list(reads)
+
+        def read(_body):
+            nxt = seq.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        fake = FakeASC({
+            ('POST', '/v1/appScreenshots'):
+                {'data': {'id': 'shot1', 'type': 'appScreenshots',
+                          'attributes': {'uploadOperations': []}}},
+            ('PATCH', self.SHOT): self._shot('UPLOAD_COMPLETE'),
+            ('GET', self.SHOT): read,
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            png = Path(tmp) / '01_map.png'
+            png.write_bytes(b'png')
+            with mock.patch.object(asc_store, 'api', fake), \
+                    mock.patch.object(asc_store.time, 'sleep'):
+                cur, out = _run(lambda a: asc_store.upload_screenshot('set1', str(png), 'md5'),
+                                None)
+        return cur, out, fake
+
+    def test_a_server_error_while_waiting_is_retried(self) -> None:
+        err = asc_store.APIError('GET', self.SHOT, 500, None)
+        cur, out, fake = self._run_upload([err, err, self._shot('COMPLETE')])
+        self.assertEqual(asc_store.shot_state(cur), 'COMPLETE')
+        self.assertEqual(len([c for c in fake.calls if c[0] == 'GET']), 3)
+        self.assertIn('HTTP 500', out)
+
+    def test_a_client_error_while_waiting_still_stops(self) -> None:
+        err = asc_store.APIError('GET', self.SHOT, 404, None)
+        with self.assertRaises(asc_store.APIError):
+            self._run_upload([err])
+
+    def test_server_errors_past_the_deadline_stop(self) -> None:
+        err = asc_store.APIError('GET', self.SHOT, 500, None)
+        clock = iter([0, 0] + [1000] * 10)
+        with mock.patch.object(asc_store.time, 'time', lambda: next(clock)):
+            with self.assertRaises(asc_store.APIError):
+                self._run_upload([err, err, err])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -789,7 +789,18 @@ def upload_screenshot(set_id, path, checksum):
     patch('appScreenshots', shot['id'], {'uploaded': True, 'sourceFileChecksum': checksum})
     deadline = time.time() + 300
     while True:
-        cur = get('/v1/appScreenshots/%s' % shot['id'])['data']
+        try:
+            cur = get('/v1/appScreenshots/%s' % shot['id'])['data']
+        except APIError as exc:
+            # Apple sometimes answers 5xx for a screenshot it has only just
+            # received, then recovers within seconds. Keep waiting until the
+            # deadline; a 4xx or a 5xx past the deadline still stops here.
+            if exc.status < 500 or time.time() > deadline:
+                raise
+            print('     %s: App Store Connect answered HTTP %s, checking again...' % (
+                name, exc.status))
+            time.sleep(5)
+            continue
         state = shot_state(cur)
         if state == 'COMPLETE':
             return cur
