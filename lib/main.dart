@@ -27,9 +27,14 @@ void main() async {
 
   // Debug builds only: a store_capture.json in the documents directory turns
   // on the sample-drive mode used for store screenshots.
-  if (kDebugMode) {
-    StoreCaptureConfig.active =
-        await StoreCaptureConfig.load(await getApplicationDocumentsDirectory());
+  if (kDebugMode && !kIsWeb) {
+    try {
+      StoreCaptureConfig.active = await StoreCaptureConfig.load(
+          await getApplicationDocumentsDirectory());
+    } catch (e) {
+      // No documents directory: capture mode is simply off.
+      debugPrint('[CAPTURE] Could not look for $storeCaptureFileName: $e');
+    }
   }
 
   // Hold every startup line in memory until the stored preference says
