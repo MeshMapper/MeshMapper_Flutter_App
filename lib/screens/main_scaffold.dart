@@ -218,7 +218,9 @@ class _MainScaffoldState extends State<MainScaffold> {
           title: const Text('Link This Device?'),
           content: Text(
             "Link '$deviceName' to your MeshMapper account ($accountName)? "
-            'Wardriving data from this device will count toward your account.',
+            'Wardriving data from this device will count toward your account. '
+            'Its points move onto your account the next time the leaderboard '
+            'updates, which can take up to 24 hours.',
           ),
           actions: [
             TextButton(
@@ -253,11 +255,14 @@ class _MainScaffoldState extends State<MainScaffold> {
     switch (outcome.status) {
       case PortalLinkStatus.linked:
         final account = outcome.accountName ?? 'your MeshMapper account';
+        final linked = outcome.adoptedCount > 1
+            ? 'Linked to $account and claimed ${outcome.adoptedCount} radios'
+            : 'Linked to $account';
         AppToast.success(
           context,
-          outcome.adoptedCount > 1
-              ? 'Linked to $account and claimed ${outcome.adoptedCount} radios'
-              : 'Linked to $account',
+          '$linked. Points move over at the next leaderboard update, within '
+          '24 hours.',
+          duration: const Duration(seconds: 6),
         );
       case PortalLinkStatus.adoptionRequired:
         await showDialog<void>(
