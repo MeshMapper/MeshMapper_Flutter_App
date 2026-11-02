@@ -7,6 +7,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -35,6 +36,41 @@ def _png(path: Path, width: int, height: int, extra: bytes = b'') -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b'\x89PNG\r\n\x1a\n' + struct.pack('>I', 13) + b'IHDR' +
                      struct.pack('>II', width, height) + b'\x08\x06\x00\x00\x00' + extra)
+
+
+
+def _varint(n: int) -> bytes:
+    out = b''
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out += bytes([b | 0x80])
+        else:
+            return out + bytes([b])
+
+
+def _ld(field: int, payload: bytes) -> bytes:
+    """A length-delimited protobuf field."""
+    return _varint((field << 3) | 2) + _varint(len(payload)) + payload
+
+
+def _make_aab(path: Path, package: str, version_code: int, version_name: str) -> None:
+    """A tiny AAB: just base/manifest/AndroidManifest.xml in aapt2's proto form,
+    with the package and versionName as strings and versionCode as a compiled int."""
+    def attr(name: str, value: str | None = None, number: int | None = None) -> bytes:
+        body = _ld(2, name.encode())
+        if value is not None:
+            body += _ld(3, value.encode())
+        if number is not None:
+            body += _ld(6, _ld(7, _varint((6 << 3) | 0) + _varint(number)))
+        return _ld(4, body)
+
+    element = (attr('package', package) + attr('versionName', version_name)
+               + attr('versionCode', number=version_code))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, 'w') as z:
+        z.writestr('base/manifest/AndroidManifest.xml', _ld(1, element))
 
 
 class DefaultLanguageTest(unittest.TestCase):
@@ -473,6 +509,200 @@ class ScreenshotsFlowTest(unittest.TestCase):
             with _Patched(FakePlay()):
                 _run(play_store.cmd_screenshots, args)
         self.assertIn('android-phone', str(ctx.exception))
+
+
+class AabManifestTest(unittest.TestCase):
+    def test_reads_package_version_code_and_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'app.aab'
+            _make_aab(path, 'net.meshmapper.app', 1790000001, '1.4.1')
+            info = play_store.read_aab_manifest(str(path))
+        self.assertEqual(info, {'package': 'net.meshmapper.app',
+                                'versionCode': 1790000001, 'versionName': '1.4.1'})
+
+
+class TrackAlreadyHasTest(unittest.TestCase):
+    NOTES = [{'language': 'en-US', 'text': 'Faster map.'}]
+
+    def release(self, **over) -> dict:
+        have = {'versionCodes': ['1790000001'], 'status': 'completed',
+                'releaseNotes': list(self.NOTES)}
+        have.update(over)
+        return have
+
+    def wanted(self, **over) -> dict:
+        return play_store.build_release(
+            None, [1790000001], over.get('notes', self.NOTES), over.get('status', 'completed'),
+            over.get('fraction'))
+
+    def test_same_release_matches(self) -> None:
+        self.assertTrue(play_store.track_already_has({'releases': [self.release()]}, self.wanted()))
+
+    def test_different_notes_status_or_codes_do_not_match(self) -> None:
+        track = {'releases': [self.release()]}
+        for label, wanted in (
+                ('notes', self.wanted(notes=[{'language': 'en-US', 'text': 'Other.'}])),
+                ('no notes', self.wanted(notes=None)),
+                ('status', self.wanted(status='draft')),
+                ('fraction', self.wanted(status='inProgress', fraction=0.2)),
+                ('codes', play_store.build_release(None, [1790000002], self.NOTES, 'completed', None))):
+            with self.subTest(label):
+                self.assertFalse(play_store.track_already_has(track, wanted))
+
+    def test_another_release_on_the_track_is_a_change(self) -> None:
+        other = self.release(versionCodes=['1789991039'])
+        self.assertFalse(play_store.track_already_has(
+            {'releases': [self.release(), other]}, self.wanted()))
+
+    def test_an_empty_or_missing_track_is_a_change(self) -> None:
+        self.assertFalse(play_store.track_already_has({'releases': []}, self.wanted()))
+        self.assertFalse(play_store.track_already_has(None, self.wanted()))
+
+
+class UploadAabFlowTest(unittest.TestCase):
+    CODE = 1790000001
+    TRACKS = '/edits/%s/tracks/production' % EDIT
+    BUNDLES = '/edits/%s/bundles' % EDIT
+    NOTES = 'Faster map.\nFixes.'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.aab = self.tmp / 'MeshMapper.aab'
+        _make_aab(self.aab, 'net.meshmapper.app', self.CODE, '1.4.1')
+        self.notes = str(self.tmp / 'notes.txt')
+        Path(self.notes).write_text(self.NOTES, encoding='utf-8')
+
+    def routes(self, on_play: bool = False, track: list | None = None, extra: dict | None = None) -> dict:
+        routes = {
+            ('GET', self.BUNDLES): {'bundles': [{'versionCode': 1789991039}]
+                                    + ([{'versionCode': self.CODE}] if on_play else [])},
+            ('POST', self.BUNDLES): {'versionCode': self.CODE, 'sha1': 'abc'},
+            ('PUT', self.TRACKS): {},
+            ('POST', '/edits/%s:validate' % EDIT): {'id': EDIT},
+            ('POST', '/edits/%s:commit' % EDIT): {},
+        }
+        if track is not None:
+            routes[('GET', '/edits/%s/tracks' % EDIT)] = {
+                'tracks': [{'track': 'production', 'releases': track}]}
+        routes.update(extra or {})
+        return routes
+
+    def upload(self, fake: FakePlay, *flags: str):
+        args = _parse('upload', '--track', 'production', '--status', 'completed',
+                      '--notes-file', self.notes, '--aab', str(self.aab), *flags)
+        with _Patched(fake):
+            return _run(play_store.cmd_upload, args)
+
+    def bundle_posts(self, fake: FakePlay) -> list:
+        return [kw for m, p, _, kw in fake.calls if (m, p) == ('POST', self.BUNDLES)]
+
+    def put_release(self, fake: FakePlay) -> dict:
+        return [b for m, p, b, _ in fake.calls if m == 'PUT'][0]['releases'][0]
+
+    def live_release(self, **over) -> dict:
+        release = {'name': '1.4.1 (%d)' % self.CODE, 'versionCodes': [str(self.CODE)],
+                   'status': 'completed',
+                   'releaseNotes': [{'language': 'en-US', 'text': self.NOTES}]}
+        release.update(over)
+        return release
+
+    def test_a_new_version_code_uploads_the_bundle_then_puts_and_commits(self) -> None:
+        fake = FakePlay(self.routes())
+        _, out = self.upload(fake, '--apply')
+        posts = self.bundle_posts(fake)
+        self.assertEqual([kw['upload_path'] for kw in posts], [str(self.aab)])
+        self.assertEqual([(m, p) for m, p, _ in fake.writes()], [
+            ('POST', self.BUNDLES), ('PUT', self.TRACKS),
+            ('POST', '/edits/%s:commit' % EDIT)])
+        release = self.put_release(fake)
+        self.assertEqual(release['versionCodes'], [str(self.CODE)])
+        self.assertEqual(release['name'], '1.4.1 (%d)' % self.CODE)
+        self.assertEqual(release['releaseNotes'], [{'language': 'en-US', 'text': self.NOTES}])
+        self.assertNotIn('already on Play', out)
+        self.assertIn('Committed', out)
+
+    def test_a_version_code_play_already_has_is_assigned_not_uploaded(self) -> None:
+        fake = FakePlay(self.routes(on_play=True))
+        _, out = self.upload(fake, '--apply')
+        self.assertEqual(self.bundle_posts(fake), [])
+        self.assertEqual([(m, p) for m, p, _ in fake.writes()], [
+            ('PUT', self.TRACKS), ('POST', '/edits/%s:commit' % EDIT)])
+        self.assertEqual(self.put_release(fake)['versionCodes'], [str(self.CODE)])
+        self.assertIn('already on Play, assigning instead of uploading', out)
+
+    def test_validate_does_not_upload_a_bundle_play_already_has(self) -> None:
+        fake = FakePlay(self.routes(on_play=True))
+        _, out = self.upload(fake, '--validate')
+        self.assertEqual(self.bundle_posts(fake), [])
+        self.assertFalse(fake.committed())
+        self.assertIn('validate: OK', out)
+
+    def test_dry_run_says_so_and_writes_nothing(self) -> None:
+        fake = FakePlay(self.routes(on_play=True))
+        _, out = self.upload(fake)
+        self.assertEqual(fake.writes(), [])
+        self.assertIn('already on Play, assigning instead of uploading', out)
+        fake = FakePlay(self.routes(on_play=False))
+        _, out = self.upload(fake)
+        self.assertEqual(fake.writes(), [])
+        self.assertNotIn('already on Play', out)
+
+    def test_the_identical_release_already_on_the_track_is_not_committed(self) -> None:
+        fake = FakePlay(self.routes(on_play=True, track=[self.live_release()]))
+        for flags in (('--apply',), ()):
+            with self.subTest(flags=flags):
+                fake = FakePlay(self.routes(on_play=True, track=[self.live_release()]))
+                _, out = self.upload(fake, *flags)
+                self.assertEqual(fake.writes(), [])
+                self.assertFalse(fake.committed())
+                self.assertIn('Already on production; nothing to change', out)
+
+    def test_validate_still_stages_an_identical_release(self) -> None:
+        fake = FakePlay(self.routes(on_play=True, track=[self.live_release()]))
+        _, out = self.upload(fake, '--validate')
+        self.assertIn(('PUT', self.TRACKS), fake.paths())
+        self.assertIn(('POST', '/edits/%s:validate' % EDIT), fake.paths())
+        self.assertFalse(fake.committed())
+        self.assertIn('validate: OK', out)
+
+    def test_same_build_with_different_notes_is_still_committed(self) -> None:
+        old = self.live_release(releaseNotes=[{'language': 'en-US', 'text': 'Old notes.'}])
+        fake = FakePlay(self.routes(on_play=True, track=[old]))
+        _, out = self.upload(fake, '--apply')
+        self.assertTrue(fake.committed())
+        self.assertNotIn('nothing to change', out)
+
+    def test_a_rerun_after_a_commit_changes_nothing(self) -> None:
+        """First run uploads and commits; the second sees the build and the
+        release on Play and does nothing."""
+        first = FakePlay(self.routes())
+        self.upload(first, '--apply')
+        self.assertTrue(first.committed())
+        second = FakePlay(self.routes(on_play=True, track=[self.put_release(first)]))
+        _, out = self.upload(second, '--apply')
+        self.assertEqual(second.writes(), [])
+        self.assertIn('nothing to change', out)
+
+    def test_an_aab_of_another_package_is_refused_before_any_request(self) -> None:
+        _make_aab(self.aab, 'com.example.other', self.CODE, '1.4.1')
+        fake = FakePlay(self.routes())
+        with self.assertRaises(PlayError):
+            self.upload(fake, '--apply')
+        self.assertEqual(fake.calls, [])
+
+    def test_the_already_used_hint_keeps_status_notes_and_language(self) -> None:
+        err = play_store.ApiError(403, 'Version code 1790000001 has already been used.', 'Uploading')
+        fake = FakePlay(self.routes(extra={('POST', self.BUNDLES): err}))
+        with self.assertRaises(play_store.ApiError) as ctx:
+            self.upload(fake, '--apply', '--lang', 'en-GB')
+        hint = play_store.explain_api_error(ctx.exception)
+        self.assertIn('--version-code %d' % self.CODE, hint)
+        self.assertIn('--status completed', hint)
+        self.assertIn('--notes-file %s' % self.notes, hint)
+        self.assertIn('--lang en-GB', hint)
+        self.assertIn('--apply', hint)
 
 
 class StatusAndPromoteTest(unittest.TestCase):

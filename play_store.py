@@ -25,6 +25,10 @@ whole change in an edit, ask Play to validate it (edits:validate), then delete
 the edit. --validate never commits, so it proves the service account may write
 without publishing anything.
 
+upload is safe to re-run: a versionCode Play already has is assigned to the
+track instead of uploaded again, and a track that already holds exactly the
+release (versionCodes, status, notes) is left alone with nothing committed.
+
 The listing text is never touched, and this script only writes English: it
 stops when the app has a listing in any language other than en*. Release notes
 and screenshots go to the app's default language (override the notes language
@@ -64,6 +68,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -421,10 +426,11 @@ def explain_api_error(err):
     track = HINT.get('track', '<track>')
     if re.search(r'version code.*(already been used|has already been)', low):
         vc = HINT.get('version_code', 'N')
+        flags = HINT.get('upload_flags', '')
         return (
             f'versionCode {vc} was already uploaded to Play; a versionCode can only be\n'
             'uploaded once. To put that existing build on a track without uploading:\n'
-            f'  ./play_store.py upload --track {track} --version-code {vc} --apply\n'
+            f'  ./play_store.py upload --track {track} --version-code {vc}{flags} --apply\n'
             'Or build again (./Build.sh) to get a new versionCode.')
     if 'changesnotsentforreview' in low:
         return ('Play wants these changes committed without sending them for review.\n'
@@ -719,11 +725,50 @@ def read_notes(path, lang):
     return [{'language': lang, 'text': text}] if text else None
 
 
+def upload_flags(args):
+    """The flags of this invocation that a re-run must keep (status, rollout
+    fraction, notes file, notes language), as a string with a leading space.
+    Without them a re-run would release with no release notes."""
+    parts = ['--status', args.status]
+    if args.fraction is not None:
+        parts += ['--fraction', str(args.fraction)]
+    if args.notes_file:
+        parts += ['--notes-file', args.notes_file]
+    if args.lang:
+        parts += ['--lang', args.lang]
+    return ' ' + ' '.join(shlex.quote(part) for part in parts)
+
+
+def uploaded_version_codes(edit):
+    """The versionCodes Play already has bundles for (edits.bundles.list)."""
+    bundles = edit.call('GET', '/bundles', what='Listing bundles (edits.bundles.list)').get('bundles', [])
+    return {int(b['versionCode']) for b in bundles if b.get('versionCode')}
+
+
+def track_already_has(track, release):
+    """True when the track holds exactly this release and nothing else: same
+    versionCodes, status, rollout fraction and release notes."""
+    releases = (track or {}).get('releases') or []
+    if len(releases) != 1:
+        return False
+    have = releases[0]
+
+    def notes_of(r):
+        return {n.get('language'): (n.get('text') or '').strip()
+                for n in r.get('releaseNotes') or []}
+
+    return (sorted(have.get('versionCodes') or []) == sorted(release['versionCodes'])
+            and have.get('status') == release['status']
+            and have.get('userFraction') == release.get('userFraction')
+            and notes_of(have) == notes_of(release))
+
+
 def cmd_upload(args):
     pkg = package_name()
     validate_status(args)
     last = read_last_build()
     HINT['track'] = args.track
+    HINT['upload_flags'] = upload_flags(args)
     notes_text = load_notes_text(args.notes_file)
 
     release_name = args.release_name
@@ -763,11 +808,15 @@ def cmd_upload(args):
         # The language rule comes before anything is written
         lang = edit_language(edit, args.lang)
         notes = [{'language': lang, 'text': notes_text}] if notes_text else None
+        # Play refuses a versionCode twice, so a build it already has is assigned
+        # to the track instead of uploaded again (a re-run after a commit is safe)
+        on_play = bool(aab) and version_code is not None and version_code in uploaded_version_codes(edit)
 
         print(f'Package:       {pkg}')
         print(f'Track:         {args.track} - {track_label(args.track)}')
         if aab:
-            print(f'Bundle:        {aab} ({human_size(os.path.getsize(aab))})')
+            print(f'Bundle:        {aab} ({human_size(os.path.getsize(aab))})'
+                  + (' - already on Play, assigning instead of uploading' if on_play else ''))
             print(f"versionCode:   {version_code if version_code is not None else '(unknown until upload)'}"
                   + (f"  versionName: {info['versionName']}" if info.get('versionName') else ''))
         else:
@@ -795,13 +844,25 @@ def cmd_upload(args):
             if not current.get('releases'):
                 print('    (none)')
 
+        release = (build_release(release_name, [version_code], notes, args.status, args.fraction)
+                   if version_code is not None else None)
+        unchanged = release is not None and track_already_has(current, release)
+        # --validate still stages an unchanged release, so it proves write access
+        if unchanged and not args.validate:
+            print('')
+            print(f'Already on {args.track}; nothing to change.')
+            return
+
         if not (args.apply or args.validate):
             print('')
             print('Dry run: nothing uploaded or changed. Re-run with --validate to have Play check it '
                   'without publishing, or --apply to publish.')
             return
 
-        if aab:
+        if unchanged:
+            print('')
+            print(f'Already on {args.track}; staging it anyway so validate checks the write.')
+        if aab and not on_play:
             print('')
             print(f'Uploading {os.path.basename(aab)} (this can take a few minutes)...')
             resp = edit.call('POST', '/bundles', upload_path=aab,
