@@ -37,7 +37,7 @@ class MeshMapperSessionService : Service() {
         private const val CHANNEL_ID = "meshmapper_wardriving"
         private const val CHANNEL_NAME = "MeshMapper Wardriving"
         private const val CHANNEL_DESCRIPTION =
-            "Shows wardriving status while app is in background"
+            "Shows while MeshMapper is connected to your radio"
         private const val WAKE_LOCK_TAG = "MeshMapper:session"
         private const val LOG_TAG = "MeshMapperSession"
         private const val FOREGROUND_TYPES =

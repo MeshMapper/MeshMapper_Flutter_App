@@ -52,6 +52,7 @@ import '../services/gps_service.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/idle_session.dart';
 import '../services/link_decision.dart';
+import '../services/location_consent.dart';
 import '../services/meshcore/channel_service.dart';
 import '../services/meshcore/connection.dart';
 import '../services/meshcore/scope_lease.dart' show ScopeCancelToken;
@@ -729,7 +730,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// True while a connect re-run (#500) is waiting to start. Both this and
   /// [_isAutoReconnecting] run while [_connectionStep] reads `disconnected`,
   /// yet the radio session is not over.
-  // ignore: prefer_final_fields
   bool _connectRerunPending = false;
 
   /// True while a radio session is live, which is what lets GPS keep
@@ -756,6 +756,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// flush and session release finish, so [_sessionActive] alone would let GPS
   /// stop mid-upload.
   int _disconnectCleanupDepth = 0;
+
+  /// Whether Android's session service may use location: the permission and
+  /// the in-app disclosure, both. Read at the Connect tap, on return to the
+  /// app and after a permission change, and kept here because
+  /// [_syncConnectionService] runs on every notify and cannot ask.
+  bool _sessionLocationGranted = false;
+
+  /// True while a session service start waits for its answer, so the notifies
+  /// in between do not send a second one.
+  bool _connectionServiceStarting = false;
+
+  /// True once this session has logged that the service was held back for
+  /// want of location. Cleared when the session ends, so each session logs it
+  /// once rather than on every notify.
+  bool _serviceRefusalLogged = false;
 
   // ============================================
   // MyMeshMapper account + companion linking
@@ -1310,11 +1325,122 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// What Android's session service notification says right now. The service
+  /// runs for the whole radio session, so it reads the mode's stats while one
+  /// runs and the connection's state between modes.
+  ({String title, String body}) _serviceNotificationNow() {
+    if (_autoPingEnabled) {
+      return androidNotificationContent(
+        mode: _autoMode,
+        txCount: _pingStats.txCount,
+        rxCount: _pingStats.rxCount,
+        queueSize: _queueSize,
+      );
+    }
+    if (_isInZoneGracePeriod) return androidZoneGraceNotificationContent();
+    if (_isAutoReconnecting) {
+      return (
+        title: 'MeshMapper - Reconnecting',
+        body: 'Trying to reach ${_rememberedDevice?.name ?? 'your radio'}',
+      );
+    }
+    return androidConnectedNotificationContent(
+      radioName: _rememberedDevice?.name ?? 'your radio',
+    );
+  }
+
+  /// Reads whether location may be used for the session service (see
+  /// [_sessionLocationGranted]). Android only. A check that fails counts as
+  /// not granted: the service cannot reach the foreground without location.
+  Future<void> _refreshSessionLocationGranted() async {
+    if (!BackgroundServiceManager.followsConnection) return;
+    try {
+      _sessionLocationGranted = await _gpsService.checkPermissions() &&
+          await LocationConsent.hasAgreed();
+    } catch (e) {
+      debugWarn('[BACKGROUND] Could not check location permission: $e');
+      _sessionLocationGranted = false;
+    }
+  }
+
+  /// Starts Android's session service while a radio session is live and the
+  /// app is on screen, and keeps its notification in step with the session.
+  ///
+  /// Runs on every notify, so it stays synchronous and cheap: it asks the
+  /// platform nothing, and the start and the update are sent without waiting
+  /// (the update drops content that has not changed). It never stops the
+  /// service. The paths that end a session do that, once their upload and
+  /// session release are done. Until then (disconnecting, or the cleanup
+  /// after the step reads disconnected) nothing is pushed, so the
+  /// notification and the mode's wake lock stay as they were through the
+  /// upload.
+  void _syncConnectionService() {
+    if (!BackgroundServiceManager.followsConnection) return;
+    if (!_sessionActive) {
+      _serviceRefusalLogged = false;
+      return;
+    }
+    bool wouldStart({required bool locationGranted}) =>
+        shouldStartConnectionService(
+          followsConnection: BackgroundServiceManager.followsConnection,
+          running: BackgroundServiceManager.isRunning,
+          starting: _connectionServiceStarting,
+          sessionActive: _sessionActive,
+          step: _connectionStep,
+          lifecycle: WidgetsBinding.instance.lifecycleState,
+          locationGranted: locationGranted,
+        );
+    if (wouldStart(locationGranted: _sessionLocationGranted)) {
+      _connectionServiceStarting = true;
+      final n = _serviceNotificationNow();
+      unawaited(BackgroundServiceManager.startService(
+        title: n.title,
+        body: n.body,
+        keepAwake: _autoPingEnabled,
+        mayStart: () =>
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed &&
+            _sessionActive,
+      ).whenComplete(() => _connectionServiceStarting = false));
+      return;
+    }
+    if (!_sessionLocationGranted &&
+        !_serviceRefusalLogged &&
+        wouldStart(locationGranted: true)) {
+      _serviceRefusalLogged = true;
+      debugWarn('[BACKGROUND] Not starting the service: location not granted');
+    }
+    if (BackgroundServiceManager.isRunning &&
+        _connectionStep != ConnectionStep.disconnecting) {
+      final n = _serviceNotificationNow();
+      unawaited(BackgroundServiceManager.updateNotification(
+        title: n.title,
+        body: n.body,
+        keepAwake: _autoPingEnabled,
+      ));
+    }
+  }
+
+  /// On return to the app (Android): re-read the location grant, bring the
+  /// service in line with the session (a service that died in the background
+  /// is noticed, one left running with no session is stopped), then start it
+  /// again if the session still wants it.
+  Future<void> _syncConnectionServiceAfterResume() async {
+    await _refreshSessionLocationGranted();
+    await BackgroundServiceManager.healAfterResume(
+        sessionActive: _sessionActive);
+    if (_isDisposed) return;
+    _syncConnectionService();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _syncGpsWithPolicy('app ${state.name}');
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
+      if (BackgroundServiceManager.followsConnection) {
+        unawaited(_syncConnectionServiceAfterResume());
+      }
       _checkTcpHealthAfterResume();
       // Diagnostic: timers can be suspended while backgrounded; on resume, log
       // any countdown timer stuck past its deadline (intermittent ping lockout).
@@ -3998,6 +4124,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         BackgroundServiceManager.updateNotification(
           title: n.title,
           body: n.body,
+          keepAwake: _autoPingEnabled,
         );
       }
     };
@@ -4349,6 +4476,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog(
           '[GPS] Permission granted with existing position - triggering zone check');
       await checkZoneStatus();
+    }
+    // A permission just granted lets the session service start on this
+    // notify, for a radio session already live.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
     }
     notifyListeners();
   }
@@ -4856,6 +4988,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isConnecting = false;
     _connectionStep = ConnectionStep.error;
     notifyListeners();
+    // The failed connect ends the session, unless a reconnect or a connect
+    // re-run carries it on.
+    if (BackgroundServiceManager.followsConnection &&
+        !_isAutoReconnecting &&
+        !_connectRerunPending) {
+      unawaited(BackgroundServiceManager.stopService());
+    }
   }
 
   /// Works out the update panel's version line and store link after the
@@ -4937,6 +5076,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _isAuthError = false;
       _isNetworkError = false;
       notifyListeners();
+      // The cancelled attempt is abandoned without a cleanup of its own, so
+      // the session ends here.
+      if (BackgroundServiceManager.followsConnection) {
+        unawaited(BackgroundServiceManager.stopService());
+      }
     }
   }
 
@@ -4949,6 +5093,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     final myGeneration = ++_connectGeneration;
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -5102,6 +5251,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
         workflowRerunUsed = true;
+        // Set before the failure's cleanup can flip the step to disconnected,
+        // so the session reads as live (GPS, the session service) until the
+        // re-run takes over or is abandoned.
+        _connectRerunPending = true;
         debugLog(
             '[CONN] Handshake died ${sinceTransportConnect!.inSeconds}s after transport connect, re-running connection workflow once: $e');
         // The failed run's transport disconnect emits a 'disconnected' event
@@ -5118,6 +5271,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (myGeneration != _connectGeneration) {
           debugLog(
               '[CONN] Skipping workflow re-run: a newer connection attempt owns the transport');
+          _connectRerunPending = false;
+          // The newer attempt may already have failed, and its stop was held
+          // back while this re-run was pending. One still connecting owns
+          // the service.
+          if (BackgroundServiceManager.followsConnection &&
+              !_sessionActive &&
+              !_isConnecting) {
+            unawaited(BackgroundServiceManager.stopService());
+          }
           return;
         }
         if (_isConnecting) {
@@ -5125,11 +5287,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // still up (e.g. _postConnectionSetup threw on a live link), so
           // there is nothing safe to re-run on top of. Hand the error to the
           // normal failure path instead of swallowing it.
+          _connectRerunPending = false;
           await _handleConnectionError(e);
           return;
         }
         _isConnecting = true;
         _connectionStep = ConnectionStep.transportConnecting;
+        _connectRerunPending = false;
         _connectionError = null;
         // The disconnect cleanup cleared the BLE scan cache; restore the
         // device name for the re-run.
@@ -5154,6 +5318,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -5274,6 +5443,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -5414,6 +5588,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -5780,6 +5959,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         BackgroundServiceManager.updateNotification(
           title: n.title,
           body: n.body,
+          keepAwake: _autoPingEnabled,
         );
       }
     };
@@ -6949,7 +7129,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // given up, or when a drop skips the reconnect (USB, no remembered
     // radio). Stop it last, after the queue upload and session release above,
     // so the process is not frozen in the background halfway through them.
-    await BackgroundServiceManager.stopService();
+    // Android's session service runs for the whole radio session, so it stays
+    // up when the session carries on past this cleanup (a connect re-run).
+    if (shouldStopServiceAtCleanupEnd(
+      followsConnection: BackgroundServiceManager.followsConnection,
+      sessionActive: _sessionActive,
+    )) {
+      await BackgroundServiceManager.stopService();
+    }
   }
 
   /// Start auto-reconnect after unexpected transport disconnect
@@ -7001,10 +7188,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // to the car instead of at the radio going out of range. The abandon path
     // stops the service through _fullDisconnectCleanup, and a success that
     // restores auto-ping updates this notification rather than starting a
-    // second service.
+    // second service. The notification reads Reconnecting from here (see
+    // _serviceNotificationNow).
+    final reconnecting = _serviceNotificationNow();
     await BackgroundServiceManager.updateNotification(
-      title: 'MeshMapper - Reconnecting',
-      body: 'Trying to reach ${_rememberedDevice?.name ?? 'your radio'}',
+      title: reconnecting.title,
+      body: reconnecting.body,
+      keepAwake: _autoPingEnabled,
     );
 
     // Clean up dead BLE-dependent objects
@@ -7235,11 +7425,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
     } else {
-      // No auto-ping to restore, so nothing needs the foreground service any
-      // more. _startAutoReconnect deliberately left it running to keep the
-      // process alive through the reconnect window; without this it would sit
-      // there showing "Reconnecting" for a link that is already back up.
-      unawaited(BackgroundServiceManager.stopService());
+      // iOS: no auto-ping to restore, so nothing needs the per-mode service
+      // any more. _startAutoReconnect deliberately left it running to keep
+      // the process alive through the reconnect window; without this it
+      // would sit there for a link that is already back up. Android's session
+      // service runs for the whole connection, and the notify below turns its
+      // notification back to Connected.
+      if (!BackgroundServiceManager.followsConnection) {
+        unawaited(BackgroundServiceManager.stopService());
+      }
       // No auto-ping to restore — start idle timer
       _startIdleDisconnectTimer();
     }
@@ -7511,8 +7705,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // End noise floor session on disconnect
     await _endNoiseFloorSession();
 
-    // Stop background service
-    await BackgroundServiceManager.stopService();
+    // Stop iOS's per-mode service. Android's session service stops once the
+    // session is over (below), after the upload and the session release, so
+    // the process is not frozen halfway through them.
+    if (!BackgroundServiceManager.followsConnection) {
+      await BackgroundServiceManager.stopService();
+    }
 
     // Stop all countdown timers
     _cooldownTimer.stop();
@@ -7649,6 +7847,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService = null;
 
     _connectionStep = ConnectionStep.disconnected;
+    if (BackgroundServiceManager.followsConnection &&
+        shouldStopServiceAtCleanupEnd(
+          followsConnection: BackgroundServiceManager.followsConnection,
+          sessionActive: _sessionActive,
+        )) {
+      // Not awaited, so nothing runs between the step change and the rest of
+      // the reset below. The stop is still sent at once.
+      unawaited(BackgroundServiceManager.stopService());
+    }
     _deviceModel = null;
     _manufacturerString = null;
     _firmwareVersionString = null;
@@ -7701,8 +7908,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _preferences.closeAppAfterDisconnect &&
         Platform.isAndroid) {
       debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
-      // Small delay to ensure cleanup completes. Same stop as exitApp(): a
-      // service this session did not start outlives SystemNavigator.pop().
+      // Small delay to ensure cleanup completes. Same stop as exitApp(), for
+      // a session service still running with no radio session.
       Future.delayed(const Duration(milliseconds: 500), () async {
         await BackgroundServiceManager.stopLiveService(
             'close after disconnect');
@@ -8928,7 +9135,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop RX wardriving (flushes batches).
     _rxLogger?.stopWardriving(trigger: rxTrigger);
 
-    await BackgroundServiceManager.stopService();
+    // iOS's service runs per mode. Android's runs for the whole connection,
+    // and the next notify turns its notification back to Connected.
+    if (!BackgroundServiceManager.followsConnection) {
+      await BackgroundServiceManager.stopService();
+    }
 
     // Stop the countdowns, or "Next ping in Xs" keeps running after the stop.
     _autoPingTimer.stop();
@@ -9079,7 +9290,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // Stop TX echo tracking to prevent late timer callbacks
           _pingService!.stopEchoTracking();
           _rxLogger?.stopWardriving(trigger: 'mode_switch');
-          await BackgroundServiceManager.stopService();
+          // iOS only: Android's session service stays up across the switch.
+          if (!BackgroundServiceManager.followsConnection) {
+            await BackgroundServiceManager.stopService();
+          }
           // Stop countdown timers when switching modes
           _autoPingTimer.stop();
           _rxWindowTimer.stop();
@@ -9162,17 +9376,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[HEARTBEAT] Enabled for ${mode.name} Mode');
         }
 
-        // Start background service for continuous operation
+        // Start iOS's per-mode service for continuous operation. Android's
+        // session service is already up for the connection (only
+        // _syncConnectionService starts it), so it only takes the mode's
+        // notification and wake lock.
         final n = androidNotificationContent(
           mode: mode,
           txCount: _pingStats.txCount,
           rxCount: _pingStats.rxCount,
           queueSize: _queueSize,
         );
-        await BackgroundServiceManager.startService(
-          title: n.title,
-          body: n.body,
-        );
+        if (BackgroundServiceManager.followsConnection) {
+          await BackgroundServiceManager.updateNotification(
+            title: n.title,
+            body: n.body,
+            keepAwake: _autoPingEnabled,
+          );
+        } else {
+          await BackgroundServiceManager.startService(
+            title: n.title,
+            body: n.body,
+            keepAwake: _autoPingEnabled,
+          );
+        }
       } finally {
         _startingDeferredHistory.clear();
         // Clear starting state on every path (session/cooldown/blocked early
@@ -11551,8 +11777,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Cancel idle disconnect timer
     _cancelIdleDisconnectTimer();
 
-    // Stop background service
-    await BackgroundServiceManager.stopService();
+    // Stop iOS's per-mode service. Android's session service stays up: the
+    // radio is still connected, and its notification reads Outside zone.
+    if (!BackgroundServiceManager.followsConnection) {
+      await BackgroundServiceManager.stopService();
+    }
 
     // Clear API queue — items have gap-GPS coords that would be rejected again
     await _apiQueueService.clearOnDisconnect();
@@ -13889,9 +14118,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await disconnect(closeApp: false, flushQueue: true);
       }
 
-      // The service runs with stopWithTask="false", so it outlives the
-      // activity. stopService() only stops one this session started; this
-      // stops whatever is running (Android only, a no-op elsewhere).
+      // disconnect() stops Android's session service when the session ends.
+      // This stop also covers one still running with no radio session, and
+      // does not wait for MainActivity's own stop when it is destroyed
+      // (Android only, a no-op elsewhere).
       await BackgroundServiceManager.stopLiveService('exit app');
 
       // Exit the app (Android only - iOS doesn't allow programmatic app exit)
@@ -14226,6 +14456,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_isDisposed) return;
     super.notifyListeners();
     _syncGpsWithPolicy('state change');
+    _syncConnectionService();
     _scheduleLiveActivitySync();
   }
 
