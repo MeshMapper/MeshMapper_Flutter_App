@@ -35,6 +35,7 @@ import '../utils/store_links.dart';
 import '../services/api_service.dart';
 import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
+import '../services/background_location_policy.dart';
 import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
 import '../services/border_loader.dart';
@@ -725,6 +726,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _connectGeneration = 0;
   bool _isAutoReconnecting = false;
 
+  /// True while a connect re-run (#500) is waiting to start. Both this and
+  /// [_isAutoReconnecting] run while [_connectionStep] reads `disconnected`,
+  /// yet the radio session is not over.
+  // ignore: prefer_final_fields
+  bool _connectRerunPending = false;
+
+  /// True while a radio session is live, which is what lets GPS keep
+  /// collecting after the app leaves the screen.
+  bool get _sessionActive => radioSessionActive(
+        step: _connectionStep,
+        autoReconnecting: _isAutoReconnecting,
+        connectRerunPending: _connectRerunPending,
+      );
+
+  /// True when this provider stopped GPS (or never started it) because the app
+  /// is in the background with no radio session. It marks the GPS stream the
+  /// policy owes a restart on return, so a stream stopped for any other reason
+  /// is never started here.
+  bool _gpsStoppedByPolicy = false;
+
   // ============================================
   // MyMeshMapper account + companion linking
   // ============================================
@@ -1233,8 +1254,48 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _initialize();
   }
 
+  /// The background-location policy does not apply on web (the browser owns
+  /// the lifecycle) or while the GPS simulator feeds positions.
+  bool get _gpsPolicyApplies => !kIsWeb && !_gpsService.isSimulatorEnabled;
+
+  GpsRunDecision get _gpsRunDecision => gpsRunDecision(
+        lifecycle: WidgetsBinding.instance.lifecycleState,
+        radioActive: _sessionActive,
+        isIos: defaultTargetPlatform == TargetPlatform.iOS,
+      );
+
+  /// Stops GPS while the app is in the background with no radio session, and
+  /// starts it again quietly when the app is back on screen.
+  ///
+  /// Runs on every lifecycle change and every notify, so it must stay cheap
+  /// and synchronous apart from the unawaited restart. [why] names the trigger
+  /// in the log.
+  void _syncGpsWithPolicy(String why) {
+    if (!_gpsPolicyApplies) return;
+    switch (_gpsRunDecision) {
+      case GpsRunDecision.stop:
+        if (_gpsService.isWatching) {
+          _gpsStoppedByPolicy = true;
+          _gpsService.stopWatching();
+          debugLog(
+              '[GPS] Stopped: app in the background with no radio ($why)');
+        }
+      case GpsRunDecision.run:
+        if (_gpsStoppedByPolicy) {
+          // Cleared before the restart so a notify during it cannot start a
+          // second one.
+          _gpsStoppedByPolicy = false;
+          debugLog('[GPS] Restarting: $why');
+          unawaited(restartGpsAfterPermission(keepTracking: true));
+        }
+      case GpsRunDecision.keep:
+        break;
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _syncGpsWithPolicy('app ${state.name}');
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
       _checkTcpHealthAfterResume();
@@ -4217,9 +4278,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] GPS position listener attached to stream');
 
     // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
-    debugLog('[INIT] Starting GPS service...');
-    await _gpsService.startWatching();
-    debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
+    // A cold start in the background with no radio (a location-triggered
+    // launch, say) must not start GPS; _syncGpsWithPolicy starts it when the
+    // app comes on screen.
+    if (!_gpsPolicyApplies || _gpsRunDecision == GpsRunDecision.run) {
+      debugLog('[INIT] Starting GPS service...');
+      await _gpsService.startWatching();
+      debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
+    } else {
+      _gpsStoppedByPolicy = true;
+      debugLog(
+          '[GPS] Not started: app launched in the background with no radio');
+    }
 
     // Initialize audio service for sound notifications
     await _audioService.initialize();
@@ -4236,13 +4306,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Restart GPS service after permission disclosure is accepted
-  /// Called from MainScaffold after user grants location permission
-  Future<void> restartGpsAfterPermission() async {
+  /// Called from MainScaffold after user grants location permission.
+  ///
+  /// [keepTracking] is for the return from the background, where the watcher
+  /// was running a moment ago (see [GpsService.startWatching]).
+  Future<void> restartGpsAfterPermission({bool keepTracking = false}) async {
     debugLog('[GPS] restartGpsAfterPermission() called');
     debugLog('[GPS] Pre-restart state: gpsStatus=$_gpsStatus, inZone=$_inZone, '
         'isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}');
 
-    await _gpsService.startWatching();
+    _gpsStoppedByPolicy = false;
+    await _gpsService.startWatching(keepTracking: keepTracking);
     _gpsStatus = _gpsService.status; // Sync after restart
 
     debugLog('[GPS] GPS restarted, new status: $_gpsStatus');
@@ -14128,6 +14202,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void notifyListeners() {
     if (_isDisposed) return;
     super.notifyListeners();
+    _syncGpsWithPolicy('state change');
     _scheduleLiveActivitySync();
   }
 
