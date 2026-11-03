@@ -746,6 +746,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// is never started here.
   bool _gpsStoppedByPolicy = false;
 
+  /// True when init had to hold GPS back, so the first start after it is a
+  /// full one (the one-off position read and the usual resets) rather than the
+  /// quiet restart used when returning from the background.
+  bool _gpsInitialStartPending = false;
+
   // ============================================
   // MyMeshMapper account + companion linking
   // ============================================
@@ -1282,11 +1287,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       case GpsRunDecision.run:
         if (_gpsStoppedByPolicy) {
+          final keepTracking = !_gpsInitialStartPending;
           // Cleared before the restart so a notify during it cannot start a
           // second one.
           _gpsStoppedByPolicy = false;
-          debugLog('[GPS] Restarting: $why');
-          unawaited(restartGpsAfterPermission(keepTracking: true));
+          _gpsInitialStartPending = false;
+          debugLog(keepTracking
+              ? '[GPS] Restarting: $why'
+              : '[GPS] Starting: $why');
+          unawaited(restartGpsAfterPermission(keepTracking: keepTracking));
         }
       case GpsRunDecision.keep:
         break;
@@ -4278,17 +4287,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] GPS position listener attached to stream');
 
     // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
-    // A cold start in the background with no radio (a location-triggered
-    // launch, say) must not start GPS; _syncGpsWithPolicy starts it when the
-    // app comes on screen.
+    // A cold start that is not on screen yet, with no radio (a location-
+    // triggered launch, say), must not start GPS. _syncGpsWithPolicy makes the
+    // first, full start when the app comes on screen.
     if (!_gpsPolicyApplies || _gpsRunDecision == GpsRunDecision.run) {
       debugLog('[INIT] Starting GPS service...');
       await _gpsService.startWatching();
       debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
     } else {
       _gpsStoppedByPolicy = true;
-      debugLog(
-          '[GPS] Not started: app launched in the background with no radio');
+      _gpsInitialStartPending = true;
+      debugLog('[GPS] Not started yet: waiting for the app to be on screen');
     }
 
     // Initialize audio service for sound notifications
@@ -4316,6 +4325,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         'isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}');
 
     _gpsStoppedByPolicy = false;
+    _gpsInitialStartPending = false;
     await _gpsService.startWatching(keepTracking: keepTracking);
     _gpsStatus = _gpsService.status; // Sync after restart
 
