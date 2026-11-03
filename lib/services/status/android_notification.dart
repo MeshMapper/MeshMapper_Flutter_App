@@ -32,6 +32,12 @@ import '../../providers/app_state_provider.dart' show AutoMode;
 }) =>
     (title: 'MeshMapper - Connected', body: 'Connected to $radioName');
 
+/// The notification from the Connect tap until the radio is connected. The
+/// session service starts at the tap, so it must not claim a connection yet,
+/// nor name the radio last connected, which may not be the one being reached.
+({String title, String body}) androidConnectingNotificationContent() =>
+    (title: 'MeshMapper - Connecting', body: 'Connecting to your radio');
+
 /// The notification while the zone grace period looks for a zone to move to.
 /// The radio stays connected through it, so the service keeps running.
 ({String title, String body}) androidZoneGraceNotificationContent() =>

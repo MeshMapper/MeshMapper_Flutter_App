@@ -43,6 +43,12 @@ void main() {
     expect(n.body, 'Connected to MeshCore-AB12');
   });
 
+  test('connecting claims no connection and names no radio', () {
+    final n = androidConnectingNotificationContent();
+    expect(n.title, 'MeshMapper - Connecting');
+    expect(n.body, 'Connecting to your radio');
+  });
+
   test('the zone grace period says it is looking for a zone', () {
     final n = androidZoneGraceNotificationContent();
     expect(n.title, 'MeshMapper - Outside zone');

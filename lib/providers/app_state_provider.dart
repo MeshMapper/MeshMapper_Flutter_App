@@ -1341,9 +1341,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Whether the session service holds its wake lock: while a mode runs, and
   /// while a reconnect or a zone grace period has paused one that will
   /// resume. Their own timers (the reconnect's 30 s give-up, the grace
-  /// period's 5 s polling) must not drift with the screen off.
+  /// period's 5 s polling) must not drift with the screen off. The hand-offs
+  /// count too: a mode's start (its session check runs before the mode is
+  /// on), and the short wait before a mode is restored after a reconnect or
+  /// a zone change, so the lock does not drop for that moment.
   bool get _keepServiceAwake =>
       _autoPingEnabled ||
+      _autoPingStarting ||
+      _restoreAutoPingTimer != null ||
       (_isAutoReconnecting && _autoPingWasEnabled) ||
       (_isInZoneGracePeriod && _autoPingWasEnabledBeforeGrace);
 
@@ -1365,6 +1370,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         title: 'MeshMapper - Reconnecting',
         body: 'Trying to reach ${_rememberedDevice?.name ?? 'your radio'}',
       );
+    }
+    // From the Connect tap on, and through a connect re-run's wait.
+    if (_connectionStep != ConnectionStep.connected) {
+      return androidConnectingNotificationContent();
     }
     return androidConnectedNotificationContent(
       radioName: _rememberedDevice?.name ?? 'your radio',
@@ -5312,22 +5321,37 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
         workflowRerunUsed = true;
-        // Set before the failure's cleanup can flip the step to disconnected,
-        // so the session reads as live (GPS, the session service) until the
-        // re-run takes over or is abandoned.
-        _connectRerunPending = true;
         debugLog(
             '[CONN] Handshake died ${sinceTransportConnect!.inSeconds}s after transport connect, re-running connection workflow once: $e');
+        // Set before the failure's cleanup can flip the step to disconnected,
+        // so the session reads as live (GPS, the session service) until the
+        // re-run takes over or is abandoned. Every exit below clears it.
+        _connectRerunPending = true;
         // The failed run's transport disconnect emits a 'disconnected' event
         // whose listener starts _fullDisconnectCleanup. That event was queued
         // before this timer, and microtasks drain before timers fire, so after
         // the delay the tracked future (if any) is the cleanup for THIS
         // failure. Waiting it out means the cleanup cannot tear down the
         // re-run's fresh connection.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        final cleanupInFlight = _fullCleanupInFlight;
-        if (cleanupInFlight != null) {
-          await cleanupInFlight;
+        try {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          final cleanupInFlight = _fullCleanupInFlight;
+          if (cleanupInFlight != null) {
+            await cleanupInFlight;
+          }
+        } catch (cleanupError) {
+          // The cleanup's error would otherwise leave this method with the
+          // flag still set, and the session would read as live for good: no
+          // later disconnect could stop GPS or the session service.
+          _connectRerunPending = false;
+          debugWarn('[CONN] Disconnect cleanup failed, abandoning the '
+              'workflow re-run: $cleanupError');
+          // A newer attempt owns the shared state; the check below hands
+          // over to it without touching that state.
+          if (myGeneration == _connectGeneration) {
+            await _handleConnectionError(e);
+            return;
+          }
         }
         if (myGeneration != _connectGeneration) {
           debugLog(
@@ -11411,6 +11435,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Single timer: ticks every 1s, retries at 0
     _zoneCheckCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      // Held while GPS is off in the background with no radio: the retry
+      // would read location. The countdown picks up where it was once the app
+      // is back on screen and GPS runs again.
+      if (_gpsStoppedByPolicy) return;
       _zoneCheckRetryCountdown--;
       notifyListeners();
       if (_zoneCheckRetryCountdown <= 0) {
@@ -11506,6 +11534,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? current
           : _gpsService.bestRecentZoneCheckFix();
       if (position == null) {
+        if (_gpsStoppedByPolicy) {
+          // GPS is off in the background with no radio, and a fresh read
+          // would use location anyway. Once GPS runs again, its restart and
+          // its fixes recheck the zone.
+          debugLog('[GPS] Zone check skipped: GPS is off in the background');
+          return;
+        }
         final fresh = await _gpsService.getFreshPosition();
         if (fresh != null && GpsService.isAccurateForZoneCheck(fresh)) {
           position = fresh;
