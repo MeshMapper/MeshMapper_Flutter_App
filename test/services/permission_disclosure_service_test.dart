@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/permission_disclosure_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('PermissionDisclosureService.deniedWithoutDialog', () {
@@ -43,6 +44,8 @@ void main() {
   });
 
   group('PermissionDisclosureService.showLocationDisclosure', () {
+    setUp(() => SharedPreferences.setMockInitialValues({}));
+
     Future<bool?> openAndTap(WidgetTester tester, String button) async {
       bool? result;
       await tester.pumpWidget(MaterialApp(
@@ -65,12 +68,23 @@ void main() {
       return result;
     }
 
-    testWidgets('Agree allows the system prompt', (tester) async {
+    testWidgets('Agree allows the system prompt and is remembered',
+        (tester) async {
       expect(await openAndTap(tester, 'Agree'), isTrue);
+      expect(await PermissionDisclosureService.hasAcceptedDisclosure(), isTrue);
     });
 
-    testWidgets('Not Now skips the system prompt', (tester) async {
+    testWidgets('Not Now skips the system prompt and is not remembered',
+        (tester) async {
       expect(await openAndTap(tester, 'Not Now'), isFalse);
+      expect(
+          await PermissionDisclosureService.hasAcceptedDisclosure(), isFalse);
+    });
+
+    test('Continue on the old dialog still counts as agreeing', () async {
+      SharedPreferences.setMockInitialValues(
+          {'location_disclosure_shown': true});
+      expect(await PermissionDisclosureService.hasAcceptedDisclosure(), isTrue);
     });
   });
 }

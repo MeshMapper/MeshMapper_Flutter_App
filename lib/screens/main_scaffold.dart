@@ -82,7 +82,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   }
 
   /// Ensure location permission at startup. The disclosure comes up inside
-  /// [_ensureLocationPermission], only when the system prompt is next.
+  /// [_ensureLocationPermission].
   Future<void> _checkAndShowDisclosure() async {
     if (_hasCheckedDisclosure) return;
     _hasCheckedDisclosure = true;
@@ -142,11 +142,13 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  /// Show the location disclosure right before a system location prompt, as
-  /// Google Play requires for every request. False means Not Now: skip the
-  /// request and leave GPS off.
+  /// Show the location disclosure. False means Not Now: skip the request and
+  /// leave GPS off.
   Future<bool> _discloseLocation() async {
-    if (_capturing) return true;
+    if (_capturing) {
+      await PermissionDisclosureService.markDisclosureAccepted();
+      return true;
+    }
     if (!mounted) return false;
     debugLog('[DISCLOSURE] Showing location disclosure dialog');
     final agreed = await PermissionDisclosureService.showLocationDisclosure(
@@ -156,17 +158,26 @@ class _MainScaffoldState extends State<MainScaffold> {
     return agreed;
   }
 
-  /// Ensure location permission. Shows the disclosure and requests when the
-  /// system prompt can still appear, restarts GPS when granted, and surfaces
-  /// a settings CTA when the permission has been permanently denied.
+  /// Ensure location permission. Shows the disclosure until it is agreed to
+  /// and again before every system prompt (Google Play), requests when the
+  /// prompt can still appear, restarts GPS when granted, and surfaces a
+  /// settings CTA when the permission has been permanently denied.
   Future<void> _ensureLocationPermission() async {
     bool granted = false;
+
+    // Until it is agreed to, the disclosure comes up even when location is
+    // already granted: review devices can install with it granted.
+    var disclosed = false;
+    if (!await PermissionDisclosureService.hasAcceptedDisclosure()) {
+      if (!await _discloseLocation()) return;
+      disclosed = true;
+    }
 
     if (Platform.isIOS) {
       // iOS: Request location via Geolocator
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
-        if (!await _discloseLocation()) return;
+        if (!disclosed && !await _discloseLocation()) return;
         permission = await Geolocator.requestPermission();
       }
       debugLog('[DISCLOSURE] iOS location permission: $permission');
@@ -181,7 +192,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       var status = await Permission.locationWhenInUse.status;
       var deniedSilently = false;
       if (status.isDenied) {
-        if (!await _discloseLocation()) return;
+        if (!disclosed && !await _discloseLocation()) return;
         final stopwatch = Stopwatch()..start();
         status = await Permission.locationWhenInUse.request();
         stopwatch.stop();

@@ -1,8 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Service to handle Google Play prominent disclosure requirements
 /// Shows a disclosure dialog before requesting sensitive permissions
 class PermissionDisclosureService {
+  /// Set when the person taps Agree. The key predates the Agree button, so
+  /// Continue on the old dialog counts as agreeing.
+  static const String _acceptedKey = 'location_disclosure_shown';
+
+  /// True once the location disclosure has been agreed to on this install.
+  /// Until then the app reads no location, even when the permission is
+  /// already granted (review devices can install with it granted).
+  static Future<bool> hasAcceptedDisclosure() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_acceptedKey) ?? false;
+  }
+
+  static Future<void> markDisclosureAccepted() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_acceptedKey, true);
+  }
+
   /// A permission request that comes back denied faster than this was
   /// answered by the OS, not by a person. After two refusals Android stops
   /// showing the system dialog and (on some builds) still reports plain
@@ -34,9 +52,9 @@ class PermissionDisclosureService {
       'pings and mapping coverage while a wardriving mode is running, even '
       'when the app is closed or not in use.';
 
-  /// Show the prominent disclosure. Google Play wants it right before every
-  /// system location prompt, so callers show it each time they are about to
-  /// request, and request only when this returns true (Agree).
+  /// Show the prominent disclosure. Google Play wants it before the app first
+  /// reads location and right before every system location prompt; callers
+  /// go on only when this returns true (Agree), which is also remembered.
   static Future<bool> showLocationDisclosure(BuildContext context) async {
     final result = await showDialog<bool>(
       context: context,
@@ -99,7 +117,9 @@ class PermissionDisclosureService {
       ),
     );
 
-    return result ?? false;
+    final agreed = result ?? false;
+    if (agreed) await markDisclosureAccepted();
+    return agreed;
   }
 
   /// Show the background location disclosure (for "Always" permission)

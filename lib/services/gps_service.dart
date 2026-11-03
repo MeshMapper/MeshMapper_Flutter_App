@@ -10,6 +10,7 @@ import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
 import 'gps_simulator_service.dart';
+import 'permission_disclosure_service.dart';
 import 'android_altitude_channel.dart';
 import 'fix_altitude.dart';
 import 'fix_altitude_resolver.dart';
@@ -471,6 +472,14 @@ class GpsService {
           debugLog(
               '[GPS] Permission not granted - waiting for disclosure flow');
         }
+        _updateStatus(GpsStatus.permissionDenied);
+        return;
+      }
+      // Google Play: no location is read before the disclosure is agreed
+      // to, even when the permission was granted some other way.
+      if (!await PermissionDisclosureService.hasAcceptedDisclosure()) {
+        debugLog('[GPS] Location disclosure not agreed yet - '
+            'waiting for disclosure flow');
         _updateStatus(GpsStatus.permissionDenied);
         return;
       }
