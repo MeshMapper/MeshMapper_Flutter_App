@@ -6846,6 +6846,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _activeTransport!.dispose();
     }
     _activeTransport = null;
+
+    // A reconnect keeps the foreground service running (see
+    // _startAutoReconnect), and nothing else stops it once the reconnect is
+    // given up, or when a drop skips the reconnect (USB, no remembered
+    // radio). Stop it last, after the queue upload and session release above,
+    // so the process is not frozen in the background halfway through them.
+    await BackgroundServiceManager.stopService();
   }
 
   /// Start auto-reconnect after unexpected transport disconnect
