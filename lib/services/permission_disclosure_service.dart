@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'location_consent.dart';
@@ -17,24 +18,28 @@ class PermissionDisclosureService {
   static bool deniedWithoutDialog(Duration elapsed) =>
       elapsed < silentDenialThreshold;
 
-  /// The lead follows Google Play's recommended wording for a location
-  /// disclosure: the word "location", every feature that uses it, and "even
-  /// when the app is closed or not in use". Play rejected 1.4.1 for a
-  /// disclosure without the background phrase.
-  ///
-  /// Background use is scoped to a running mode because that is when it
-  /// happens: the Android service starts with a mode, and nothing is
-  /// uploaded without one.
+  /// The lead follows Google Play's wording for a location disclosure: the
+  /// word "location" and every feature that uses it, plus when each one runs.
+  /// Background use only happens while a radio is connected, so it says that
+  /// instead of "even when the app is closed or not in use".
   static const String locationDisclosureLead =
-      'MeshMapper collects location data to show you on the map and check '
-      'which region you are in. While a wardriving mode is running, it also '
-      'collects location data to tag your pings and map mesh coverage, even '
-      'when the app is closed or not in use.';
+      'MeshMapper collects and uses location data while the app is open, to '
+      'show you on the map and check which region you are in. While it is '
+      'connected to your radio, it also uses location to keep the radio '
+      'signed in and, while a wardriving mode runs, to tag your pings and map '
+      'coverage, including with the screen off or another app open. When you '
+      'disconnect and leave the app, MeshMapper stops using your location.';
 
+  /// The iOS "Always" dialog's lead.
   static const String backgroundDisclosureLead =
-      'MeshMapper collects location data in the background to keep tagging '
-      'pings and mapping coverage while a wardriving mode is running, even '
-      'when the app is closed or not in use.';
+      'MeshMapper collects location data in the background only while your '
+      'radio is connected, to keep tagging pings and mapping coverage during '
+      'a wardriving mode. When you disconnect, it stops.';
+
+  /// Android only: the foreground service's notification is the visible sign
+  /// that location is in use with the app out of sight.
+  static const String androidNotificationPoint =
+      'A notification shows while your radio is connected.';
 
   /// Where location leaves the phone, shown in both dialogs.
   static const List<String> sharingPoints = [
@@ -86,6 +91,8 @@ class PermissionDisclosureService {
               const _BulletPoint(text: noModePoint),
               for (final point in sharingPoints.skip(1))
                 _BulletPoint(text: point),
+              if (defaultTargetPlatform == TargetPlatform.android)
+                const _BulletPoint(text: androidNotificationPoint),
               const SizedBox(height: 16),
               const Text(
                 'Offline Mode keeps your pings on this phone until you choose '

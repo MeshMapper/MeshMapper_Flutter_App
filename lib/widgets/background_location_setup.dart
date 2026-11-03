@@ -40,9 +40,8 @@ Future<bool> setUpBackgroundLocation(
     builder: (dialogContext) => AlertDialog(
       title: const Text('Permission Required'),
       content: const Text(
-        'To enable background location tracking, open Settings and set '
-        'Location to "Always".\n\nThis allows MeshMapper to track your '
-        'location in the background during continuous wardriving.',
+        'To keep using your location in the background while your radio is '
+        'connected, open Settings and set Location to "Always".',
       ),
       actions: [
         TextButton(

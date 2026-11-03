@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/location_consent.dart';
@@ -31,15 +32,38 @@ void main() {
     });
   });
 
-  // Google Play rejected 1.4.1 for a location disclosure without these.
-  group('disclosure wording keeps what Google Play asks for', () {
+  // Background location is used only while a radio is connected, so neither
+  // lead may claim use "even when the app is closed or not in use".
+  group('disclosure wording says background use follows the connection', () {
+    test('the location lead is the approved copy', () {
+      expect(
+        PermissionDisclosureService.locationDisclosureLead,
+        'MeshMapper collects and uses location data while the app is open, '
+        'to show you on the map and check which region you are in. While it '
+        'is connected to your radio, it also uses location to keep the radio '
+        'signed in and, while a wardriving mode runs, to tag your pings and '
+        'map coverage, including with the screen off or another app open. '
+        'When you disconnect and leave the app, MeshMapper stops using your '
+        'location.',
+      );
+    });
+
+    test('the background lead is the approved copy', () {
+      expect(
+        PermissionDisclosureService.backgroundDisclosureLead,
+        'MeshMapper collects location data in the background only while your '
+        'radio is connected, to keep tagging pings and mapping coverage '
+        'during a wardriving mode. When you disconnect, it stops.',
+      );
+    });
+
     for (final (name, lead) in [
       ('location', PermissionDisclosureService.locationDisclosureLead),
       ('background', PermissionDisclosureService.backgroundDisclosureLead),
     ]) {
-      test('$name lead says it collects location data in the background', () {
-        expect(lead, contains('collects location data'));
-        expect(lead, contains('even when the app is closed or not in use'));
+      test('$name lead no longer claims use while the app is closed', () {
+        expect(
+            lead, isNot(contains('even when the app is closed or not in use')));
       });
     }
   });
@@ -92,6 +116,7 @@ void main() {
 
   group('PermissionDisclosureService.showLocationDisclosure', () {
     setUp(() => SharedPreferences.setMockInitialValues({}));
+    tearDown(() => debugDefaultTargetPlatformOverride = null);
 
     Future<bool?> tap(WidgetTester tester, String button) => openAndTap(
         tester,
@@ -110,6 +135,43 @@ void main() {
       expect(await tap(tester, 'Not Now'), isFalse);
       expect(
           await LocationConsent.hasAgreed(), isFalse);
+    });
+
+    // The binding checks foundation overrides before tearDown runs, so each
+    // test puts the platform back itself.
+    Future<void> openDialog(
+        WidgetTester tester, TargetPlatform platform) async {
+      debugDefaultTargetPlatformOverride = platform;
+      try {
+        await tester.pumpWidget(MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () =>
+                  PermissionDisclosureService.showLocationDisclosure(context),
+              child: const Text('open'),
+            ),
+          ),
+        ));
+        await tester.tap(find.text('open'));
+        await tester.pumpAndSettle();
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    }
+
+    testWidgets('on Android it mentions the connected-radio notification',
+        (tester) async {
+      await openDialog(tester, TargetPlatform.android);
+      expect(find.text(PermissionDisclosureService.androidNotificationPoint),
+          findsOneWidget);
+    });
+
+    testWidgets('on iOS it leaves the notification line out', (tester) async {
+      await openDialog(tester, TargetPlatform.iOS);
+      expect(find.text(PermissionDisclosureService.locationDisclosureLead),
+          findsOneWidget);
+      expect(find.text(PermissionDisclosureService.androidNotificationPoint),
+          findsNothing);
     });
 
     test('Continue on the old dialog still counts as agreeing', () async {
