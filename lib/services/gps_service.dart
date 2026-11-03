@@ -136,6 +136,20 @@ class GpsService {
   Position? _lastActivityPosition;
   StreamSubscription<Position>? _positionSubscription;
 
+  /// Counts every startWatching() and stopWatching(). A startWatching() call
+  /// that finds the count changed after an await has been overtaken (by a
+  /// newer start or by a stop) and must end without touching any state.
+  int _watchGeneration = 0;
+
+  /// True from the first statement of startWatching() until stopWatching()
+  /// runs or a start ends with no stream for a reason of its own (location
+  /// services off, no permission, no consent).
+  bool _watchRequested = false;
+
+  /// Whether GPS is meant to be running. A start still in flight counts, so
+  /// a caller deciding whether to restart does not start a second one.
+  bool get isWatching => _watchRequested;
+
   /// Android only: read GPS through Android's location service instead of
   /// Google's. See [shouldUseAndroidLocationManager]. Saved under
   /// [_androidLocationManagerKey] so later runs start there and never show
@@ -400,11 +414,25 @@ class GpsService {
   /// Start watching position
   /// Note: This only CHECKS permissions, does not REQUEST them.
   /// Permission requests are handled by the disclosure flow in MainScaffold.
-  Future<void> startWatching() async {
+  ///
+  /// A [stopWatching] or a newer call during any await below wins: this call
+  /// then ends without storing a stream or touching the status.
+  ///
+  /// [keepTracking] is for restarting a watcher that was running a moment ago
+  /// (the app returning from the background). It leaves the airborne latch
+  /// and the altitude tracker alone, so Connect is not re-armed mid-flight,
+  /// and skips the one-off position read, which can show Google's accuracy
+  /// dialog again (#595). The stream starts as usual.
+  Future<void> startWatching({bool keepTracking = false}) async {
     debugLog('[GPS] startWatching() called, current status: $_status');
-    resetAirborne();
-    _altitude.reset();
+    final generation = ++_watchGeneration;
+    _watchRequested = true;
+    if (!keepTracking) {
+      resetAirborne();
+      _altitude.reset();
+    }
     await _loadAndroidLocationManagerChoice();
+    if (_isSuperseded(generation)) return;
 
     // Ensure only one active position stream subscription exists.
     // startWatching() can be called multiple times (e.g. after permission flow).
@@ -412,15 +440,20 @@ class GpsService {
       debugLog(
           '[GPS] Existing position subscription found, restarting watcher');
       await _positionSubscription?.cancel();
+      // Checked before the field is cleared: a newer start may have stored
+      // its own stream by now.
+      if (_isSuperseded(generation)) return;
       _positionSubscription = null;
     }
 
     // Check if location services are enabled first (system-level setting)
     final serviceEnabled = await isLocationServiceEnabled();
+    if (_isSuperseded(generation)) return;
     debugLog('[GPS] Location services check: enabled=$serviceEnabled');
     if (!serviceEnabled) {
       debugLog(
           '[GPS] Location services DISABLED at system level - user must enable in Settings');
+      _watchRequested = false;
       _updateStatus(GpsStatus.disabled);
       return;
     }
@@ -432,6 +465,7 @@ class GpsService {
     if (!kIsWeb) {
       // Check permissions (don't request - disclosure flow handles that)
       final permission = await Geolocator.checkPermission();
+      if (_isSuperseded(generation)) return;
       final hasPermission = permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse;
       debugLog(
@@ -444,14 +478,18 @@ class GpsService {
           debugLog(
               '[GPS] Permission not granted - waiting for disclosure flow');
         }
+        _watchRequested = false;
         _updateStatus(GpsStatus.permissionDenied);
         return;
       }
       // Google Play: no location is read before the disclosure is agreed
       // to, even when the permission was granted some other way.
-      if (!await LocationConsent.hasAgreed()) {
+      final agreed = await LocationConsent.hasAgreed();
+      if (_isSuperseded(generation)) return;
+      if (!agreed) {
         debugLog('[GPS] Location disclosure not agreed yet - '
             'waiting for disclosure flow');
+        _watchRequested = false;
         _updateStatus(GpsStatus.permissionDenied);
         return;
       }
@@ -465,6 +503,9 @@ class GpsService {
     // Cancel any existing subscription to prevent orphaned listeners
     // (e.g. restartGpsAfterPermission() racing with _initialize())
     await _positionSubscription?.cancel();
+    // Last await before the stream is created and stored just below, so a
+    // call that passes this check cannot be overtaken before it stores.
+    if (_isSuperseded(generation)) return;
     _positionSubscription = null;
 
     _updateStatus(GpsStatus.searching);
@@ -504,7 +545,10 @@ class GpsService {
       },
       onError: (Object error) async {
         debugError('[GPS SERVICE] Position stream error: $error');
-        if (await _switchToAndroidLocationManagerIfDeclined(error)) return;
+        if (await _switchToAndroidLocationManagerIfDeclined(
+            error, generation, keepTracking)) {
+          return;
+        }
         // A restart replaced this stream while the check above awaited: the
         // error is the old stream's and must not mark the new one disabled.
         if (!identical(_positionSubscription, subscription)) return;
@@ -512,6 +556,10 @@ class GpsService {
       },
     );
     _positionSubscription = subscription;
+
+    // A quiet restart leaves out the one-off read: it can show Google's
+    // accuracy dialog again, and the stream delivers the first fix anyway.
+    if (keepTracking) return;
 
     // Get initial position
     debugLog('[GPS] Requesting initial position (15s timeout)...');
@@ -521,6 +569,7 @@ class GpsService {
         forceAndroidLocationManager: _useAndroidLocationManager,
         timeLimit: const Duration(seconds: 15),
       );
+      if (_isSuperseded(generation)) return;
       debugLog(
           '[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
@@ -534,7 +583,11 @@ class GpsService {
     } catch (e) {
       // This one-off read shows its own copy of Google's dialog, and its
       // decline switches GPS just like the stream's.
-      if (await _switchToAndroidLocationManagerIfDeclined(e)) return;
+      if (_isSuperseded(generation)) return;
+      if (await _switchToAndroidLocationManagerIfDeclined(
+          e, generation, keepTracking)) {
+        return;
+      }
       debugLog(
           '[GPS] Initial position request failed: $e (will wait for stream updates)');
       // Will receive updates from stream
@@ -561,7 +614,13 @@ class GpsService {
   /// Google "Location Accuracy" dialog, saves the choice and restarts the
   /// watcher. True when this or another caller made the switch for this
   /// error, so the caller must not mark GPS disabled.
-  Future<bool> _switchToAndroidLocationManagerIfDeclined(Object error) async {
+  ///
+  /// [generation] belongs to the startWatching() call that met [error]. If a
+  /// stop or a newer start came during an await here, nothing is switched or
+  /// restarted, and the result is true so the caller leaves GPS alone: the
+  /// overtaking call owns it now. [keepTracking] is passed on to the restart.
+  Future<bool> _switchToAndroidLocationManagerIfDeclined(
+      Object error, int generation, bool keepTracking) async {
     final isAndroid = !kIsWeb && Platform.isAndroid;
     if (!isAndroid || _useAndroidLocationManager) return false;
     if (error is! LocationServiceDisabledException) return false;
@@ -569,6 +628,10 @@ class GpsService {
     try {
       deviceLocationOn = await Geolocator.isLocationServiceEnabled();
     } catch (_) {}
+    // Checked before the switch is recorded: a stale error must not set it
+    // with no restart, or a newer stream's own decline would find it set and
+    // mark GPS disabled.
+    if (_isSuperseded(generation)) return true;
     // The stream and the first one-off read can be declined together:
     // whichever finishes the check second finds the switch already made.
     if (_useAndroidLocationManager) return true;
@@ -588,13 +651,25 @@ class GpsService {
     } catch (e) {
       debugWarn('[GPS] Could not save the location service choice: $e');
     }
-    await startWatching();
+    if (_isSuperseded(generation)) return true;
+    await startWatching(keepTracking: keepTracking);
     return true;
   }
 
-  /// Stop watching position
+  /// True when a stopWatching() or a newer startWatching() came after the
+  /// call that took [generation]. That call must then return at once.
+  bool _isSuperseded(int generation) {
+    if (generation == _watchGeneration) return false;
+    debugLog('[GPS] startWatching() superseded');
+    return true;
+  }
+
+  /// Stop watching position. Wins over a startWatching() still in flight:
+  /// that call ends without storing a stream.
   void stopWatching() {
     debugLog('[GPS] stopWatching() called');
+    _watchGeneration++;
+    _watchRequested = false;
     _positionSubscription?.cancel();
     _positionSubscription = null;
   }
