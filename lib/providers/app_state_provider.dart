@@ -751,6 +751,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// quiet restart used when returning from the background.
   bool _gpsInitialStartPending = false;
 
+  /// How many full disconnect cleanups are running. The cleanup flips
+  /// [_connectionStep] to `disconnected` at its top, long before the queue
+  /// flush and session release finish, so [_sessionActive] alone would let GPS
+  /// stop mid-upload.
+  int _disconnectCleanupDepth = 0;
+
   // ============================================
   // MyMeshMapper account + companion linking
   // ============================================
@@ -1265,7 +1271,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   GpsRunDecision get _gpsRunDecision => gpsRunDecision(
         lifecycle: WidgetsBinding.instance.lifecycleState,
-        radioActive: _sessionActive,
+        // GPS outlives the step change: the location stream keeps the
+        // backgrounded iOS process alive through the final upload.
+        radioActive: _sessionActive || _disconnectCleanupDepth > 0,
         isIos: defaultTargetPlatform == TargetPlatform.iOS,
       );
 
@@ -6817,6 +6825,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     bool flushQueue = true,
   }) {
     late final Future<void> cleanup;
+    // Counted before the call: its synchronous prefix runs inside it and can
+    // already notify.
+    _disconnectCleanupDepth++;
     cleanup = _fullDisconnectCleanupImpl(
       releaseExtras: releaseExtras,
       flushQueue: flushQueue,
@@ -6824,6 +6835,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (identical(_fullCleanupInFlight, cleanup)) {
         _fullCleanupInFlight = null;
       }
+      _disconnectCleanupDepth--;
+      if (!_isDisposed) _syncGpsWithPolicy('disconnect cleanup done');
     });
     _fullCleanupInFlight = cleanup;
     return cleanup;
