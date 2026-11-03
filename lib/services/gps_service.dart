@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppLifecycleState;
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
@@ -619,6 +620,18 @@ class GpsService {
     await startWatching();
     return true;
   }
+
+  /// Whether GPS should stop because the app is in the background and no
+  /// mode needs it. Nothing else reads location there: uploads and the
+  /// Android background service belong to a mode, and the map and region
+  /// check only matter on screen. [modeActive] covers a mode that is
+  /// running or starting, and the states that suspend one but still need
+  /// fixes to bring it back (zone grace, zone transfer, auto-reconnect).
+  static bool shouldPauseInBackground({
+    required AppLifecycleState? lifecycle,
+    required bool modeActive,
+  }) =>
+      lifecycle == AppLifecycleState.paused && !modeActive;
 
   /// Stop watching position
   void stopWatching() {

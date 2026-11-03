@@ -1243,13 +1243,49 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _logStuckTimers('resume');
       // iOS can deliver the portal callback while the isolate is suspended.
       unawaited(_portalAccountService.checkLinkOnResume());
+      unawaited(_resumeGpsIfPaused('app resumed'));
     } else if (state == AppLifecycleState.paused) {
       debugLog('[APP] App paused (backgrounded)');
       // Save offline pings immediately on pause to prevent data loss if OS kills app
       if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
         _autoSaveOfflinePings();
       }
+      _pauseGpsIfIdleInBackground('app paused');
     }
+  }
+
+  /// GPS stopped by [_pauseGpsIfIdleInBackground]; restarted on resume or
+  /// when a mode starts (Siri and the watch can start one in the background).
+  bool _gpsPausedInBackground = false;
+
+  /// Stops GPS while the app is in the background and no mode needs it, so
+  /// location is only read in the background during a mode.
+  /// Runs on pause and on any fix that still arrives there, which catches a
+  /// mode that stopped in the background. True when GPS is (now) paused.
+  bool _pauseGpsIfIdleInBackground(String why) {
+    if (_gpsPausedInBackground) return true;
+    if (kIsWeb || _gpsService.isSimulatorEnabled) return false;
+    if (!GpsService.shouldPauseInBackground(
+      lifecycle: WidgetsBinding.instance.lifecycleState,
+      modeActive: _autoPingEnabled ||
+          _autoPingStarting ||
+          _isInZoneGracePeriod ||
+          _isZoneTransferInProgress ||
+          _isAutoReconnecting,
+    )) {
+      return false;
+    }
+    _gpsPausedInBackground = true;
+    _gpsService.stopWatching();
+    debugLog('[GPS] Paused in the background with no mode running ($why)');
+    return true;
+  }
+
+  Future<void> _resumeGpsIfPaused(String why) async {
+    if (!_gpsPausedInBackground) return;
+    _gpsPausedInBackground = false;
+    debugLog('[GPS] Resuming after the background pause ($why)');
+    await restartGpsAfterPermission();
   }
 
   /// Probe TCP connection after iOS resume — socket may have died while suspended.
@@ -4103,6 +4139,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _gpsPositionSubscription?.cancel();
     _gpsPositionSubscription =
         _gpsService.positionStream.listen((position) async {
+      // A fix in the background with no mode running (one stopped there)
+      // stops GPS and goes no further: no region check, no saved position.
+      if (_pauseGpsIfIdleInBackground('fix with no mode running')) return;
       _currentPosition = position;
       // Do NOT bump mapRevision here. Position drives the camera/puck/coords
       // directly (MapWidget._onPositionNotify listener + a Selector on the
@@ -6870,6 +6909,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelPendingAutoPingRestore();
     _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
+    // A background fix in the gap after the disconnect can pause GPS; the
+    // reconnect needs it back for re-auth.
+    unawaited(_resumeGpsIfPaused('auto-reconnect'));
     _reconnectAttempt = 0;
     _reconnectStartedAt = DateTime.now();
     _lastReconnectWasBondError = false;
@@ -8956,6 +8998,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // (awaited, network) session check so the buttons lock the moment it's tapped
       _autoPingStarting = true;
       notifyListeners();
+      // Siri or the watch can start a mode while GPS is paused in the
+      // background. Not awaited: the stream is up within moments, and the
+      // first-fix wait inside would hold the start up to 15 s.
+      unawaited(_resumeGpsIfPaused('mode starting'));
 
       try {
         // Cancel idle disconnect timer — auto-ping keeps the session active
