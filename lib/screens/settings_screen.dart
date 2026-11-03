@@ -37,10 +37,11 @@ class SettingsScreen extends StatelessWidget {
     final aboutSubtitle = kIsWeb
         ? 'Version ${AppConstants.appVersion}, feedback'
         : 'Version ${AppConstants.appVersion}, feedback, debug logs';
-    // Only iOS has a background location setting. Android and the web build
-    // share the other wording.
-    final generalSubtitle =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
+    // The background location setting is iOS-only and the exit options are
+    // Android-only, so the web build has neither.
+    final generalSubtitle = kIsWeb
+        ? 'Appearance, sounds'
+        : defaultTargetPlatform == TargetPlatform.iOS
             ? 'Appearance, sounds, background location'
             : 'Appearance, sounds, exit options';
 
