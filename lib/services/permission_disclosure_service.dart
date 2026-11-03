@@ -1,26 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+import 'location_consent.dart';
 
 /// Service to handle Google Play prominent disclosure requirements
 /// Shows a disclosure dialog before requesting sensitive permissions
 class PermissionDisclosureService {
-  /// Set when the person taps Agree. The key predates the Agree button, so
-  /// Continue on the old dialog counts as agreeing.
-  static const String _acceptedKey = 'location_disclosure_shown';
-
-  /// True once the location disclosure has been agreed to on this install.
-  /// Until then the app reads no location, even when the permission is
-  /// already granted (review devices can install with it granted).
-  static Future<bool> hasAcceptedDisclosure() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_acceptedKey) ?? false;
-  }
-
-  static Future<void> markDisclosureAccepted() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_acceptedKey, true);
-  }
-
   /// A permission request that comes back denied faster than this was
   /// answered by the OS, not by a person. After two refusals Android stops
   /// showing the system dialog and (on some builds) still reports plain
@@ -33,24 +17,42 @@ class PermissionDisclosureService {
   static bool deniedWithoutDialog(Duration elapsed) =>
       elapsed < silentDenialThreshold;
 
-  /// The lead sentence follows Google Play's recommended wording for a
-  /// location disclosure: the word "location", every feature that uses it,
-  /// and "even when the app is closed or not in use". Play rejected 1.4.1
-  /// for a disclosure without the background phrase.
+  /// The lead follows Google Play's recommended wording for a location
+  /// disclosure: the word "location", every feature that uses it, and "even
+  /// when the app is closed or not in use". Play rejected 1.4.1 for a
+  /// disclosure without the background phrase.
   ///
   /// Background use is scoped to a running mode because that is when it
   /// happens: the Android service starts with a mode, and nothing is
-  /// uploaded without one. With no mode, GPS only places you on the map and
-  /// feeds the region check, which the server answers without storing.
+  /// uploaded without one.
   static const String locationDisclosureLead =
-      'MeshMapper collects location data to tag your pings and map mesh '
-      'coverage while a wardriving mode is running, even when the app is '
-      'closed or not in use.';
+      'MeshMapper collects location data to show you on the map and check '
+      'which region you are in. While a wardriving mode is running, it also '
+      'collects location data to tag your pings and map mesh coverage, even '
+      'when the app is closed or not in use.';
 
   static const String backgroundDisclosureLead =
       'MeshMapper collects location data in the background to keep tagging '
       'pings and mapping coverage while a wardriving mode is running, even '
       'when the app is closed or not in use.';
+
+  /// Where location leaves the phone, shown in both dialogs.
+  static const List<String> sharingPoints = [
+    'While a mode is running, your pings are uploaded with their locations '
+        'to meshmapper.net and shown on public coverage maps.',
+    'If you turn on Broadcast My Coordinates, your pings also carry your '
+        'location over the mesh radio.',
+    'If you set up a Custom API Endpoint, your uploaded pings are also sent '
+        'there.',
+    'Debug logs you choose to send include your recent locations.',
+  ];
+
+  /// The region check (`/status`), the connect `/auth` and the heartbeat:
+  /// the server checks the fix and stores only the region.
+  static const String noModePoint =
+      'With no mode running, your location is only sent to meshmapper.net to '
+      'check your region and keep a connected radio signed in. The location '
+      'itself is not saved.';
 
   /// Show the prominent disclosure. Google Play wants it before the app first
   /// reads location and right before every system location prompt; callers
@@ -69,56 +71,36 @@ class PermissionDisclosureService {
             ),
           ],
         ),
-        content: const SingleChildScrollView(
+        content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              const Text(
                 locationDisclosureLead,
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
-              SizedBox(height: 16),
-              Text(
-                'How your location is used and shared',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-              SizedBox(height: 8),
-              _BulletPoint(
-                  text:
-                      'While a mode is running, your pings are uploaded with their locations to meshmapper.net and shown on public coverage maps.'),
-              _BulletPoint(
-                  text:
-                      'With no mode running, your location only shows you on the map and is sent to meshmapper.net to check which region you are in. The location itself is not saved.'),
-              _BulletPoint(
-                  text:
-                      'If you turn on Broadcast My Coordinates, your pings also carry your location over the mesh radio.'),
-              _BulletPoint(
-                  text:
-                      'If you set up a Custom API Endpoint, your uploaded pings are also sent there.'),
-              SizedBox(height: 16),
-              Text(
-                'Offline Mode keeps your pings on this phone instead of uploading them.',
+              const SizedBox(height: 16),
+              const _SharingHeading(),
+              _BulletPoint(text: sharingPoints.first),
+              const _BulletPoint(text: noModePoint),
+              for (final point in sharingPoints.skip(1))
+                _BulletPoint(text: point),
+              const SizedBox(height: 16),
+              const Text(
+                'Offline Mode keeps your pings on this phone until you choose '
+                'to upload them.',
                 style: TextStyle(fontSize: 13, fontStyle: FontStyle.italic),
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Not Now'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Agree'),
-          ),
-        ],
+        actions: _agreeActions(context),
       ),
     );
 
     final agreed = result ?? false;
-    if (agreed) await markDisclosureAccepted();
+    if (agreed) await LocationConsent.markAgreed();
     return agreed;
   }
 
@@ -139,42 +121,58 @@ class PermissionDisclosureService {
             ),
           ],
         ),
-        content: const SingleChildScrollView(
+        content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              const Text(
                 backgroundDisclosureLead,
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
-              SizedBox(height: 12),
-              Text(
-                'Your pings are uploaded with their locations to meshmapper.net and shown on public coverage maps.',
-                style: TextStyle(fontSize: 14),
-              ),
-              SizedBox(height: 12),
-              Text(
-                'This allows location access all the time. You can turn it off in your device\'s Settings.',
+              const SizedBox(height: 16),
+              const _SharingHeading(),
+              for (final point in sharingPoints) _BulletPoint(text: point),
+              const SizedBox(height: 12),
+              const Text(
+                'This allows location access all the time. You can turn it '
+                'off in your device\'s Settings.',
                 style: TextStyle(fontSize: 14),
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Not Now'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Agree'),
-          ),
-        ],
+        actions: _agreeActions(context),
       ),
     );
 
     return result ?? false;
+  }
+
+  static List<Widget> _agreeActions(BuildContext context) => [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Not Now'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Agree'),
+        ),
+      ];
+}
+
+class _SharingHeading extends StatelessWidget {
+  const _SharingHeading();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.only(bottom: 8),
+      child: Text(
+        'How your location is used and shared',
+        style: TextStyle(fontWeight: FontWeight.w600),
+      ),
+    );
   }
 }
 

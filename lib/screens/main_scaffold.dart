@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
+import '../services/location_consent.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/portal_account_service.dart';
 import '../utils/debug_logger_io.dart';
@@ -146,7 +147,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   /// leave GPS off.
   Future<bool> _discloseLocation() async {
     if (_capturing) {
-      await PermissionDisclosureService.markDisclosureAccepted();
+      await LocationConsent.markAgreed();
       return true;
     }
     if (!mounted) return false;
@@ -168,7 +169,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     // Until it is agreed to, the disclosure comes up even when location is
     // already granted: review devices can install with it granted.
     var disclosed = false;
-    if (!await PermissionDisclosureService.hasAcceptedDisclosure()) {
+    if (!await LocationConsent.hasAgreed()) {
       if (!await _discloseLocation()) return;
       disclosed = true;
     }

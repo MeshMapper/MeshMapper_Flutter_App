@@ -11,7 +11,7 @@ import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
 import 'gps_simulator_service.dart';
-import 'permission_disclosure_service.dart';
+import 'location_consent.dart';
 import 'android_altitude_channel.dart';
 import 'fix_altitude.dart';
 import 'fix_altitude_resolver.dart';
@@ -350,34 +350,6 @@ class GpsService {
         permission == LocationPermission.whileInUse;
   }
 
-  /// Request GPS permissions (When In Use)
-  Future<bool> requestPermissions() async {
-    debugLog('[GPS] Requesting location permission...');
-    LocationPermission permission = await Geolocator.checkPermission();
-    debugLog('[GPS] Current permission: $permission');
-
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      debugLog('[GPS] Permission result after request: $permission');
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      debugLog(
-          '[GPS] Permission denied forever - user must enable in Settings');
-      _updateStatus(GpsStatus.permissionDenied);
-      return false;
-    }
-
-    if (permission == LocationPermission.denied) {
-      debugLog('[GPS] Permission denied by user');
-      _updateStatus(GpsStatus.permissionDenied);
-      return false;
-    }
-
-    debugLog('[GPS] Permission granted: $permission');
-    return true;
-  }
-
   /// Check if "Always" location permission is granted
   Future<bool> hasAlwaysPermission() async {
     final permission = await Geolocator.checkPermission();
@@ -478,7 +450,7 @@ class GpsService {
       }
       // Google Play: no location is read before the disclosure is agreed
       // to, even when the permission was granted some other way.
-      if (!await PermissionDisclosureService.hasAcceptedDisclosure()) {
+      if (!await LocationConsent.hasAgreed()) {
         debugLog('[GPS] Location disclosure not agreed yet - '
             'waiting for disclosure flow');
         _updateStatus(GpsStatus.permissionDenied);
@@ -842,36 +814,6 @@ class GpsService {
     } catch (e) {
       debugLog('[GPS] Fresh position request failed, using cached: $e');
       return _lastPosition;
-    }
-  }
-
-  /// Get current position (single request)
-  Future<Position?> getCurrentPosition() async {
-    if (!await requestPermissions()) {
-      debugLog('[GPS] getCurrentPosition failed: permission denied');
-      return null;
-    }
-
-    if (!await isLocationServiceEnabled()) {
-      debugLog('[GPS] getCurrentPosition failed: location services disabled');
-      return null;
-    }
-
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        forceAndroidLocationManager: _useAndroidLocationManager,
-        timeLimit: const Duration(seconds: 15),
-      );
-      if (!isValidLatLng(position.latitude, position.longitude)) {
-        debugWarn(
-            '[GPS] getCurrentPosition returned invalid coords: lat=${position.latitude}, lon=${position.longitude}');
-        return null;
-      }
-      return position;
-    } catch (e) {
-      debugLog('[GPS] getCurrentPosition failed: $e');
-      return null;
     }
   }
 

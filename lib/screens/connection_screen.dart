@@ -16,6 +16,7 @@ import '../utils/distance_formatter.dart';
 import '../utils/slots_chip.dart';
 import '../utils/store_links.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../services/location_consent.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/transport/android_serial_service.dart';
 import '../services/transport/tcp_service.dart';
@@ -87,8 +88,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     // The disclosure comes before every system prompt and until it is agreed
     // to, even with location granted (Google Play), except on web.
     if (!kIsWeb &&
-        (permission == LocationPermission.denied ||
-            !await PermissionDisclosureService.hasAcceptedDisclosure())) {
+        LocationConsent.needsDisclosure(
+          agreed: await LocationConsent.hasAgreed(),
+          aboutToRequest: permission == LocationPermission.denied,
+        )) {
       if (!mounted) return;
       final agreed =
           await PermissionDisclosureService.showLocationDisclosure(context);
@@ -1542,12 +1545,21 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     String locationText;
     String? iataCode;
     Color locationColor;
+    VoidCallback? locationTap;
 
     // Airborne block applies in every mode, so it comes first
     if (appState.isAirborne) {
       locationIcon = Icons.airplanemode_active;
       locationText = 'Airborne';
       locationColor = Colors.red;
+      // Location off (Not Now on the disclosure, or not granted). This bar is
+      // on every tab, so tapping it is the way back to the disclosure and the
+      // system prompt; Offline Mode needs location too.
+    } else if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      locationIcon = Icons.location_disabled;
+      locationText = 'Location Off';
+      locationColor = Colors.orange;
+      locationTap = () => _requestLocationPermission(appState);
       // Offline mode: show greyed out with "-"
     } else if (appState.offlineMode) {
       locationIcon = Icons.gps_off;
@@ -1632,6 +1644,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                       icon: locationIcon,
                       text: locationText,
                       color: locationColor,
+                      onTap: locationTap,
                     ),
                   ),
 
