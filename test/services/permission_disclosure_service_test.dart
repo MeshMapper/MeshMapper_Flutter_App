@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/permission_disclosure_service.dart';
 
@@ -25,6 +26,51 @@ void main() {
             PermissionDisclosureService.silentDenialThreshold),
         isFalse,
       );
+    });
+  });
+
+  // Google Play rejected 1.4.1 for a location disclosure without these.
+  group('disclosure wording keeps what Google Play asks for', () {
+    for (final (name, lead) in [
+      ('location', PermissionDisclosureService.locationDisclosureLead),
+      ('background', PermissionDisclosureService.backgroundDisclosureLead),
+    ]) {
+      test('$name lead says it collects location data in the background', () {
+        expect(lead, contains('collects location data'));
+        expect(lead, contains('even when the app is closed or not in use'));
+      });
+    }
+  });
+
+  group('PermissionDisclosureService.showLocationDisclosure', () {
+    Future<bool?> openAndTap(WidgetTester tester, String button) async {
+      bool? result;
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async => result =
+                await PermissionDisclosureService.showLocationDisclosure(
+                    context),
+            child: const Text('open'),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(
+          find.text(PermissionDisclosureService.locationDisclosureLead),
+          findsOneWidget);
+      await tester.tap(find.text(button));
+      await tester.pumpAndSettle();
+      return result;
+    }
+
+    testWidgets('Agree allows the system prompt', (tester) async {
+      expect(await openAndTap(tester, 'Agree'), isTrue);
+    });
+
+    testWidgets('Not Now skips the system prompt', (tester) async {
+      expect(await openAndTap(tester, 'Not Now'), isFalse);
     });
   });
 }

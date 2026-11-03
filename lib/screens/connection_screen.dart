@@ -84,8 +84,15 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     // Check current permission status
     LocationPermission permission = await Geolocator.checkPermission();
 
-    // If denied (not permanently), try requesting again
+    // If denied (not permanently), try requesting again. The disclosure must
+    // come right before the system prompt (Google Play), except on web.
     if (permission == LocationPermission.denied) {
+      if (!kIsWeb) {
+        if (!mounted) return;
+        final agreed =
+            await PermissionDisclosureService.showLocationDisclosure(context);
+        if (!agreed) return;
+      }
       final stopwatch = Stopwatch()..start();
       permission = await Geolocator.requestPermission();
       stopwatch.stop();
