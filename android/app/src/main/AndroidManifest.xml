@@ -29,6 +29,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- The service no longer starts with dataSync (see
+         BackgroundServiceManager.androidForegroundTypes). It stays declared
+         here and in the service's foregroundServiceType only because the
+         plugin saves the type list in its own prefs, and its BootReceiver can
+         start the service from a saved list before configure() runs. A saved
+         dataSync that the manifest no longer declares makes startForeground
+         throw. Remove both once no install can still hold a saved list with
+         dataSync. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -193,6 +195,45 @@ void main() {
         async.flushMicrotasks();
         expect(fake.invoked, isEmpty);
       });
+    });
+  });
+
+  group('Android foreground service types', () {
+    test('the service is not started with dataSync', () {
+      expect(
+        BackgroundServiceManager.androidForegroundTypes,
+        isNot(contains(AndroidForegroundType.dataSync)),
+        reason: 'Android 15+ lets a dataSync service run only about 6 hours '
+            'in the background, and the plugin never stops it, so the '
+            'system crashes the app',
+      );
+    });
+
+    test('every type it starts with is declared in the manifest', () {
+      const serviceName =
+          'id.flutter.flutter_background_service.BackgroundService';
+      final manifest = File('android/app/src/main/AndroidManifest.xml')
+          .readAsStringSync()
+          .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
+      final service = RegExp(r'<service\b[^>]*>')
+          .allMatches(manifest)
+          .map((m) => m.group(0)!)
+          .singleWhere((s) => s.contains('android:name="$serviceName"'));
+      final declared = RegExp(r'android:foregroundServiceType="([^"]*)"')
+          .firstMatch(service)!
+          .group(1)!
+          .split('|')
+          .toSet();
+
+      for (final type in BackgroundServiceManager.androidForegroundTypes) {
+        expect(
+          declared,
+          contains(type.name),
+          reason: '${type.name}: Android throws IllegalArgumentException '
+              'when startForeground asks for a type the manifest does not '
+              'declare for the service',
+        );
+      }
     });
   });
 }

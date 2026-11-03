@@ -48,6 +48,17 @@ class BackgroundServiceManager {
   /// How long after a start to check the service is still up (diagnostic).
   static const Duration _startVerifyDelay = Duration(seconds: 1);
 
+  /// The foreground service types the Android service starts with. No
+  /// dataSync: Android 15+ lets a dataSync service run only about 6 hours in
+  /// the background, and the plugin never stops it when that runs out, so the
+  /// system crashed the app (ForegroundServiceDidNotStopInTimeException).
+  /// The location type already keeps the network up in the background.
+  @visibleForTesting
+  static const List<AndroidForegroundType> androidForegroundTypes = [
+    AndroidForegroundType.location,
+    AndroidForegroundType.connectedDevice,
+  ];
+
   /// Initialize the background service.
   /// Called lazily on first startService() call — never at app startup.
   /// Startup orphan cleanup uses cleanupOrphanedService(), which stops a
@@ -100,11 +111,7 @@ class BackgroundServiceManager {
           initialNotificationTitle: 'MeshMapper',
           initialNotificationContent: 'Wardriving active',
           foregroundServiceNotificationId: _notificationId,
-          foregroundServiceTypes: [
-            AndroidForegroundType.location,
-            AndroidForegroundType.connectedDevice,
-            AndroidForegroundType.dataSync,
-          ],
+          foregroundServiceTypes: androidForegroundTypes,
         ),
         iosConfiguration: IosConfiguration(
           autoStart: false,
