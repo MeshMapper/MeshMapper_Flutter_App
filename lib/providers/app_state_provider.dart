@@ -754,7 +754,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// How many full disconnect cleanups are running. The cleanup flips
   /// [_connectionStep] to `disconnected` at its top, long before the queue
   /// flush and session release finish, so [_sessionActive] alone would let GPS
-  /// stop mid-upload.
+  /// stop mid-upload. A failed connect also reads it, to leave the session
+  /// service's stop to that cleanup's end.
   int _disconnectCleanupDepth = 0;
 
   /// Whether Android's session service may use location: the permission and
@@ -771,6 +772,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// want of location. Cleared when the session ends, so each session logs it
   /// once rather than on every notify.
   bool _serviceRefusalLogged = false;
+
+  /// True when a session service start came back not started, or was
+  /// accepted and then failed to reach the foreground. No further start is
+  /// tried until the app comes back on screen or the session ends, so a start
+  /// that keeps failing is not resent (and logged) on every notify.
+  bool _connectionServiceStartFailed = false;
+
+  /// True once a start since the app last came on screen was accepted. With
+  /// the session still live, the service can then only read not running
+  /// because the manager's status read shortly after the start found it never
+  /// reached the foreground.
+  bool _connectionServiceStartAccepted = false;
 
   // ============================================
   // MyMeshMapper account + companion linking
@@ -1325,6 +1338,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Whether the session service holds its wake lock: while a mode runs, and
+  /// while a reconnect or a zone grace period has paused one that will
+  /// resume. Their own timers (the reconnect's 30 s give-up, the grace
+  /// period's 5 s polling) must not drift with the screen off.
+  bool get _keepServiceAwake =>
+      _autoPingEnabled ||
+      (_isAutoReconnecting && _autoPingWasEnabled) ||
+      (_isInZoneGracePeriod && _autoPingWasEnabledBeforeGrace);
+
   /// What Android's session service notification says right now. The service
   /// runs for the whole radio session, so it reads the mode's stats while one
   /// runs and the connection's state between modes.
@@ -1378,6 +1400,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (!BackgroundServiceManager.followsConnection) return;
     if (!_sessionActive) {
       _serviceRefusalLogged = false;
+      _clearConnectionServiceStartFailure();
       return;
     }
     bool wouldStart({required bool locationGranted}) =>
@@ -1391,17 +1414,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           locationGranted: locationGranted,
         );
     if (wouldStart(locationGranted: _sessionLocationGranted)) {
+      if (_connectionServiceStartFailed) return;
+      if (_connectionServiceStartAccepted) {
+        // Accepted, and now not running with the session still live: the
+        // check after the start found it never reached the foreground.
+        _markConnectionServiceStartFailed();
+        return;
+      }
       _connectionServiceStarting = true;
       final n = _serviceNotificationNow();
       unawaited(BackgroundServiceManager.startService(
         title: n.title,
         body: n.body,
-        keepAwake: _autoPingEnabled,
+        keepAwake: _keepServiceAwake,
         mayStart: () =>
             WidgetsBinding.instance.lifecycleState ==
                 AppLifecycleState.resumed &&
             _sessionActive,
-      ).whenComplete(() => _connectionServiceStarting = false));
+      ).whenComplete(() {
+        _connectionServiceStarting = false;
+        if (BackgroundServiceManager.isRunning) {
+          _connectionServiceStartAccepted = true;
+        } else if (_sessionActive) {
+          // Refused, or the channel call failed; the manager logged why. A
+          // session that ended meanwhile sent a stop, which is no failure.
+          _markConnectionServiceStartFailed();
+        }
+      }));
       return;
     }
     if (!_sessionLocationGranted &&
@@ -1416,9 +1455,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(BackgroundServiceManager.updateNotification(
         title: n.title,
         body: n.body,
-        keepAwake: _autoPingEnabled,
+        keepAwake: _keepServiceAwake,
       ));
     }
+  }
+
+  /// Holds back further session service starts (see
+  /// [_connectionServiceStartFailed]). Logged once, when it is set.
+  void _markConnectionServiceStartFailed() {
+    _connectionServiceStartFailed = true;
+    _connectionServiceStartAccepted = false;
+    debugWarn('[BACKGROUND] Not retrying the service start until the app is '
+        'back on screen');
+  }
+
+  /// Lets the session service be started again: on return to the app, and
+  /// when a session ends.
+  void _clearConnectionServiceStartFailure() {
+    _connectionServiceStartFailed = false;
+    _connectionServiceStartAccepted = false;
   }
 
   /// On return to the app (Android): re-read the location grant, bring the
@@ -1439,6 +1494,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
       if (BackgroundServiceManager.followsConnection) {
+        // Back on screen: a start that failed earlier gets one more try.
+        _clearConnectionServiceStartFailure();
         unawaited(_syncConnectionServiceAfterResume());
       }
       _checkTcpHealthAfterResume();
@@ -4124,7 +4181,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         BackgroundServiceManager.updateNotification(
           title: n.title,
           body: n.body,
-          keepAwake: _autoPingEnabled,
+          keepAwake: _keepServiceAwake,
         );
       }
     };
@@ -4989,10 +5046,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _connectionStep = ConnectionStep.error;
     notifyListeners();
     // The failed connect ends the session, unless a reconnect or a connect
-    // re-run carries it on.
+    // re-run carries it on. A disconnect cleanup still running (the failed
+    // link's own, usually) stops the service at its end instead, after its
+    // session release: a stop landing in the middle of that release can let
+    // the backgrounded process freeze before it is sent.
     if (BackgroundServiceManager.followsConnection &&
         !_isAutoReconnecting &&
-        !_connectRerunPending) {
+        !_connectRerunPending &&
+        _disconnectCleanupDepth == 0) {
       unawaited(BackgroundServiceManager.stopService());
     }
   }
@@ -5959,7 +6020,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         BackgroundServiceManager.updateNotification(
           title: n.title,
           body: n.body,
-          keepAwake: _autoPingEnabled,
+          keepAwake: _keepServiceAwake,
         );
       }
     };
@@ -7194,7 +7255,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await BackgroundServiceManager.updateNotification(
       title: reconnecting.title,
       body: reconnecting.body,
-      keepAwake: _autoPingEnabled,
+      keepAwake: _keepServiceAwake,
     );
 
     // Clean up dead BLE-dependent objects
@@ -7641,280 +7702,293 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     Map<String, dynamic>? releaseExtras,
     bool flushQueue = false,
   }) async {
-    _finishLiveActivitySession();
-    _invalidateLiveSessionRecovery();
-    // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
-    _userRequestedDisconnect = true;
-
-    // Immediate UI feedback
-    _connectionStep = ConnectionStep.disconnecting;
-    notifyListeners();
-
-    // Release the sign gate before any teardown write (advert-name restore,
-    // path-hash restore, flood scope, channel deletion) is parked behind it.
-    // Ahead of the recovery wait below, not after it: the wait can take
-    // seconds, and a live sign holding the gate for all of them is exactly
-    // what aborting first is meant to prevent.
-    _meshCoreConnection?.abortPendingSign();
-    _meshCoreConnection?.abortPendingAdmin();
-    _scopeLifecycle.onEvent(ScopeStopEvent.userDisconnect);
-    // awaitSessionRecoveryBounded swallows its own timeout but rethrows
-    // anything else, and a recovery that throws must never abandon the
-    // teardown with the radio still up: the user asked to disconnect.
     try {
-      await _waitForLiveSessionRecovery();
-    } catch (e) {
-      debugWarn('[SESSION] recovery wait failed, continuing disconnect: $e');
-    }
+      _finishLiveActivitySession();
+      _invalidateLiveSessionRecovery();
+      // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
+      _userRequestedDisconnect = true;
 
-    await closeRepeaterAdminSession();
+      // Immediate UI feedback
+      _connectionStep = ConnectionStep.disconnecting;
+      notifyListeners();
 
-    // Cancel idle disconnect timer
-    _cancelIdleDisconnectTimer();
-
-    // Cancel any active auto-reconnect
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
-    _reconnectTimeoutTimer?.cancel();
-    _reconnectTimeoutTimer = null;
-    _cancelPendingAutoPingRestore();
-    _isAutoReconnecting = false;
-    _reconnectAttempt = 0;
-    _reconnectStartedAt = null;
-    _autoPingWasEnabled = false;
-
-    // Cancel any active zone grace period
-    _cancelZoneGraceTimers();
-    _isInZoneGracePeriod = false;
-    _zoneGraceSecondsRemaining = 0;
-    _autoPingWasEnabledBeforeGrace = false;
-
-    // Disable heartbeat immediately on disconnect
-    _apiService.disableHeartbeat();
-
-    // Stop zone refresh timer
-    _stopZoneRefreshTimer();
-
-    // Stop auto-ping if running (before releasing session)
-    if (_autoPingEnabled) {
-      await _pingService?.forceDisableAutoPing();
-      _autoPingEnabled = false;
-      _resetIdleAutoStop();
-    }
-
-    // End noise floor session on disconnect
-    await _endNoiseFloorSession();
-
-    // Stop iOS's per-mode service. Android's session service stops once the
-    // session is over (below), after the upload and the session release, so
-    // the process is not frozen halfway through them.
-    if (!BackgroundServiceManager.followsConnection) {
-      await BackgroundServiceManager.stopService();
-    }
-
-    // Stop all countdown timers
-    _cooldownTimer.stop();
-    _autoPingTimer.stop();
-    _rxWindowTimer.stop();
-
-    // Stop RX wardriving if active (flushes batches to queue). Awaited so the
-    // batches are queued before the upload below; a failed flush must not
-    // abandon the teardown.
-    try {
-      await _rxLogger?.stopWardriving(trigger: 'disconnect');
-    } catch (e) {
-      debugError('[RX LOG] Final RX flush on disconnect failed: $e');
-    }
-
-    // Save offline pings before clearing queue (no-op if not in offline mode or no pings)
-    await _saveOfflineSession();
-
-    // Send what is still queued while the session is valid. The last TX
-    // waits 5 s for its upload and an RX batch up to 15 s, so a Disconnect
-    // tap inside that window used to drop them. Bounded so the tap stays
-    // quick on a bad network.
-    if (flushQueue && _apiService.hasSession && !_preferences.offlineMode) {
-      debugLog('[APP] Uploading queued pings before session release');
-      final uploaded = await uploadQueueBounded(() async {
-        await _apiQueueService.waitForUploadToFinish(
-            limit: disconnectQueueUploadTimeout);
-        // A batch carries at most 50 items, and a queue that grew out of
-        // coverage needs several. Stop once a round leaves nothing or moves
-        // nothing (items still waiting out a retry).
-        var left = -1;
-        for (var round = 0; round < 5; round++) {
-          await _apiQueueService.forceUploadWithHoldWait();
-          final now = _apiQueueService.queueSize;
-          if (now == 0 || now == left) break;
-          left = now;
-        }
-      });
-      if (!uploaded) {
-        debugWarn('[APP] Queued pings not all uploaded before release');
-      }
-    }
-
-    // ALWAYS START FRESH - clear any queued data on disconnect
-    // Pings without a valid session cannot be uploaded later
-    await _apiQueueService.clearOnDisconnect();
-
-    // Release API session (best effort - always cleanup locally)
-    if (_devicePublicKey != null && _apiService.hasSession) {
-      debugLog('[APP] Releasing API session');
+      // Release the sign gate before any teardown write (advert-name restore,
+      // path-hash restore, flood scope, channel deletion) is parked behind it.
+      // Ahead of the recovery wait below, not after it: the wait can take
+      // seconds, and a live sign holding the gate for all of them is exactly
+      // what aborting first is meant to prevent.
+      _meshCoreConnection?.abortPendingSign();
+      _meshCoreConnection?.abortPendingAdmin();
+      _scopeLifecycle.onEvent(ScopeStopEvent.userDisconnect);
+      // awaitSessionRecoveryBounded swallows its own timeout but rethrows
+      // anything else, and a recovery that throws must never abandon the
+      // teardown with the radio still up: the user asked to disconnect.
       try {
-        await _apiService.requestAuth(
-          reason: 'disconnect',
-          publicKey: _devicePublicKey!,
-          extras: releaseExtras,
-        );
-        debugLog('[APP] API session released successfully');
+        await _waitForLiveSessionRecovery();
       } catch (e) {
-        debugError('[APP] Failed to release API session: $e');
-        // Continue with disconnect anyway
+        debugWarn('[SESSION] recovery wait failed, continuing disconnect: $e');
       }
-    }
 
-    // Restore original device name if anonymous mode renamed it (BLE must still be connected)
-    if (_isAnonymousRenamed && _originalDeviceName != null) {
+      await closeRepeaterAdminSession();
+
+      // Cancel idle disconnect timer
+      _cancelIdleDisconnectTimer();
+
+      // Cancel any active auto-reconnect
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectTimeoutTimer?.cancel();
+      _reconnectTimeoutTimer = null;
+      _cancelPendingAutoPingRestore();
+      _isAutoReconnecting = false;
+      _reconnectAttempt = 0;
+      _reconnectStartedAt = null;
+      _autoPingWasEnabled = false;
+
+      // Cancel any active zone grace period
+      _cancelZoneGraceTimers();
+      _isInZoneGracePeriod = false;
+      _zoneGraceSecondsRemaining = 0;
+      _autoPingWasEnabledBeforeGrace = false;
+
+      // Disable heartbeat immediately on disconnect
+      _apiService.disableHeartbeat();
+
+      // Stop zone refresh timer
+      _stopZoneRefreshTimer();
+
+      // Stop auto-ping if running (before releasing session)
+      if (_autoPingEnabled) {
+        await _pingService?.forceDisableAutoPing();
+        _autoPingEnabled = false;
+        _resetIdleAutoStop();
+      }
+
+      // End noise floor session on disconnect
+      await _endNoiseFloorSession();
+
+      // Stop iOS's per-mode service. Android's session service stops once the
+      // session is over (below), after the upload and the session release, so
+      // the process is not frozen halfway through them.
+      if (!BackgroundServiceManager.followsConnection) {
+        await BackgroundServiceManager.stopService();
+      }
+
+      // Stop all countdown timers
+      _cooldownTimer.stop();
+      _autoPingTimer.stop();
+      _rxWindowTimer.stop();
+
+      // Stop RX wardriving if active (flushes batches to queue). Awaited so the
+      // batches are queued before the upload below; a failed flush must not
+      // abandon the teardown.
       try {
-        await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
-        debugLog(
-            '[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
-        if (_devicePublicKey != null) {
-          _clearPersistedRealName(_devicePublicKey!);
-        }
+        await _rxLogger?.stopWardriving(trigger: 'disconnect');
       } catch (e) {
-        debugError('[CONN] Anonymous mode: failed to restore name: $e');
-        logError(
-            'Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
-            severity: ErrorSeverity.warning,
-            autoSwitch: false);
+        debugError('[RX LOG] Final RX flush on disconnect failed: $e');
       }
-      _isAnonymousRenamed = false;
-      _originalDeviceName = null;
-    }
 
-    // Restore original path hash mode before disconnect (while BLE still connected)
-    await _restorePathHashMode();
+      // Save offline pings before clearing queue (no-op if not in offline mode or no pings)
+      await _saveOfflineSession();
 
-    // Clear flood scope before disconnect (safety — BLE disconnect resets radio state anyway)
-    try {
-      await _meshCoreConnection?.clearFloodScope();
-    } catch (e) {
-      debugLog('[CONN] Failed to clear flood scope: $e');
-    }
+      // Send what is still queued while the session is valid. The last TX
+      // waits 5 s for its upload and an RX batch up to 15 s, so a Disconnect
+      // tap inside that window used to drop them. Bounded so the tap stays
+      // quick on a bad network.
+      if (flushQueue && _apiService.hasSession && !_preferences.offlineMode) {
+        debugLog('[APP] Uploading queued pings before session release');
+        final uploaded = await uploadQueueBounded(() async {
+          await _apiQueueService.waitForUploadToFinish(
+              limit: disconnectQueueUploadTimeout);
+          // A batch carries at most 50 items, and a queue that grew out of
+          // coverage needs several. Stop once a round leaves nothing or moves
+          // nothing (items still waiting out a retry).
+          var left = -1;
+          for (var round = 0; round < 5; round++) {
+            await _apiQueueService.forceUploadWithHoldWait();
+            final now = _apiQueueService.queueSize;
+            if (now == 0 || now == left) break;
+            left = now;
+          }
+        });
+        if (!uploaded) {
+          debugWarn('[APP] Queued pings not all uploaded before release');
+        }
+      }
 
-    // Delete wardriving channel FIRST, while BLE connection is still active
-    // This prevents "GATT Server is disconnected" errors
-    if (_preferences.deleteChannelOnDisconnect) {
-      await _meshCoreConnection?.deleteWardrivingChannelEarly();
-    } else {
-      debugLog('[CHANNEL] Skipping channel deletion (user preference)');
-    }
+      // ALWAYS START FRESH - clear any queued data on disconnect
+      // Pings without a valid session cannot be uploaded later
+      await _apiQueueService.clearOnDisconnect();
 
-    // Cleanup unified RX handler and TX tracker
-    _logRxDataSubscription?.cancel();
-    _logRxDataSubscription = null;
-    _unifiedRxHandler?.dispose();
-    _unifiedRxHandler = null;
-    _txTracker = null; // TxTracker is disposed by UnifiedRxHandler
-    _rxLogger = null; // RxLogger is disposed by UnifiedRxHandler
+      // Release API session (best effort - always cleanup locally)
+      if (_devicePublicKey != null && _apiService.hasSession) {
+        debugLog('[APP] Releasing API session');
+        try {
+          await _apiService.requestAuth(
+            reason: 'disconnect',
+            publicKey: _devicePublicKey!,
+            extras: releaseExtras,
+          );
+          debugLog('[APP] API session released successfully');
+        } catch (e) {
+          debugError('[APP] Failed to release API session: $e');
+          // Continue with disconnect anyway
+        }
+      }
 
-    await _meshCoreConnection?.disconnect();
+      // Restore original device name if anonymous mode renamed it (BLE must still be connected)
+      if (_isAnonymousRenamed && _originalDeviceName != null) {
+        try {
+          await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
+          debugLog(
+              '[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
+          if (_devicePublicKey != null) {
+            _clearPersistedRealName(_devicePublicKey!);
+          }
+        } catch (e) {
+          debugError('[CONN] Anonymous mode: failed to restore name: $e');
+          logError(
+              'Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
+              severity: ErrorSeverity.warning,
+              autoSwitch: false);
+        }
+        _isAnonymousRenamed = false;
+        _originalDeviceName = null;
+      }
 
-    // Cancel stream subscriptions
-    await _noiseFloorSubscription?.cancel();
-    _noiseFloorSubscription = null;
-    await _batterySubscription?.cancel();
-    _batterySubscription = null;
+      // Restore original path hash mode before disconnect (while BLE still connected)
+      await _restorePathHashMode();
 
-    // Clean up non-BLE transport (TCP/USB instances are owned by us, not shared)
-    _transportConnectionSubscription?.cancel();
-    _transportConnectionSubscription = null;
-    if (_activeTransport != null && _activeTransport != _bluetoothService) {
-      _activeTransport!.dispose();
-    }
-    _activeTransport = null;
+      // Clear flood scope before disconnect (safety — BLE disconnect resets radio state anyway)
+      try {
+        await _meshCoreConnection?.clearFloodScope();
+      } catch (e) {
+        debugLog('[CONN] Failed to clear flood scope: $e');
+      }
 
-    // Restore transport tab selection so connection screen shows the right tab
-    if (_rememberedDevice != null) {
-      _selectedTransport = _rememberedDevice!.transportType;
-    }
+      // Delete wardriving channel FIRST, while BLE connection is still active
+      // This prevents "GATT Server is disconnected" errors
+      if (_preferences.deleteChannelOnDisconnect) {
+        await _meshCoreConnection?.deleteWardrivingChannelEarly();
+      } else {
+        debugLog('[CHANNEL] Skipping channel deletion (user preference)');
+      }
 
-    _meshCoreConnection?.dispose();
-    _meshCoreConnection = null;
-    _pingService?.dispose();
-    _pingService = null;
+      // Cleanup unified RX handler and TX tracker
+      _logRxDataSubscription?.cancel();
+      _logRxDataSubscription = null;
+      _unifiedRxHandler?.dispose();
+      _unifiedRxHandler = null;
+      _txTracker = null; // TxTracker is disposed by UnifiedRxHandler
+      _rxLogger = null; // RxLogger is disposed by UnifiedRxHandler
 
-    _connectionStep = ConnectionStep.disconnected;
-    if (BackgroundServiceManager.followsConnection &&
-        shouldStopServiceAtCleanupEnd(
-          followsConnection: BackgroundServiceManager.followsConnection,
-          sessionActive: _sessionActive,
-        )) {
-      // Not awaited, so nothing runs between the step change and the rest of
-      // the reset below. The stop is still sent at once.
-      unawaited(BackgroundServiceManager.stopService());
-    }
-    _deviceModel = null;
-    _manufacturerString = null;
-    _firmwareVersionString = null;
-    _devicePublicKey = null;
-    _offlineContactUri = null;
-    _displayDeviceName = null;
-    _antennaRestoredFromDevice = false;
-    _powerRestoredFromDevice = false;
-    _preferences = _preferences.copyWith(
-        externalAntenna: false, externalAntennaSet: false);
-    _savePreferences();
-    _currentNoiseFloor = null;
-    _currentBatteryPercent = null;
-    _authType = null;
-    _originalPathHashMode = null;
-    _userChangedPathMode = false;
-    _hopBytes = 1;
-    _traceHopBytes = 1;
+      await _meshCoreConnection?.disconnect();
 
-    // Clear regional channels (keeps only Public) and scope
-    ChannelService.clearRegionalChannels();
-    _regionalChannels = [];
-    _scope = null;
+      // Cancel stream subscriptions
+      await _noiseFloorSubscription?.cancel();
+      _noiseFloorSubscription = null;
+      await _batterySubscription?.cancel();
+      _batterySubscription = null;
 
-    // Clear user-original preference tracking
-    _userOriginalAutoPingInterval = null;
-    _userOriginalHybridMode = null;
-    _userOriginalDiscDrop = null;
-    _userOriginalFloodTraffic = null;
-    _syncRecentCoverage(sessionEnded: true);
+      // Clean up non-BLE transport (TCP/USB instances are owned by us, not shared)
+      _transportConnectionSubscription?.cancel();
+      _transportConnectionSubscription = null;
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
 
-    // Clear zone transfer state
-    _sessionZoneCode = null;
-    _sessionGroupCode = null;
-    _isZoneTransferInProgress = false;
-    _zoneTransferFrom = null;
-    _zoneTransferTo = null;
+      // Restore transport tab selection so connection screen shows the right tab
+      if (_rememberedDevice != null) {
+        _selectedTransport = _rememberedDevice!.transportType;
+      }
 
-    // Clear discovered devices so user must scan fresh
-    _discoveredDevices = [];
+      _meshCoreConnection?.dispose();
+      _meshCoreConnection = null;
+      _pingService?.dispose();
+      _pingService = null;
 
-    // Reset user-requested flag
-    _userRequestedDisconnect = false;
+      _connectionStep = ConnectionStep.disconnected;
+      _deviceModel = null;
+      _manufacturerString = null;
+      _firmwareVersionString = null;
+      _devicePublicKey = null;
+      _offlineContactUri = null;
+      _displayDeviceName = null;
+      _antennaRestoredFromDevice = false;
+      _powerRestoredFromDevice = false;
+      _preferences = _preferences.copyWith(
+          externalAntenna: false, externalAntennaSet: false);
+      _savePreferences();
+      _currentNoiseFloor = null;
+      _currentBatteryPercent = null;
+      _authType = null;
+      _originalPathHashMode = null;
+      _userChangedPathMode = false;
+      _hopBytes = 1;
+      _traceHopBytes = 1;
 
-    notifyListeners();
+      // Clear regional channels (keeps only Public) and scope
+      ChannelService.clearRegionalChannels();
+      _regionalChannels = [];
+      _scope = null;
 
-    // Auto-exit app if preference is enabled (Android only). The airborne
-    // block passes closeApp: false so its explanation stays on screen.
-    if (closeApp &&
-        _preferences.closeAppAfterDisconnect &&
-        Platform.isAndroid) {
-      debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
-      // Small delay to ensure cleanup completes. Same stop as exitApp(), for
-      // a session service still running with no radio session.
-      Future.delayed(const Duration(milliseconds: 500), () async {
-        await BackgroundServiceManager.stopLiveService(
-            'close after disconnect');
-        SystemNavigator.pop();
-      });
+      // Clear user-original preference tracking
+      _userOriginalAutoPingInterval = null;
+      _userOriginalHybridMode = null;
+      _userOriginalDiscDrop = null;
+      _userOriginalFloodTraffic = null;
+      _syncRecentCoverage(sessionEnded: true);
+
+      // Clear zone transfer state
+      _sessionZoneCode = null;
+      _sessionGroupCode = null;
+      _isZoneTransferInProgress = false;
+      _zoneTransferFrom = null;
+      _zoneTransferTo = null;
+
+      // Clear discovered devices so user must scan fresh
+      _discoveredDevices = [];
+
+      // Reset user-requested flag
+      _userRequestedDisconnect = false;
+
+      notifyListeners();
+
+      // Auto-exit app if preference is enabled (Android only). The airborne
+      // block passes closeApp: false so its explanation stays on screen.
+      if (closeApp &&
+          _preferences.closeAppAfterDisconnect &&
+          Platform.isAndroid) {
+        debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
+        // Small delay to ensure cleanup completes. Same stop as exitApp(), for
+        // a session service still running with no radio session.
+        Future.delayed(const Duration(milliseconds: 500), () async {
+          await BackgroundServiceManager.stopLiveService(
+              'close after disconnect');
+          SystemNavigator.pop();
+        });
+      }
+    } finally {
+      // Android's session service stops once the session is over, after the
+      // upload and the session release above. In a finally, so a throw
+      // part-way cannot leave it running. That throw leaves the step at
+      // disconnecting, which still reads as a live session, so the guard only
+      // asks whether another session (a reconnect, a connect re-run) has
+      // taken over. Not awaited: the stop is sent at once.
+      if (BackgroundServiceManager.followsConnection &&
+          shouldStopServiceAtCleanupEnd(
+            followsConnection: BackgroundServiceManager.followsConnection,
+            sessionActive: radioSessionActive(
+              step: _connectionStep == ConnectionStep.disconnecting
+                  ? ConnectionStep.disconnected
+                  : _connectionStep,
+              autoReconnecting: _isAutoReconnecting,
+              connectRerunPending: _connectRerunPending,
+            ),
+          )) {
+        unawaited(BackgroundServiceManager.stopService());
+      }
     }
   }
 
@@ -9390,13 +9464,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           await BackgroundServiceManager.updateNotification(
             title: n.title,
             body: n.body,
-            keepAwake: _autoPingEnabled,
+            keepAwake: _keepServiceAwake,
           );
         } else {
           await BackgroundServiceManager.startService(
             title: n.title,
             body: n.body,
-            keepAwake: _autoPingEnabled,
+            keepAwake: _keepServiceAwake,
           );
         }
       } finally {
