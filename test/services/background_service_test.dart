@@ -499,6 +499,15 @@ void main() {
       }
     });
 
+    test('background location is removed so no plugin merges it back', () {
+      final permission = elements('uses-permission').singleWhere((p) =>
+          attribute(p, 'android:name') ==
+          'android.permission.ACCESS_BACKGROUND_LOCATION');
+      expect(attribute(permission, 'tools:node'), 'remove',
+          reason: 'the session service keeps GPS running in the background '
+              'with while-in-use permission');
+    });
+
     test('neither dataSync nor the boot permission is granted', () {
       final permissions = elements('uses-permission');
       String? node(String permission) => permissions

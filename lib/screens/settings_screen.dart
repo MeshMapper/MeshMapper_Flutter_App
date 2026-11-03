@@ -37,6 +37,12 @@ class SettingsScreen extends StatelessWidget {
     final aboutSubtitle = kIsWeb
         ? 'Version ${AppConstants.appVersion}, feedback'
         : 'Version ${AppConstants.appVersion}, feedback, debug logs';
+    // Only iOS has a background location setting. Android and the web build
+    // share the other wording.
+    final generalSubtitle =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
+            ? 'Appearance, sounds, background location'
+            : 'Appearance, sounds, exit options';
 
     return Scaffold(
       appBar: AppBar(
@@ -52,7 +58,7 @@ class SettingsScreen extends StatelessWidget {
             _FolderTile(
               icon: Icons.tune,
               title: 'General',
-              subtitle: 'Appearance, sounds, background location',
+              subtitle: generalSubtitle,
               builder: (_) => const GeneralSettingsPage(),
             ),
             _FolderTile(

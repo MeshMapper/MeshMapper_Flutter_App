@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/connection_state.dart';
@@ -371,9 +370,15 @@ class GpsService {
 
   /// Request "Always" location permission for background mode
   /// On iOS, this triggers the second permission dialog after "When In Use" is granted
-  /// On Android 10+, this triggers the "Allow all the time" dialog
+  /// Android never asks: its session service keeps GPS running in the
+  /// background with "While in use" permission
   /// Returns true if permission is granted, false otherwise
   Future<bool> requestAlwaysPermission() async {
+    if (Platform.isAndroid) {
+      debugLog('[GPS] Always permission is iOS only');
+      return false;
+    }
+
     debugLog('[GPS] Requesting Always location permission');
 
     final current = await Geolocator.checkPermission();
@@ -391,19 +396,10 @@ class GpsService {
       return false;
     }
 
-    // Platform-specific request
-    if (Platform.isAndroid) {
-      // Android: Use permission_handler to request locationAlways
-      // This triggers "Allow all the time" dialog on Android 10+
-      final status = await Permission.locationAlways.request();
-      debugLog('[GPS] Android always permission result: $status');
-      return status.isGranted;
-    } else {
-      // iOS: Use Geolocator for the upgrade dialog
-      final permission = await Geolocator.requestPermission();
-      debugLog('[GPS] iOS permission result: $permission');
-      return permission == LocationPermission.always;
-    }
+    // iOS: Use Geolocator for the upgrade dialog
+    final permission = await Geolocator.requestPermission();
+    debugLog('[GPS] iOS permission result: $permission');
+    return permission == LocationPermission.always;
   }
 
   /// Check if location services are enabled

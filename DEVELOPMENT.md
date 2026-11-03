@@ -1114,8 +1114,8 @@ The app never checks its own version: it sends `APP-<x.y.z>` (store) or `APP-<ep
 
 Keeps BLE and GPS active when the app is backgrounded during auto-ping.
 
-- **Android**: Foreground service via `flutter_background_service` with persistent low-importance notification (no sound/vibration). Notification shows live stats: `TX: N | RX: M | Queue: P` (Active/Hybrid) or `RX: M | Queue: P` (Passive). Foreground types: `location + connectedDevice`.
-- **iOS**: Uses declared background modes (`bluetooth-central`, `location`). Users can enable "Background Location" in Settings to upgrade to "Always" location permission, which prevents iOS throttling during extended sessions. This must be manually enabled — a disclosure dialog explains the feature, then the system permission prompt appears.
+- **Android**: the app's own `MeshMapperSessionService` (a foreground service, types `location + connectedDevice`) starts at connect, while the app is on screen, and stops at the final disconnect or when the app is swiped away. It has no boot start and nothing restarts it. Its low-importance notification (no sound/vibration) shows Connected, the active mode's stats (`TX: N | RX: M | Queue: P` for Active/Hybrid, `RX: M | Queue: P` for Passive), Reconnecting, or Outside zone. Because the service keeps GPS running in the background, Android needs only "While in use" location: the manifest removes `ACCESS_BACKGROUND_LOCATION`, and the Background Location setting is iOS-only.
+- **iOS**: per mode, through the plugin, unchanged. Uses declared background modes (`bluetooth-central`, `location`). Users can enable "Background Location" in Settings to upgrade to "Always" location permission, which prevents iOS throttling during extended sessions. This must be manually enabled — a disclosure dialog explains the feature, then the system permission prompt appears.
 - **Web**: No-op (Web Bluetooth requires active tab)
 - **Lifecycle**: Lazy-initialized on first `startService()` call (triggered by auto-ping start), stopped on disconnect or auto-ping stop
 - **It MUST outlive the auto-reconnect window.** On Android the foreground service is the only thing holding the process alive, so `_startAutoReconnect` only re-titles it ("Reconnecting") and never stops it. Stopping it there froze the app within about three seconds and every Dart timer stalled with it, the 30 second reconnect timeout included: one user's reconnect gave up 18 to 21 minutes late, when they picked the phone back up, which is why the disconnect alert beeped on their return to the car instead of when the radio went out of range (the GPS stream, the 15 second batch timer and the reconnect timeout all resumed in the same millisecond). The service is stopped on the abandon path through `_fullDisconnectCleanup`, and by `_onReconnectSuccess` when there is no auto-ping to restore. A success that does restore auto-ping re-uses the running service, since `startService` folds into `updateNotification` when it is already up.
@@ -2718,7 +2718,6 @@ when MeshMapper is disconnected.
 ### Android
 - Requires permissions: Bluetooth, Location (for BLE scanning)
 - minSdkVersion: 24 (Flutter's `flutter.minSdkVersion` default; MapLibre GL needs 23+)
-- Background location permission for continuous tracking
 - Uses `flutter_blue_plus` package
 - URL scheme `meshmapper-auth` (host `callback`) registered on MainActivity via a VIEW/DEFAULT/BROWSABLE intent-filter — the portal sign-in return. The bare `meshmapper://` scheme is deliberately NOT registered: it is a paste-only clipboard format (`docs/CUSTOM_API_ENDPOINT.md`).
 - `android:fullBackupContent` / `android:dataExtractionRules` exclude the `MeshMapperSecure` secure-prefs file from backup

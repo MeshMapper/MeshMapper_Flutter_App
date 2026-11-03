@@ -877,7 +877,7 @@ Widget buildBackgroundPage(BuildContext context) {
           icon: Icons.notifications_active,
           title: 'Android setup',
           text:
-              'No additional background location permission is required. Allow MeshMapper notifications so you can see when the active mode keeps Bluetooth and GPS running.',
+              'No additional background location permission is required. Allow MeshMapper notifications so you can see while your radio is connected and MeshMapper keeps Bluetooth and GPS running.',
           color: accent,
         ),
         const GuideCallout(
