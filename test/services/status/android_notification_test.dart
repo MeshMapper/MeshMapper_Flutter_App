@@ -36,4 +36,16 @@ void main() {
     expect(n.title, 'MeshMapper - Trace Mode');
     expect(n.body, 'Trace: 3 | RX: 7 | Queue: 2');
   });
+
+  test('connected with no mode running names the radio', () {
+    final n = androidConnectedNotificationContent(radioName: 'MeshCore-AB12');
+    expect(n.title, 'MeshMapper - Connected');
+    expect(n.body, 'Connected to MeshCore-AB12');
+  });
+
+  test('the zone grace period says it is looking for a zone', () {
+    final n = androidZoneGraceNotificationContent();
+    expect(n.title, 'MeshMapper - Outside zone');
+    expect(n.body, 'Searching for a nearby zone');
+  });
 }

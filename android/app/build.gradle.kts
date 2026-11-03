@@ -83,4 +83,9 @@ dependencies {
     // 4.6.2, but declared so MeshMapperAltitudeService.kt compiles against it.
     // Version must match geolocator_android's transitive dependency.
     implementation("com.google.android.gms:play-services-location:21.2.0")
+
+    // AndroidX core, already pulled transitively (maplibre_gl's core-ktx), but
+    // declared so MeshMapperSessionService.kt compiles against ServiceCompat
+    // and NotificationCompat. Version must match the one Gradle resolves.
+    implementation("androidx.core:core:1.18.0")
 }

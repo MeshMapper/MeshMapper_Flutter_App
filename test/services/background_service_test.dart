@@ -1,12 +1,35 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/background_service.dart';
+import 'package:mesh_mapper/utils/debug_logger_io.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const channel = MethodChannel('meshmapper/session_service');
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+
+  /// Captures every debug line written from here to the end of the test.
+  List<String> captureLogs() {
+    final logs = <String>[];
+    final originalPrint = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      if (message != null) logs.add(message);
+    };
+    DebugLogger.setEnabled(true);
+    addTearDown(() {
+      debugPrint = originalPrint;
+      DebugLogger.setEnabled(false);
+    });
+    return logs;
+  }
+
   group('BackgroundServiceManager.waitUntilStopped', () {
     test('returns at once when the service is already gone', () async {
       var calls = 0;
@@ -57,206 +80,458 @@ void main() {
       expect(calls, 2);
     });
   });
-  group('BackgroundServiceManager start and stop', () {
-    late _FakeService fake;
+
+  group('BackgroundServiceManager on the Android session service', () {
+    late List<MethodCall> calls;
+    late FutureOr<Object?> Function() startReply;
+    late Map<String, Object?> status;
+
+    List<String> methods() => calls.map((c) => c.method).toList();
+    int count(String method) => methods().where((m) => m == method).length;
 
     setUp(() {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      fake = _FakeService();
-      BackgroundServiceManager.debugInstallService(fake);
+      BackgroundServiceManager.debugInstallService(null);
+      calls = [];
+      startReply = () => {'started': true, 'error': null};
+      status = {'running': true, 'lastError': null};
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        switch (call.method) {
+          case 'start':
+            return startReply();
+          case 'status':
+            return status;
+          default:
+            return null;
+        }
+      });
     });
 
     tearDown(() {
+      messenger.setMockMethodCallHandler(channel, null);
       BackgroundServiceManager.debugInstallService(null);
       debugDefaultTargetPlatformOverride = null;
     });
 
-    test('a disconnect during the wait for an old stop cancels the start', () {
+    test('the service follows the connection on Android only', () {
+      expect(BackgroundServiceManager.followsConnection, isTrue);
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      expect(BackgroundServiceManager.followsConnection, isFalse);
+    });
+
+    test('a start the caller no longer wants sends nothing', () {
       fakeAsync((async) {
-        // A mode switch: the old mode is running, then stopped.
-        BackgroundServiceManager.startService(title: 'A', body: 'a');
+        BackgroundServiceManager.startService(
+            title: 'T', body: 'B', mayStart: () => false);
         async.flushMicrotasks();
-        expect(fake.starts, 1);
-        BackgroundServiceManager.stopService();
-        fake.running = true; // The old service has not gone yet.
-
-        // The new mode's start waits; a disconnect lands meanwhile, with
-        // nothing marked running.
-        BackgroundServiceManager.startService(title: 'B', body: 'b');
-        async.elapse(const Duration(milliseconds: 250));
-        BackgroundServiceManager.stopService();
-        fake.running = false;
-        async.elapse(const Duration(seconds: 5));
-
-        expect(fake.starts, 1, reason: 'no orphan service after teardown');
+        expect(calls, isEmpty);
         expect(BackgroundServiceManager.isRunning, isFalse);
       });
     });
 
-    test('a service taken down by a late stop is started once more', () {
+    test('a start sends the content and keepAwake, then counts as running',
+        () {
       fakeAsync((async) {
-        BackgroundServiceManager.startService(title: 'A', body: 'a');
+        BackgroundServiceManager.startService(
+            title: 'T', body: 'B', keepAwake: true, mayStart: () => true);
         async.flushMicrotasks();
-        expect(fake.starts, 1);
-
-        // The stale stopSelf() lands after the start.
-        fake.running = false;
-        fake.stayDown = true;
-        async.elapse(const Duration(seconds: 1));
-        expect(fake.starts, 2, reason: 'one retry');
-
-        async.elapse(const Duration(seconds: 10));
-        expect(fake.starts, 2, reason: 'never more than one retry');
+        expect(methods(), ['start']);
+        expect(calls.single.arguments,
+            {'title': 'T', 'body': 'B', 'keepAwake': true});
+        expect(BackgroundServiceManager.isRunning, isTrue);
       });
     });
 
-    test('a stop before the post-start check prevents the retry', () {
+    test('keepAwake defaults to false, so existing callers stay as they are',
+        () {
       fakeAsync((async) {
-        BackgroundServiceManager.startService(title: 'A', body: 'a');
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
         async.flushMicrotasks();
-        BackgroundServiceManager.stopService();
-        fake.running = false;
-        async.elapse(const Duration(seconds: 5));
-        expect(fake.starts, 1);
+        expect(calls.single.arguments,
+            {'title': 'T', 'body': 'B', 'keepAwake': false});
       });
     });
 
-    test('a live stop ends a service this session did not start', () {
+    test('a refused start leaves the service counted as stopped', () {
       fakeAsync((async) {
-        // Started by BootReceiver: running, but not marked running here.
-        fake.running = true;
+        final logs = captureLogs();
+        startReply = () => {'started': false, 'error': 'X'};
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.flushMicrotasks();
         expect(BackgroundServiceManager.isRunning, isFalse);
+        expect(logs.join('\n'), contains('X'));
+      });
+    });
 
+    test('a start whose channel call fails does not throw', () {
+      fakeAsync((async) {
+        startReply = () => throw PlatformException(code: 'boom');
+        Object? error;
+        BackgroundServiceManager.startService(title: 'T', body: 'B')
+            .catchError((Object e) => error = e);
+        async.flushMicrotasks();
+        expect(error, isNull);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('a stop is always sent, even with nothing counted as running', () {
+      fakeAsync((async) {
+        // A stop that lands while a start is still on its way to the service.
+        expect(BackgroundServiceManager.isRunning, isFalse);
+        BackgroundServiceManager.stopService();
+        async.flushMicrotasks();
+        expect(methods(), ['stop']);
+      });
+    });
+
+    test('a stop clears the running flag', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.flushMicrotasks();
+        expect(BackgroundServiceManager.isRunning, isTrue);
+        BackgroundServiceManager.stopService();
+        async.flushMicrotasks();
+        expect(methods(), ['start', 'stop']);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('a start reply that lands after a stop does not count as running', () {
+      fakeAsync((async) {
+        final reply = Completer<Object?>();
+        startReply = () => reply.future;
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.flushMicrotasks();
+        expect(methods(), ['start']);
+
+        BackgroundServiceManager.stopService();
+        async.flushMicrotasks();
+        reply.complete({'started': true, 'error': null});
+        async.flushMicrotasks();
+
+        expect(methods(), ['start', 'stop']);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('a stop that fails on the channel does not throw', () {
+      fakeAsync((async) {
+        messenger.setMockMethodCallHandler(
+            channel, (call) async => throw PlatformException(code: 'boom'));
+        Object? error;
+        BackgroundServiceManager.stopService()
+            .catchError((Object e) => error = e);
+        async.flushMicrotasks();
+        expect(error, isNull);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('two identical updates send one', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.updateNotification(
+            title: 'T', body: 'B', keepAwake: true);
+        BackgroundServiceManager.updateNotification(
+            title: 'T', body: 'B', keepAwake: true);
+        async.flushMicrotasks();
+        expect(methods(), ['update']);
+        expect(calls.single.arguments,
+            {'title': 'T', 'body': 'B', 'keepAwake': true});
+      });
+    });
+
+    test('a changed update is sent', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.updateNotification(title: 'T', body: 'B');
+        BackgroundServiceManager.updateNotification(title: 'T', body: 'C');
+        async.flushMicrotasks();
+        expect(count('update'), 2);
+      });
+    });
+
+    test('a stop or a start lets the same update through again', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.updateNotification(title: 'T', body: 'B');
+        BackgroundServiceManager.stopService();
+        BackgroundServiceManager.updateNotification(title: 'T', body: 'B');
+        async.flushMicrotasks();
+        expect(count('update'), 2, reason: 'reset by the stop');
+
+        BackgroundServiceManager.startService(title: 'S', body: 'S');
+        async.flushMicrotasks();
+        BackgroundServiceManager.updateNotification(title: 'T', body: 'B');
+        async.flushMicrotasks();
+        expect(count('update'), 3, reason: 'reset by the start');
+      });
+    });
+
+    test('a resume finds the service gone and counts it as stopped', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.flushMicrotasks();
+        expect(BackgroundServiceManager.isRunning, isTrue);
+
+        status = {'running': false, 'lastError': null};
+        BackgroundServiceManager.healAfterResume(sessionActive: true);
+        async.flushMicrotasks();
+        expect(BackgroundServiceManager.isRunning, isFalse);
+        expect(count('stop'), 0);
+      });
+    });
+
+    test('a resume with no radio session stops a running service', () {
+      fakeAsync((async) {
+        status = {'running': true, 'lastError': null};
+        BackgroundServiceManager.healAfterResume(sessionActive: false);
+        async.flushMicrotasks();
+        expect(methods(), ['status', 'stop']);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
+
+    test('a resume keeps a service the radio session still needs', () {
+      fakeAsync((async) {
+        status = {'running': true, 'lastError': null};
+        BackgroundServiceManager.healAfterResume(sessionActive: true);
+        async.flushMicrotasks();
+        expect(methods(), ['status']);
+        expect(BackgroundServiceManager.isRunning, isTrue);
+      });
+    });
+
+    test('a resume reports an error the service left behind', () {
+      fakeAsync((async) {
+        final logs = captureLogs();
+        status = {'running': false, 'lastError': 'SecurityException: denied'};
+        BackgroundServiceManager.healAfterResume(sessionActive: true);
+        async.flushMicrotasks();
+        expect(logs.join('\n'),
+            contains('[BACKGROUND] Service failed to start: SecurityException: '
+                'denied'));
+      });
+    });
+
+    test('the startup cleanup sends stop', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.cleanupOrphanedService();
+        async.flushMicrotasks();
+        expect(methods(), ['stop']);
+      });
+    });
+
+    test('a live stop sends stop', () {
+      fakeAsync((async) {
         var done = false;
-        BackgroundServiceManager.stopLiveService('orphaned service')
+        BackgroundServiceManager.stopLiveService('exit app')
             .then((_) => done = true);
         async.flushMicrotasks();
-        expect(fake.invoked, ['stop']);
-        expect(done, isFalse, reason: 'waits for the service to go');
+        expect(methods(), ['stop']);
+        expect(done, isTrue);
+        expect(BackgroundServiceManager.isRunning, isFalse);
+      });
+    });
 
-        fake.running = false;
+    test('the status check reports a start that failed in the service', () {
+      fakeAsync((async) {
+        final logs = captureLogs();
+        status = {
+          'running': false,
+          'lastError': 'ForegroundServiceStartNotAllowedException: background',
+        };
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.flushMicrotasks();
+        expect(BackgroundServiceManager.isRunning, isTrue);
+
+        async.elapse(const Duration(milliseconds: 1400));
+        expect(count('status'), 0, reason: 'not before about 1500 ms');
         async.elapse(const Duration(milliseconds: 200));
-        expect(done, isTrue);
+        expect(count('status'), 1);
+        expect(
+            logs.join('\n'),
+            contains('[BACKGROUND] Service failed to start: '
+                'ForegroundServiceStartNotAllowedException: background'));
         expect(BackgroundServiceManager.isRunning, isFalse);
       });
     });
 
-    test('a live stop sends nothing when no service is running', () {
+    test('the status check logs nothing when there is no error', () {
       fakeAsync((async) {
-        var done = false;
-        BackgroundServiceManager.stopLiveService('orphaned service')
-            .then((_) => done = true);
-        async.flushMicrotasks();
-        expect(done, isTrue);
-        expect(fake.invoked, isEmpty);
+        final logs = captureLogs();
+        status = {'running': true, 'lastError': null};
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.elapse(const Duration(seconds: 2));
+        expect(count('status'), 1);
+        expect(logs.join('\n'), isNot(contains('Service failed to start')));
+        expect(BackgroundServiceManager.isRunning, isTrue);
       });
     });
 
-    test('a live stop cancels a start waiting on an old stop', () {
+    test('the status check is skipped after a stop', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.startService(title: 'T', body: 'B');
+        async.elapse(const Duration(milliseconds: 500));
+        BackgroundServiceManager.stopService();
+        async.elapse(const Duration(seconds: 5));
+        expect(count('status'), 0);
+      });
+    });
+
+    test('the status check is skipped after another start', () {
+      fakeAsync((async) {
+        BackgroundServiceManager.startService(title: 'A', body: 'a');
+        async.elapse(const Duration(milliseconds: 1000));
+        BackgroundServiceManager.startService(title: 'B', body: 'b');
+        async.elapse(const Duration(milliseconds: 1000));
+        expect(count('status'), 0, reason: 'the first start check is skipped');
+        async.elapse(const Duration(seconds: 1));
+        expect(count('status'), 1, reason: 'only the second start checks');
+      });
+    });
+  });
+
+  group('BackgroundServiceManager on the iOS plugin path', () {
+    late _FakeService fake;
+    late List<MethodCall> channelCalls;
+
+    setUp(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      fake = _FakeService();
+      BackgroundServiceManager.debugInstallService(fake);
+      channelCalls = [];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        channelCalls.add(call);
+        return null;
+      });
+    });
+
+    tearDown(() {
+      messenger.setMockMethodCallHandler(channel, null);
+      BackgroundServiceManager.debugInstallService(null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('a start and a stop go to the plugin, never the session channel', () {
       fakeAsync((async) {
         BackgroundServiceManager.startService(title: 'A', body: 'a');
         async.flushMicrotasks();
         expect(fake.starts, 1);
+        expect(BackgroundServiceManager.isRunning, isTrue);
+
         BackgroundServiceManager.stopService();
-        fake.running = true; // The old service has not gone yet.
-
-        // The new mode's start waits; Close App lands meanwhile.
-        BackgroundServiceManager.startService(title: 'B', body: 'b');
-        async.elapse(const Duration(milliseconds: 250));
-        BackgroundServiceManager.stopLiveService('exit app');
-        fake.running = false;
-        async.elapse(const Duration(seconds: 5));
-
-        expect(fake.starts, 1, reason: 'no service after Close App');
+        async.flushMicrotasks();
+        expect(fake.invoked.last, 'stop');
         expect(BackgroundServiceManager.isRunning, isFalse);
+        expect(channelCalls, isEmpty);
       });
     });
 
-    test('a live stop whose check fails sends nothing and does not throw', () {
+    test('a stop that arrives during a start is still honoured', () {
       fakeAsync((async) {
-        fake.running = true;
-        fake.isRunningThrows = true;
-        var threw = false;
-        var done = false;
-        BackgroundServiceManager.stopLiveService('orphaned service')
-            .then((_) => done = true, onError: (Object _) => threw = true);
+        // The disconnect lands while the plugin is still starting the service.
+        fake.onStart = () => BackgroundServiceManager.stopService();
+        BackgroundServiceManager.startService(title: 'A', body: 'a');
         async.flushMicrotasks();
-        expect(threw, isFalse);
-        expect(done, isTrue);
-        expect(fake.invoked, isEmpty);
+        expect(fake.starts, 1);
+        expect(fake.invoked.last, 'stop');
+        expect(BackgroundServiceManager.isRunning, isFalse);
       });
     });
 
     test('a live stop leaves iOS alone', () {
       fakeAsync((async) {
-        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
         fake.running = true;
         BackgroundServiceManager.stopLiveService('exit app');
         async.flushMicrotasks();
         expect(fake.invoked, isEmpty);
+        expect(channelCalls, isEmpty);
       });
     });
   });
 
-  group('Android foreground service types', () {
-    test('the service is not started with dataSync', () {
+  group('Android manifest', () {
+    // Comments stripped: they name the removed permissions on purpose.
+    final manifest = File('android/app/src/main/AndroidManifest.xml')
+        .readAsStringSync()
+        .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
+
+    /// Every element with this tag, as its opening tag's source text.
+    List<String> elements(String tag) => RegExp('<$tag\\b[^>]*>')
+        .allMatches(manifest)
+        .map((m) => m.group(0)!)
+        .toList();
+
+    String attribute(String element, String name) =>
+        RegExp('$name="([^"]*)"').firstMatch(element)?.group(1) ?? '';
+
+    test('the session service is foreground, private and ends with the task',
+        () {
+      final service = elements('service').singleWhere(
+          (s) => attribute(s, 'android:name') == '.MeshMapperSessionService');
       expect(
-        BackgroundServiceManager.androidForegroundTypes,
-        isNot(contains(AndroidForegroundType.dataSync)),
-        reason: 'Android 15+ lets a dataSync service run only about 6 hours '
-            'in the background, and the plugin never stops it, so the '
-            'system crashes the app',
+        attribute(service, 'android:foregroundServiceType')
+            .split('|')
+            .toSet(),
+        {'location', 'connectedDevice'},
+        reason: 'Android throws when startForeground asks for a type the '
+            'manifest does not declare for the service',
       );
+      expect(attribute(service, 'android:stopWithTask'), 'true',
+          reason: 'swiping the app away must end the session');
+      expect(attribute(service, 'android:exported'), 'false');
     });
 
-    test('every type it starts with is declared in the manifest', () {
-      const serviceName =
-          'id.flutter.flutter_background_service.BackgroundService';
-      final manifest = File('android/app/src/main/AndroidManifest.xml')
-          .readAsStringSync()
-          .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
-      final service = RegExp(r'<service\b[^>]*>')
-          .allMatches(manifest)
-          .map((m) => m.group(0)!)
-          .singleWhere((s) => s.contains('android:name="$serviceName"'));
-      final declared = RegExp(r'android:foregroundServiceType="([^"]*)"')
-          .firstMatch(service)!
-          .group(1)!
-          .split('|')
-          .toSet();
-
-      for (final type in BackgroundServiceManager.androidForegroundTypes) {
-        expect(
-          declared,
-          contains(type.name),
-          reason: '${type.name}: Android throws IllegalArgumentException '
-              'when startForeground asks for a type the manifest does not '
-              'declare for the service',
-        );
+    test("the plugin's service and receivers are removed", () {
+      const removed = [
+        'id.flutter.flutter_background_service.BackgroundService',
+        'id.flutter.flutter_background_service.WatchdogReceiver',
+        'id.flutter.flutter_background_service.BootReceiver',
+      ];
+      final components = [...elements('service'), ...elements('receiver')];
+      for (final name in removed) {
+        final element = components
+            .where((e) => attribute(e, 'android:name') == name)
+            .toList();
+        expect(element, hasLength(1), reason: name);
+        expect(attribute(element.single, 'tools:node'), 'remove',
+            reason: '$name would merge back in from the plugin');
       }
+    });
+
+    test('neither dataSync nor the boot permission is granted', () {
+      final permissions = elements('uses-permission');
+      String? node(String permission) => permissions
+          .where((p) =>
+              attribute(p, 'android:name') == 'android.permission.$permission')
+          .map((p) => attribute(p, 'tools:node'))
+          .firstOrNull;
+
+      expect(node('FOREGROUND_SERVICE_DATA_SYNC'), isNull,
+          reason: 'no service starts with dataSync any more');
+      expect(node('RECEIVE_BOOT_COMPLETED'), 'remove',
+          reason: 'only the plugin adds it, for the boot start that is gone');
+      expect(manifest, isNot(contains('dataSync')));
     });
   });
 }
 
 class _FakeService implements FlutterBackgroundService {
   bool running = false;
-  bool stayDown = false;
-  bool isRunningThrows = false;
   int starts = 0;
+  void Function()? onStart;
   final List<String> invoked = [];
 
   @override
   Future<bool> startService() async {
     starts++;
-    running = !stayDown;
+    running = true;
+    onStart?.call();
     return true;
   }
 
   @override
-  Future<bool> isRunning() async {
-    if (isRunningThrows) throw StateError('channel');
-    return running;
-  }
+  Future<bool> isRunning() async => running;
 
   @override
   void invoke(String method, [Map<String, dynamic>? arg]) {

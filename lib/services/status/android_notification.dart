@@ -23,3 +23,16 @@ import '../../providers/app_state_provider.dart' show AutoMode;
   };
   return (title: 'MeshMapper - ${mode.displayName} Mode', body: body);
 }
+
+/// The notification while a radio is connected and no mode runs. The Android
+/// session service shows a notification for the whole connection, not only
+/// while a mode runs, so this is what it reads between modes.
+({String title, String body}) androidConnectedNotificationContent({
+  required String radioName,
+}) =>
+    (title: 'MeshMapper - Connected', body: 'Connected to $radioName');
+
+/// The notification while the zone grace period looks for a zone to move to.
+/// The radio stays connected through it, so the service keeps running.
+({String title, String body}) androidZoneGraceNotificationContent() =>
+    (title: 'MeshMapper - Outside zone', body: 'Searching for a nearby zone');
