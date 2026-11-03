@@ -19,15 +19,20 @@ class PermissionDisclosureService {
   /// location disclosure: the word "location", every feature that uses it,
   /// and "even when the app is closed or not in use". Play rejected 1.4.1
   /// for a disclosure without the background phrase.
+  ///
+  /// Background use is scoped to a running mode because that is when it
+  /// happens: the Android service starts with a mode, and nothing is
+  /// uploaded without one. With no mode, GPS only places you on the map and
+  /// feeds the region check, which the server answers without storing.
   static const String locationDisclosureLead =
-      'MeshMapper collects location data to tag your wardriving pings, map '
-      'mesh coverage and check which region you are in, even when the app is '
-      'closed or not in use, so wardriving keeps going with the screen off.';
+      'MeshMapper collects location data to tag your pings and map mesh '
+      'coverage while a wardriving mode is running, even when the app is '
+      'closed or not in use.';
 
   static const String backgroundDisclosureLead =
       'MeshMapper collects location data in the background to keep tagging '
-      'pings and mapping coverage during a wardriving session, even when the '
-      'app is closed or not in use.';
+      'pings and mapping coverage while a wardriving mode is running, even '
+      'when the app is closed or not in use.';
 
   /// Show the prominent disclosure. Google Play wants it right before every
   /// system location prompt, so callers show it each time they are about to
@@ -63,10 +68,10 @@ class PermissionDisclosureService {
               SizedBox(height: 8),
               _BulletPoint(
                   text:
-                      'Your pings are uploaded with their locations to meshmapper.net and shown on public coverage maps.'),
+                      'While a mode is running, your pings are uploaded with their locations to meshmapper.net and shown on public coverage maps.'),
               _BulletPoint(
                   text:
-                      'Your location is sent to meshmapper.net to check your region and load the map around you.'),
+                      'With no mode running, your location only shows you on the map and is sent to meshmapper.net to check which region you are in. The location itself is not saved.'),
               _BulletPoint(
                   text:
                       'If you turn on Broadcast My Coordinates, your pings also carry your location over the mesh radio.'),
