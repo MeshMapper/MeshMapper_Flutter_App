@@ -21,6 +21,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Network state for satellite/constrained-network detection -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 14+ requires one of a short list of permissions for a
+         connectedDevice foreground service. Without this one, a TCP-only user
+         who denied Nearby devices (Bluetooth) fails the check, the plugin
+         swallows the SecurityException, and Android kills the app about 10
+         seconds later (ForegroundServiceDidNotStartInTimeException). It is a
+         normal permission: no prompt. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <!-- Wake lock for auto-ping mode -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
