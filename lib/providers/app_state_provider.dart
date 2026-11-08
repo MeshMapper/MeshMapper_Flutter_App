@@ -344,6 +344,40 @@ class _ReconnectConnectAttempt {
   int? abandonedAtGeneration;
 }
 
+/// Whether an /auth answer means this phone just took a TX slot the cached
+/// /status count does not know about yet. Not when the server sent its own
+/// count, and not for a reused session (it carries `resume_counter`): that
+/// slot was already ours, and counting it again on every reconnect walked the
+/// estimate down.
+@visibleForTesting
+bool authTookNewSlot(Map<String, dynamic> authResult) =>
+    authResult['tx_allowed'] == true &&
+    !authResult.containsKey('slots_available') &&
+    !authResult.containsKey('resume_counter');
+
+/// The least time between two claims refreshes made by auto-reconnects
+/// inside one session. The server allows 60 `mine` calls an hour.
+@visibleForTesting
+const Duration claimsReconcileReconnectSpacing = Duration(minutes: 10);
+
+/// Whether a connect should refresh the companion's repeater claims (the
+/// `mine` action). A manual connect always does. An auto-reconnect does only
+/// when the session changed or [claimsReconcileReconnectSpacing] has passed
+/// since the last connect-time refresh: a reconnect loop otherwise spent the
+/// server's hourly cap in minutes.
+@visibleForTesting
+bool shouldReconcileClaimsOnConnect({
+  required bool autoReconnect,
+  required String? sessionId,
+  required String? lastSessionId,
+  required DateTime? lastAt,
+  required DateTime now,
+}) {
+  if (!autoReconnect || lastAt == null) return true;
+  if (sessionId != lastSessionId) return true;
+  return now.difference(lastAt) >= claimsReconcileReconnectSpacing;
+}
+
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Maximum sizes for in-memory lists to prevent unbounded growth during long sessions
@@ -924,6 +958,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The auto-reconnect attempt whose connect call is running, if any.
   _ReconnectConnectAttempt? _reconnectConnectInFlight;
+
+  /// When, and in which session, a connect last refreshed the repeater
+  /// claims (see [shouldReconcileClaimsOnConnect]).
+  DateTime? _lastConnectClaimsReconcileAt;
+  String? _lastConnectClaimsReconcileSession;
 
   /// Set once the budget ran out and the in-flight connect got its grace: an
   /// attempt that then fails abandons instead of retrying.
@@ -6696,11 +6735,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // Repeater administrators: refresh the cached claims for this companion.
-    // Strictly non-fatal, and skipped on an old server.
-    try {
-      unawaited(_reconcileRepeaterClaims(reason: 'connect'));
-    } catch (e) {
-      debugWarn('[RADMIN] Claims reconcile failed to start: $e');
+    // Strictly non-fatal, and skipped on an old server. Auto-reconnects in
+    // one session refresh at most every few minutes.
+    final now = DateTime.now();
+    final session = _apiService.sessionId;
+    if (shouldReconcileClaimsOnConnect(
+      autoReconnect: _isAutoReconnecting,
+      sessionId: session,
+      lastSessionId: _lastConnectClaimsReconcileSession,
+      lastAt: _lastConnectClaimsReconcileAt,
+      now: now,
+    )) {
+      _lastConnectClaimsReconcileAt = now;
+      _lastConnectClaimsReconcileSession = session;
+      try {
+        unawaited(_reconcileRepeaterClaims(reason: 'connect'));
+      } catch (e) {
+        debugWarn('[RADMIN] Claims reconcile failed to start: $e');
+      }
+    } else {
+      debugLog('[RADMIN] Claims reconcile skipped on reconnect: refreshed '
+          '${now.difference(_lastConnectClaimsReconcileAt!).inSeconds}s ago');
     }
   }
 
@@ -11992,8 +12047,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // If auth says TX allowed and we have slot data but server didn't provide updated count,
-    // decrement by 1 (we just took a slot)
-    if (authTxAllowed && !authResult.containsKey('slots_available')) {
+    // decrement by 1 (we just took a slot). A reused session took none.
+    if (authTookNewSlot(authResult)) {
       final available = _currentZone!['slots_available'] as int?;
       if (available != null && available > 0) {
         _currentZone!['slots_available'] = available - 1;
