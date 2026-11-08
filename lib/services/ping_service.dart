@@ -141,6 +141,12 @@ class PingService {
   /// only re-read the mode then went out alongside the new session's own.
   int _sendEpoch = 0;
 
+  /// Set by [dispose]. The provider disposes this service on a radio drop
+  /// without a force disable first, so every scheduler and timer callback
+  /// checks it: a send still parked on its fresh fix or BLE write must not
+  /// re-arm a lane on a service nobody owns any more.
+  bool _disposed = false;
+
   // Auto-ping mode
   bool _autoPingEnabled = false;
   bool _passiveModeEnabled = false;
@@ -1427,7 +1433,7 @@ class PingService {
   /// Schedule next auto ping after interval
   /// Reference: scheduleNextAutoPing() in wardrive.js
   void _scheduleNextAutoPing({int? delayMs}) {
-    if (!_autoPingEnabled || _passiveModeEnabled) {
+    if (_disposed || !_autoPingEnabled || _passiveModeEnabled) {
       debugLog(
           '[ACTIVE MODE] Not scheduling next auto ping - auto mode not running or Passive Mode');
       return;
@@ -1456,6 +1462,7 @@ class PingService {
 
     // Schedule the next ping
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
+      if (_disposed) return;
       debugLog('[ACTIVE MODE] Auto ping timer fired');
 
       // Guard: connection may have dropped since timer was scheduled
@@ -2227,8 +2234,12 @@ class PingService {
         // discovery pings too, not just TX (#501)
         _gpsService.markActivityPosition(position);
       } catch (e) {
-        _pingInProgress = false;
         debugError('[DISC] Failed to send discovery request: $e');
+        // Torn down while the write was in flight (a force disable or a
+        // dispose on a radio drop): the lane is gone, so no retry, and the
+        // flag is left alone as on the fresh-fix bow-out (see _sendEpoch).
+        if (_disposed || epoch != _sendEpoch) return;
+        _pingInProgress = false;
         if (_pendingDisable) {
           await _executePendingDisable('discovery send failed');
           return;
@@ -2419,6 +2430,7 @@ class PingService {
   /// Schedule next discovery request
   /// Uses fixed 30-second interval (repeaters only respond 4 times per 2 minutes)
   void _scheduleNextDiscovery() {
+    if (_disposed) return;
     // In hybrid mode, route to hybrid scheduler instead
     if (_hybridModeEnabled) {
       _scheduleNextHybridPing();
@@ -2433,7 +2445,7 @@ class PingService {
     _discoveryTimer?.cancel();
     _discoveryTimer = Timer(_discoveryInterval, () {
       debugLog('[DISC] Discovery timer fired');
-      if (_autoPingEnabled && _passiveModeEnabled) {
+      if (!_disposed && _autoPingEnabled && _passiveModeEnabled) {
         _sendDiscoveryRequest();
       }
     });
@@ -2449,7 +2461,7 @@ class PingService {
   /// Schedule next hybrid ping (alternates discovery ↔ TX)
   /// Uses user-configured interval for both ping types
   void _scheduleNextHybridPing({int? delayMs}) {
-    if (!_autoPingEnabled || !_hybridModeEnabled) return;
+    if (_disposed || !_autoPingEnabled || !_hybridModeEnabled) return;
 
     _autoTimer?.cancel();
     _autoTimer = null;
@@ -2484,7 +2496,7 @@ class PingService {
         milliseconds: isNextDisc ? waitMs : waitMs + discoveryLegWaitMs));
 
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
-      if (!_autoPingEnabled || !_hybridModeEnabled) return;
+      if (_disposed || !_autoPingEnabled || !_hybridModeEnabled) return;
       if (_connection.currentStep != ConnectionStep.connected) {
         debugLog('[HYBRID] Not connected, ignoring timer');
         return;
@@ -2818,7 +2830,7 @@ class PingService {
 
   /// Schedule next targeted ping after interval
   void _scheduleNextTargetedPing() {
-    if (!_autoPingEnabled || !_targetedModeEnabled) {
+    if (_disposed || !_autoPingEnabled || !_targetedModeEnabled) {
       debugLog('[TRACE] Not in targeted mode, not scheduling next trace');
       return;
     }
@@ -2826,6 +2838,7 @@ class PingService {
     _targetedTimer?.cancel();
     _targetedTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[TRACE] Targeted ping timer fired');
+      if (_disposed) return;
       if (_connection.currentStep != ConnectionStep.connected) {
         debugLog('[TRACE] Not connected, ignoring timer');
         return;
@@ -2873,6 +2886,17 @@ class PingService {
 
   /// Dispose of resources
   void dispose() {
+    // A send suspended on its fresh fix or BLE write resumes after this. The
+    // epoch bump makes it bow out, and the cleared modes and [_disposed] stop
+    // any skip or failure path from re-arming a timer (the provider disposes
+    // on a radio drop without a force disable first).
+    _disposed = true;
+    _sendEpoch++;
+    _autoPingEnabled = false;
+    _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
+    _pendingDisable = false;
     if (!_txWindowFinalizing) {
       _cancelPendingTxWindow();
       _completeTxWindowGate();

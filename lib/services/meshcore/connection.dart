@@ -3636,6 +3636,9 @@ class MeshCoreConnection {
   /// Dispose of resources
   void dispose() {
     _disposed = true;
+    // Not emitted (the stream closes below), but anything still holding this
+    // object, such as a PingService timer guard, must not read it as live.
+    _currentStep = ConnectionStep.disconnected;
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
     _abortPendingSign();
