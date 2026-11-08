@@ -140,13 +140,20 @@ class DebugSubmitService {
         debugLog('$tag File data uploaded');
         return _UploadStepResult.uploaded;
       }
-      if (outcome == UploadAttemptOutcome.sessionClosed && sawTransportError) {
-        // The earlier attempt's answer was lost, but the server has since
-        // closed the session, which it does once a file lands. Let
-        // upload-complete check the hash instead of failing here.
-        debugLog('$tag Session closed after an earlier dropped attempt; '
-            'asking the server to confirm the file');
-        return _UploadStepResult.landedUnconfirmed;
+      if (outcome == UploadAttemptOutcome.sessionClosed) {
+        if (sawTransportError) {
+          // The earlier attempt's answer was lost, but the server has since
+          // closed the session, which it does once a file lands. Let
+          // upload-complete check the hash instead of failing here.
+          debugLog('$tag Session closed after an earlier dropped attempt; '
+              'asking the server to confirm the file');
+          return _UploadStepResult.landedUnconfirmed;
+        }
+        // No attempt of ours can have landed, and a closed session takes no
+        // more uploads, so a retry cannot succeed.
+        debugWarn('$tag Upload session closed with no file from this app; '
+            'not retrying');
+        return _UploadStepResult.failed;
       }
       if (outcome == UploadAttemptOutcome.transportError) {
         sawTransportError = true;

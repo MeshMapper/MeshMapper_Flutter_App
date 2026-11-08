@@ -106,7 +106,9 @@ void main() {
     expect(h.calls, ['request', 'upload', 'upload', 'complete']);
   });
 
-  test('session closed with no earlier dropped attempt is still a failure',
+  // A closed session takes no more uploads, so retrying it only waits out
+  // the backoff before failing anyway.
+  test('session closed with no earlier dropped attempt fails at once',
       () async {
     final h = build(
       uploads: [sessionClosed, sessionClosed, sessionClosed],
@@ -114,7 +116,22 @@ void main() {
     );
 
     expect(await upload(h.service), isFalse);
-    expect(h.calls, ['request', 'upload', 'upload', 'upload']);
+    expect(h.calls, ['request', 'upload']);
+  });
+
+  test('session closed after a refusal fails without another attempt',
+      () async {
+    final h = build(
+      uploads: [
+        http.Response(json.encode({'message': 'Server error'}), 500),
+        sessionClosed,
+        sessionClosed,
+      ],
+      complete: {'success': true},
+    );
+
+    expect(await upload(h.service), isFalse);
+    expect(h.calls, ['request', 'upload', 'upload']);
   });
 
   test('a plain successful upload is unchanged', () async {
