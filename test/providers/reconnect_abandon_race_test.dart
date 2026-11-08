@@ -83,4 +83,58 @@ void main() {
           isFalse);
     });
   });
+
+  // The connect workflow's auth step runs the provider's callback, which
+  // awaits a GPS fix and sometimes a radio rename before it POSTs. An
+  // abandon in that gap used to let the stale attempt POST /auth
+  // reason=connect anyway, alongside the abandon's own release.
+  group('authCallbackSuperseded', () {
+    test('the attempt that made the callback still owns the connect', () {
+      expect(
+          authCallbackSuperseded(
+              createdAtGeneration: 4,
+              currentGeneration: 4,
+              sameConnection: true),
+          isFalse);
+    });
+
+    test('an abandon or a newer connect moved the generation on', () {
+      expect(
+          authCallbackSuperseded(
+              createdAtGeneration: 4,
+              currentGeneration: 5,
+              sameConnection: true),
+          isTrue);
+    });
+
+    test('the connection it was made for is gone or replaced', () {
+      // The abandon disposes and drops the stale connection at once.
+      expect(
+          authCallbackSuperseded(
+              createdAtGeneration: 4,
+              currentGeneration: 4,
+              sameConnection: false),
+          isTrue);
+    });
+  });
+
+  // The disconnect cleanup awaits the queue flush and the session release
+  // before it disposes the connection. Cancel, then a quick Connect, put a
+  // new connection in place during those awaits, and the cleanup's end used
+  // to dispose that one.
+  group('cleanupOwnsCurrentConnection', () {
+    test('nothing connected since the cleanup started', () {
+      expect(
+          cleanupOwnsCurrentConnection(
+              cleanupGeneration: 7, currentGeneration: 7),
+          isTrue);
+    });
+
+    test('a connect started during the cleanup owns what is current', () {
+      expect(
+          cleanupOwnsCurrentConnection(
+              cleanupGeneration: 7, currentGeneration: 8),
+          isFalse);
+    });
+  });
 }

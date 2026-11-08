@@ -337,6 +337,30 @@ bool reconnectBudgetGivesConnectGrace(
         {required bool connectInFlight, required bool graceUsed}) =>
     connectInFlight && !graceUsed;
 
+/// Whether a connect workflow's auth callback belongs to an attempt that is
+/// over. [createdAtGeneration] is the connect generation when the callback
+/// was made; [sameConnection] is whether the provider still holds the
+/// connection it was made for. An abandoned reconnect bumps the generation
+/// and drops its connection, and a stale attempt must not POST /auth then.
+@visibleForTesting
+bool authCallbackSuperseded({
+  required int createdAtGeneration,
+  required int currentGeneration,
+  required bool sameConnection,
+}) =>
+    createdAtGeneration != currentGeneration || !sameConnection;
+
+/// Whether a disconnect cleanup, at its end, still owns the provider's
+/// current connection objects. [cleanupGeneration] is the connect generation
+/// when the cleanup started; a connect begun during the cleanup's awaits
+/// bumps it and owns whatever is current by then.
+@visibleForTesting
+bool cleanupOwnsCurrentConnection({
+  required int cleanupGeneration,
+  required int currentGeneration,
+}) =>
+    cleanupGeneration == currentGeneration;
+
 /// An auto-reconnect attempt's connect call while it runs. An abandon that
 /// catches it stamps the connect generation it moved to, which is how the
 /// attempt learns, when it ends, that it no longer owns anything.
@@ -4865,7 +4889,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Creates the two-stage auth callback for MeshCoreConnection Step 6.
   /// Shared by all transport types (BLE, TCP, USB Serial).
   Future<Map<String, dynamic>?> Function() _createAuthCallback() {
+    // Made right after the attempt installs its connection, so these name
+    // the attempt this callback serves.
+    final generation = _connectGeneration;
+    final connection = _meshCoreConnection;
+    bool superseded() => authCallbackSuperseded(
+          createdAtGeneration: generation,
+          currentGeneration: _connectGeneration,
+          sameConnection: identical(_meshCoreConnection, connection),
+        );
+    Map<String, dynamic> supersededResult(String where) {
+      debugLog('[AUTH] Connect attempt superseded $where, not calling the '
+          'API');
+      return {
+        'success': false,
+        'reason': 'superseded',
+        'message': 'Connection attempt superseded',
+      };
+    }
+
     return () async {
+      if (superseded()) return supersededResult('before auth');
       final publicKey = _meshCoreConnection!.devicePublicKey;
       if (publicKey == null) {
         debugError('[APP] Cannot request auth: no public key');
@@ -4955,6 +4999,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // there is: the current fix, a good one from the last 60 s, or a short
       // bounded wait for one. With none, the current fix goes as before.
       final authFix = await _pickAuthFix();
+      if (superseded()) return supersededResult('while preparing auth');
 
       // Stage 1: Try existing public_key authentication
       debugLog(
@@ -4975,6 +5020,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       final result = await _apiService.requestAuth(
         reason: 'connect',
+        // An answer that lands after an abandon must not install a session
+        // the disconnected app would then think it holds.
+        shouldStoreSession: () => !superseded(),
         publicKey: publicKey,
         who: deviceName,
         appVersion: _appVersion,
@@ -4988,6 +5036,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         lon: authFix?.longitude,
         accuracyMeters: authFix?.accuracy,
       );
+      if (superseded()) return supersededResult('during auth');
 
       if (result != null && result['maintenance'] == true) {
         _maintenanceMode = true;
@@ -5056,8 +5105,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         };
       }
 
+      if (superseded()) return supersededResult('before registration');
       final registerResult = await _apiService.requestAuth(
         reason: 'register',
+        shouldStoreSession: () => !superseded(),
         contactUri: contactUri,
         who: deviceName,
         appVersion: _appVersion,
@@ -7282,6 +7333,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scopeLifecycle.onEvent(ScopeStopEvent.disconnectCleanup);
     _isConnecting = false;
     _connectionStep = ConnectionStep.disconnected;
+    // Connect is enabled again from here, so a connect the user starts during
+    // the awaits below can install its own connection before this cleanup
+    // ends. The end disposes only what is current now (see there).
+    final cleanupGeneration = _connectGeneration;
+    final cleanupConnection = _meshCoreConnection;
+    final cleanupPingService = _pingService;
+    final cleanupTransport = _activeTransport;
+    final cleanupTransportSubscription = _transportConnectionSubscription;
 
     // Cancel any active zone grace period
     _cancelZoneGraceTimers();
@@ -7357,18 +7416,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     await closeRepeaterAdminSession();
 
-    _meshCoreConnection?.dispose();
-    _meshCoreConnection = null;
-    _pingService?.dispose();
-    _pingService = null;
+    if (cleanupOwnsCurrentConnection(
+      cleanupGeneration: cleanupGeneration,
+      currentGeneration: _connectGeneration,
+    )) {
+      // Nothing connected since the cleanup started, so what is current is
+      // this cleanup's to dispose, as before.
+      _meshCoreConnection?.dispose();
+      _meshCoreConnection = null;
+      _pingService?.dispose();
+      _pingService = null;
 
-    // Clean up non-BLE transport
-    _transportConnectionSubscription?.cancel();
-    _transportConnectionSubscription = null;
-    if (_activeTransport != null && _activeTransport != _bluetoothService) {
-      _activeTransport!.dispose();
+      // Clean up non-BLE transport
+      _transportConnectionSubscription?.cancel();
+      _transportConnectionSubscription = null;
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
+    } else {
+      // A connect started during this cleanup owns the current objects.
+      // Dispose only the ones this cleanup started with, where the new
+      // connect has not taken them over (the shared BLE service, say).
+      debugLog('[CONN] A newer connect started during disconnect cleanup, '
+          'leaving its connection alone');
+      if (!identical(_meshCoreConnection, cleanupConnection)) {
+        cleanupConnection?.dispose();
+      }
+      if (!identical(_pingService, cleanupPingService)) {
+        cleanupPingService?.dispose();
+      }
+      if (!identical(
+          _transportConnectionSubscription, cleanupTransportSubscription)) {
+        cleanupTransportSubscription?.cancel();
+      }
+      if (cleanupTransport != null &&
+          cleanupTransport != _bluetoothService &&
+          !identical(_activeTransport, cleanupTransport)) {
+        cleanupTransport.dispose();
+      }
     }
-    _activeTransport = null;
 
     // A reconnect keeps the foreground service running (see
     // _startAutoReconnect), and nothing else stops it once the reconnect is
@@ -7894,6 +7981,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _connectGeneration++;
       inFlight.abandonedAtGeneration = _connectGeneration;
       _bleTransportConnecting = false;
+      // The reconnect's prep already disposed the connection from before the
+      // drop, so one here is the stale attempt's own. Dispose it now, not at
+      // the end of the cleanup below: that is several awaits away (queue
+      // flush, session release), and until then a failing workflow would
+      // still disconnect the shared transport, dropping a connect the user
+      // starts meanwhile, and its frames would go out on that new link.
+      final stale = _meshCoreConnection;
+      if (stale != null) {
+        debugLog('[CONN] Disposing the abandoned reconnect\'s connection');
+        _meshCoreConnection = null;
+        stale.dispose();
+      }
     }
 
     // Alert if auto-ping was running before disconnect. Dated to the BLE drop,

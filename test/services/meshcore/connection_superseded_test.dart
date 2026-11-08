@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 
+import 'catalog_protocol_transport.dart';
 import 'fake_companion_transport.dart';
 
 /// A connect workflow whose connection was disposed under it (an abandoned
@@ -13,6 +15,13 @@ import 'fake_companion_transport.dart';
 /// link; its retried frames also went out on that new link.
 
 class _CountingTransport extends FakeCompanionTransport {
+  int disconnects = 0;
+
+  @override
+  Future<void> disconnect() async => disconnects++;
+}
+
+class _CountingProtocolTransport extends CatalogProtocolTransport {
   int disconnects = 0;
 
   @override
@@ -58,6 +67,48 @@ void main() {
       expect(error, isNotNull);
       expect(transport.disconnects, 1);
       conn.dispose();
+    });
+  });
+
+  // An abandoned reconnect disposes its connection while the workflow sits
+  // in the auth step (the provider's callback awaits a GPS fix first). The
+  // callback then answers superseded, and the failure that follows must not
+  // close the link a connect the user started meanwhile is using.
+  group('disposed while the auth step is pending', () {
+    Future<({Object? error, int disconnects})> run(
+        {required bool disposeFirst}) async {
+      final transport = _CountingProtocolTransport();
+      final conn = MeshCoreConnection(transport: transport);
+      final authStarted = Completer<void>();
+      final authAnswer = Completer<Map<String, dynamic>?>();
+      conn.onRequestAuth = () {
+        authStarted.complete();
+        return authAnswer.future;
+      };
+      Object? error;
+      final done = conn.connect((_) async => null).then<void>((_) {},
+          onError: (Object e) => error = e);
+      await authStarted.future;
+      if (disposeFirst) conn.dispose();
+      authAnswer.complete({
+        'success': false,
+        'reason': disposeFirst ? 'superseded' : 'outside_zone',
+      });
+      await done;
+      if (!disposeFirst) conn.dispose();
+      return (error: error, disconnects: transport.disconnects);
+    }
+
+    test('the superseded attempt leaves the transport alone', () async {
+      final result = await run(disposeFirst: true);
+      expect(result.error.toString(), contains('AUTH_FAILED:superseded'));
+      expect(result.disconnects, 0);
+    });
+
+    test('a live attempt refused by auth still disconnects', () async {
+      final result = await run(disposeFirst: false);
+      expect(result.error.toString(), contains('AUTH_FAILED:outside_zone'));
+      expect(result.disconnects, 1);
     });
   });
 
