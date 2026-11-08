@@ -4683,6 +4683,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           _discoveredDevices.add(enrichedDevice);
           selectedDevice = enrichedDevice;
+          // Once per new device, so "my companion is not listed" reports
+          // show what the scan actually saw.
+          debugLog('[SCAN] Found "${enrichedDevice.name}" '
+              'id=${enrichedDevice.id} rssi=${enrichedDevice.rssi}');
           notifyListeners();
         }
       },
@@ -4697,6 +4701,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await completer.future;
     _activeScanSubscription = null;
 
+    if (_isScanning) _logScanSummary('ended');
     _isScanning = false;
     notifyListeners();
 
@@ -4714,8 +4719,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _activeScanSubscription?.cancel();
     _activeScanSubscription = null;
     await _bluetoothService.stopScan();
+    if (_isScanning) _logScanSummary('stopped');
     _isScanning = false;
     notifyListeners();
+  }
+
+  void _logScanSummary(String how) {
+    final n = _discoveredDevices.length;
+    debugLog('[SCAN] Scan $how: $n device${n == 1 ? '' : 's'} found');
   }
 
   // ============================================
