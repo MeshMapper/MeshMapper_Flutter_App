@@ -863,6 +863,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   bool _styleLoadInProgress = false;
   final CoalescedAsyncRunner _styleLoadRunner = CoalescedAsyncRunner();
 
+  // Serializes region border rebuilds. The style restore and the build()
+  // watcher can both ask at once; overlapping remove-then-add runs raced
+  // into sourceAlreadyExists and could leave the border line missing.
+  final CoalescedAsyncRunner _regionBorderRunner = CoalescedAsyncRunner();
+
   // Monotonic counter for the Android deferred style re-sync. Bumped when a
   // style reload BEGINS (a new styleString handed to MapLibreMap), at the
   // start of every _restoreStyle, and again when a re-sync is armed at the end
@@ -1222,6 +1227,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // keep the local only for listener cleanup below.
     _mapController = null;
     _styleLoadRunner.cancel();
+    _regionBorderRunner.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
@@ -6341,8 +6347,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Always-on: renders whenever polygons are present, independent of BLE
   /// or auth state. Idempotent — safe to call repeatedly (removes existing
   /// source/layers first).
-  Future<void> _refreshRegionBorders(AppStateProvider appState) async {
-    if (_mapController == null || !_styleLoaded) return;
+  ///
+  /// One rebuild runs at a time. Calls that arrive while one is running
+  /// coalesce into a single follow-up rebuild, which reads the borders and
+  /// layer state as they are by then; every caller's future completes after
+  /// that follow-up.
+  Future<void> _refreshRegionBorders(AppStateProvider appState) =>
+      _regionBorderRunner.run(() => _rebuildRegionBorders(appState));
+
+  Future<void> _rebuildRegionBorders(AppStateProvider appState) async {
+    if (!mounted || _mapController == null || !_styleLoaded) return;
 
     // Remove existing layers (label, line) and source. Order matters: layers
     // reference the source, so they must go first. Each try/catch tolerates
