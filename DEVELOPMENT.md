@@ -1193,7 +1193,7 @@ Two-service system for capturing debug logs and submitting bug reports.
 **DebugSubmitService** — 4-step bug report workflow:
 1. **Create Ticket** (0-20%): POST to `/debug/submitdebug.php/create-ticket` → returns `issue_number`, `issue_url`
 2. **Request Upload** (per file, 20-90%): POST `/request-upload` → returns `upload_url`, `session_id`. A dropped connection or timeout is retried twice (1 s, 2 s backoff); a server refusal is not.
-3. **Upload File**: POST multipart to `upload_url` — splits large files at newline boundaries, uploads chunks sequentially with retry (3 attempts, exponential backoff). An HTTP 400 `Session Closed` after an earlier attempt lost its answer means the file most likely landed, so the upload goes on to step 4 and lets the server's hash check decide; if upload-complete then does not confirm, the upload is reported as failed.
+3. **Upload File**: POST multipart to `upload_url`. Splits large files at newline boundaries, uploads chunks sequentially with retry (3 attempts, exponential backoff). An HTTP 400 `Session Closed` after an earlier attempt lost its answer means the file most likely landed, so the upload goes on to step 4 and lets the server's hash check decide; if upload-complete then does not confirm, the upload is reported as failed.
 4. **Complete Upload** (90-100%): POST `/upload-complete` with issue reference or user notes
 
 - **Accessible via**: Settings → About & Support
