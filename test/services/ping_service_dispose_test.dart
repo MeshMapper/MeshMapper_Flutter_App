@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:mesh_mapper/models/connection_state.dart';
 import 'package:mesh_mapper/models/device_model.dart';
+import 'package:mesh_mapper/models/log_entry.dart';
 import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/countdown_timer_service.dart';
 import 'package:mesh_mapper/services/fix_altitude.dart';
@@ -267,6 +268,30 @@ void main() {
 
     expect(scheduledAfterDispose, 0);
     expect(conn.discoveryAttempts, 1, reason: 'no retry after dispose');
+    discoveryWindow.stop();
+  });
+
+  testWidgets('a failed discovery write withdraws its log entry',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final conn = _FakeConnection()..failDiscovery = true;
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping = _build(gps, conn, discoveryWindow);
+    final published = <DiscLogEntry>[];
+    final withdrawn = <DiscLogEntry>[];
+    ping.onDiscPing = published.add;
+    ping.onDiscPingAborted = withdrawn.add;
+
+    await ping.enableAutoPing(passiveMode: true);
+    await tester.pump();
+
+    expect(conn.discoveryAttempts, 1);
+    expect(published, hasLength(1));
+    expect(withdrawn, hasLength(1));
+    expect(identical(withdrawn.single, published.single), isTrue,
+        reason: 'the entry published before the write is the one withdrawn');
+
+    await ping.forceDisableAutoPing();
     discoveryWindow.stop();
   });
 }

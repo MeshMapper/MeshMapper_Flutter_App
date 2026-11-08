@@ -277,6 +277,11 @@ class PingService {
   /// Fires immediately when disc ping is created (like onTxPing)
   void Function(DiscLogEntry)? onDiscPing;
 
+  /// The entry [onDiscPing] published was never sent: the discovery write
+  /// failed. The listener withdraws it, so a request that never went on the
+  /// air is not drawn as a failed discovery. Nothing was queued for upload.
+  void Function(DiscLogEntry)? onDiscPingAborted;
+
   /// Called in real-time when each node is discovered during tracking window
   /// Parameters: (DiscLogEntry discPing, DiscoveredNodeEntry nodeEntry, bool isNew)
   void Function(DiscLogEntry, DiscoveredNodeEntry, bool isNew)?
@@ -2235,6 +2240,8 @@ class PingService {
         _gpsService.markActivityPosition(position);
       } catch (e) {
         debugError('[DISC] Failed to send discovery request: $e');
+        if (identical(_lastDiscPing, discPing)) _lastDiscPing = null;
+        onDiscPingAborted?.call(discPing);
         // Torn down while the write was in flight (a force disable or a
         // dispose on a radio drop): the lane is gone, so no retry, and the
         // flag is left alone as on the fresh-fix bow-out (see _sendEpoch).

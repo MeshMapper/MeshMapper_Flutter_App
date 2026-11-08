@@ -6298,6 +6298,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _addDiscLogEntry(entry);
     };
 
+    _pingService!.onDiscPingAborted = _removeDiscLogEntry;
+
     _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
       _recentCoverage.markCovered(
           discPing.latitude, discPing.longitude, CoverageColor.cyan);
@@ -9594,6 +9596,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _errorLogEntries.clear();
     _errorsSeen = _errorsLogged;
     _clearOverlayState();
+    _notifyMapNow();
+  }
+
+  /// Withdraw a discovery log entry whose request never went on the air
+  /// (the write failed after the entry was published).
+  void _removeDiscLogEntry(DiscLogEntry entry) {
+    final before = _discLogEntries.length;
+    _discLogEntries.removeWhere((e) => identical(e, entry));
+    if (_discLogEntries.length == before) return;
+    _siriObservationRevision++;
+    debugLog('[APP] Discovery log entry withdrawn: request was not sent');
     _notifyMapNow();
   }
 
