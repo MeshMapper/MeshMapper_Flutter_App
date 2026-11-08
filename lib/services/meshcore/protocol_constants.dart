@@ -120,9 +120,12 @@ class ResponseCodes {
   static const int deviceInfo = 13;
   static const int privateKey = 14;
   static const int disabled = 15;
+  static const int contactMsgRecvV3 = 16;
+  static const int channelMsgRecvV3 = 17;
   static const int channelInfo = 18;
   static const int signStart = 19;
   static const int signature = 20;
+  static const int advertPath = 22; // 0x16
   static const int stats = 24; // 0x18
 }
 
@@ -145,6 +148,8 @@ class PushCodes {
   static const int binaryResponse = 0x8C;
   static const int controlData =
       0x8E; // PUSH_CODE_CONTROL_DATA (discovery response)
+  static const int contactDeleted = 0x8F;
+  static const int contactsFull = 0x90;
 }
 
 /// Text message types

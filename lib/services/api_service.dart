@@ -1946,7 +1946,11 @@ class ApiService {
   /// 304 retains this verdict; it does not mean the render was unchanged.
   /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
   /// is empty; package:http has already gunzipped the response).
-  Future<({bool? changed, Uint8List? body})> freshenVectorTile({
+  /// `noVerdictReason`: why `changed` is null (`header absent`, `HTTP <code>`
+  /// or `request failed`); null whenever a verdict came back. An absent
+  /// header is the normal answer for an on-demand render, not a failure.
+  Future<({bool? changed, Uint8List? body, String? noVerdictReason})>
+      freshenVectorTile({
     required String zone,
     required int z,
     required int x,
@@ -1980,17 +1984,22 @@ class ApiService {
       if (response.statusCode != 200 &&
           response.statusCode != 204 &&
           !(verdictOnly && response.statusCode == 304)) {
-        return (changed: null, body: null);
+        return (
+          changed: null,
+          body: null,
+          noVerdictReason: 'HTTP ${response.statusCode}',
+        );
       }
       final body = response.statusCode == 200 ? response.bodyBytes : null;
       return (
         changed: changed == null ? null : changed == '1',
         body: body,
+        noVerdictReason: changed == null ? 'header absent' : null,
       );
     } catch (e) {
       debugWarn(
           '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
-      return (changed: null, body: null);
+      return (changed: null, body: null, noVerdictReason: 'request failed');
     }
   }
 

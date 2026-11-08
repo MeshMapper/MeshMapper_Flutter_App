@@ -2085,7 +2085,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           anyVerdict = true;
           debugLog('[COVERAGE] No new tile ${e.key} (unchanged)');
         } else {
-          debugLog('[COVERAGE] Tile ${e.key} fresh check failed');
+          final reason = result.noVerdictReason ?? 'unknown';
+          if (reason == 'header absent') {
+            debugLog('[COVERAGE] Tile ${e.key} no verdict (header absent)');
+          } else {
+            debugLog('[COVERAGE] Tile ${e.key} fresh check failed ($reason)');
+          }
         }
         if (e.value[0] == 14 && result.body != null) {
           z14Bodies.add(result.body!);
