@@ -7721,13 +7721,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Cancel auto-reconnect (called from UI cancel button)
   void cancelAutoReconnect() {
     debugLog('[CONN] Auto-reconnect cancelled by user');
-    _abandonAutoReconnect();
+    // The user ended it, so the "stopped unexpectedly" alert would be wrong.
+    _abandonAutoReconnect(alert: false);
   }
 
   /// Abandon auto-reconnect and do full cleanup. [releaseExtras] rides on the
   /// session release; [flushQueue] false drops the preserved queue instead of
-  /// uploading it first.
+  /// uploading it first. [alert] false skips the disconnect alert (a user
+  /// cancel).
   void _abandonAutoReconnect({
+    bool alert = true,
     Map<String, dynamic>? releaseExtras,
     bool flushQueue = true,
   }) {
@@ -7742,7 +7745,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // not to now: this runs off the 30 second timeout, which does not tick
     // while the OS has the process frozen.
     final droppedAt = _reconnectStartedAt ?? DateTime.now();
-    if (_autoPingWasEnabled) {
+    if (alert && _autoPingWasEnabled) {
       _playDisconnectAlert(droppedAt);
     }
 
