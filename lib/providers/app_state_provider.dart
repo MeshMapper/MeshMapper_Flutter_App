@@ -7433,8 +7433,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Clear any remaining items and stop batch timer
     await _apiQueueService.clearOnDisconnect();
 
-    // Release API session (best effort - don't block on failure)
-    if (_devicePublicKey != null && _apiService.hasSession) {
+    // Release API session (best effort - don't block on failure).
+    // A connect the user started during the awaits above may already hold
+    // the session (the server hands the same key the same id), so only
+    // release it when nothing has connected since this cleanup began. An
+    // unreleased session expires on the server.
+    final releaseOwned = cleanupOwnsCurrentConnection(
+      cleanupGeneration: cleanupGeneration,
+      currentGeneration: _connectGeneration,
+    );
+    if (!releaseOwned && _apiService.hasSession) {
+      debugLog('[CONN] Not releasing the API session: a newer connect owns it');
+    }
+    if (releaseOwned && _devicePublicKey != null && _apiService.hasSession) {
       debugLog('[CONN] Releasing API session due to disconnect');
       try {
         await _apiService.requestAuth(
