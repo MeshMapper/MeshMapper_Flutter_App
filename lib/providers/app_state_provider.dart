@@ -5595,7 +5595,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
-    _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Also invalidates any pending BLE workflow re-run. An abandoned TCP
+    // reconnect bumps it again, and this attempt then stands down as the BLE
+    // one in connectToDevice does.
+    final myGeneration = ++_connectGeneration;
     // Read now, so the notify below can start the session service with no
     // await between the tap's state change and the start.
     if (BackgroundServiceManager.followsConnection) {
@@ -5606,6 +5609,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isAuthError = false;
     _isNetworkError = false;
     notifyListeners();
+    TcpService? tcpService;
+    StreamSubscription? mySubscription;
+    // Closes only what this attempt opened, leaving anything a newer
+    // connection has installed since.
+    void releaseSupersededTransport() {
+      if (identical(_transportConnectionSubscription, mySubscription)) {
+        _transportConnectionSubscription = null;
+      }
+      mySubscription?.cancel();
+      if (identical(_activeTransport, tcpService)) _activeTransport = null;
+      tcpService?.dispose();
+    }
+
     try {
       if (_meshCoreConnection != null) {
         debugLog('[APP] Disposing previous MeshCoreConnection');
@@ -5615,11 +5631,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       await _apiQueueService.clearBeforeConnect();
 
-      final tcpService = TcpService(host: host, port: port);
+      tcpService = TcpService(host: host, port: port);
       debugLog('[APP] Connecting TCP transport to $host:$port');
       await tcpService.openConnection();
+      if (myGeneration != _connectGeneration) {
+        debugLog('[CONN] TCP transport connected after the attempt was '
+            'superseded, abandoning it');
+        releaseSupersededTransport();
+        return;
+      }
       _activeTransport = tcpService;
       _setupTransportDisconnectListener(tcpService);
+      mySubscription = _transportConnectionSubscription;
 
       debugLog('[APP] Creating new MeshCoreConnection (TCP)');
       _meshCoreConnection = MeshCoreConnection(transport: tcpService);
@@ -5634,6 +5657,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _meshCoreConnection!.stepStream.listen((step) {
+        // A superseded attempt must not move the step a newer connection or
+        // the abandon's cleanup now owns.
+        if (myGeneration != _connectGeneration) return;
         _connectionStep = step;
         if (step == ConnectionStep.connected) {
           _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
@@ -5692,6 +5718,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final connectionResult = await _deviceModelService.runConnection(
         _meshCoreConnection!.connect,
       );
+      if (myGeneration != _connectGeneration) {
+        debugLog('[CONN] TCP connection workflow finished after the attempt '
+            'was superseded, abandoning it');
+        releaseSupersededTransport();
+        return;
+      }
 
       final device = DiscoveredDevice(
         id: '$host:$port',
@@ -5703,6 +5735,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await TcpService.saveConnection(host, port, displayDeviceName ?? '');
       _isConnecting = false;
     } catch (e) {
+      if (myGeneration != _connectGeneration) {
+        // A newer attempt (or the abandon's cleanup) owns the error state
+        // and whatever transport is current now.
+        debugLog('[CONN] Superseded TCP connection attempt failed, '
+            'ignoring: $e');
+        releaseSupersededTransport();
+        return;
+      }
       await _handleConnectionError(e);
       if (_activeTransport != null && _activeTransport != _bluetoothService) {
         _activeTransport!.dispose();
