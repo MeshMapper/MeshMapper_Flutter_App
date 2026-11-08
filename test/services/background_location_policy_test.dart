@@ -122,9 +122,11 @@ void main() {
       required bool isIos,
       bool keepTracking = false,
       bool policyApplies = true,
+      bool alreadyWatching = false,
     }) =>
         deferGpsStartAfterPermission(
           keepTracking: keepTracking,
+          alreadyWatching: alreadyWatching,
           policyApplies: policyApplies,
           decision: gpsRunDecision(
             lifecycle: lifecycle,
@@ -165,6 +167,16 @@ void main() {
 
       test('the quiet restart on return to the app is never held on $os', () {
         expect(defer(null, isIos: isIos, keepTracking: true), isFalse);
+      });
+
+      // A held start marks GPS stopped by the policy. A stream that is
+      // already running would then read as stopped without being stopped.
+      test('a stream already running is never marked held on $os', () {
+        expect(defer(null, isIos: isIos, alreadyWatching: true), isFalse);
+        expect(
+            defer(AppLifecycleState.paused,
+                isIos: isIos, alreadyWatching: true),
+            isFalse);
       });
 
       test('the simulator and web are not held on $os', () {

@@ -4636,6 +4636,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // _syncGpsWithPolicy makes the first, full start once the app is resumed.
     if (deferGpsStartAfterPermission(
       keepTracking: keepTracking,
+      alreadyWatching: _gpsService.isWatching,
       policyApplies: _gpsPolicyApplies,
       decision: _gpsRunDecision,
     )) {

@@ -77,12 +77,19 @@ GpsRunDecision gpsRunDecision({
 /// still holds the app `inactive` waits the same way, for the resume that
 /// follows. [keepTracking] marks the quiet restart that sync itself makes,
 /// which only ever runs on a `run` decision, so it is never held.
+/// [alreadyWatching] is never held either: holding marks GPS stopped by the
+/// policy, and a stream that is running would read as stopped without being
+/// stopped.
 bool deferGpsStartAfterPermission({
   required bool keepTracking,
+  required bool alreadyWatching,
   required bool policyApplies,
   required GpsRunDecision decision,
 }) =>
-    !keepTracking && policyApplies && decision != GpsRunDecision.run;
+    !keepTracking &&
+    !alreadyWatching &&
+    policyApplies &&
+    decision != GpsRunDecision.run;
 
 /// True when the Android session service should be started now.
 ///
