@@ -6098,6 +6098,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService!.checkRecentCoverage =
         (lat, lon, kind) => _recentCoverage.isCovered(lat, lon,
             forTx: kind == BankedPingType.tx);
+    _pingService!.isRecentCoverageActive = () => _recentCoverage.isActive;
 
     // A marker per deferral once the phone has moved the minimum ping
     // distance, and one DEFER per fixed 300 m square per API session. The

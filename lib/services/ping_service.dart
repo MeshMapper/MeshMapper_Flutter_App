@@ -235,6 +235,11 @@ class PingService {
   RecentCoverage Function(double lat, double lon, BankedPingType kind)?
       checkRecentCoverage;
 
+  /// Whether Smart Pinging is on with a known zone. Diagnostics only: an
+  /// inactive lookup answers [RecentCoverage.clear], so the send log needs
+  /// this to say why a ping went out.
+  bool Function()? isRecentCoverageActive;
+
   /// Fired once each time smart pinging holds a ping, with the fix that was
   /// validated and which kind of ping was held. The provider dedupes it on
   /// the fixed 300 m grid and queues a DEFER for the square. Synchronous,
@@ -1002,6 +1007,10 @@ class PingService {
         _pingInProgress = false;
         return false;
       }
+      if (!manual) {
+        debugLog('[PING] Auto TX passed validation, smart ping: '
+            '${_smartPingVerdict(position, BankedPingType.tx)}');
+      }
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
       // Build the on-air body ONCE (same string is used for TxTracker echo
@@ -1433,6 +1442,16 @@ class PingService {
     } else {
       _scheduleNextAutoPing(delayMs: delayMs);
     }
+  }
+
+  /// Why Smart Pinging let a send through, for the send log: 'inactive'
+  /// (off, or no zone), 'unknown' (no tile loaded here, fails open), 'clear'
+  /// or 'no lookup' (not wired).
+  String _smartPingVerdict(Position position, BankedPingType kind) {
+    final check = checkRecentCoverage;
+    if (check == null) return 'no lookup';
+    if (isRecentCoverageActive?.call() == false) return 'inactive';
+    return check(position.latitude, position.longitude, kind).name;
   }
 
   /// Schedule next auto ping after interval
@@ -2167,6 +2186,9 @@ class PingService {
         handToTx = true;
         return;
       }
+
+      debugLog('[DISC] Discovery passed checks, smart ping: '
+          '${_smartPingVerdict(position, BankedPingType.discovery)}');
 
       // Clear skip reason since we're proceeding
       _skipReason = null;
