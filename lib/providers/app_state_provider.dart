@@ -4421,7 +4421,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // retry's fresh read) to bring a better one. A retry already armed for
       // another reason (network, server) owns the next attempt, so a fix does
       // not stack a second request on top of it.
-      if (_inZone == null && !_preferences.offlineMode) {
+      // Nor while the policy holds GPS off (a background launch, or a late
+      // fix after a background stop): the zone check would send this fix to
+      // the server with the app off screen and no radio. The start on resume
+      // brings a fresh first lock.
+      if (_gpsStoppedByPolicy) {
+        // Held; see above.
+      } else if (_inZone == null && !_preferences.offlineMode) {
         if (!GpsService.isAccurateForZoneCheck(position)) {
           _noteZoneCheckWaitingForGps(position);
         } else if (_isCheckingZone ||
@@ -4450,6 +4456,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Nor while a no-answer retry is counting down: driving in an outage
       // hit /status every 100 m and reset the backoff each time.
       if (!isConnected &&
+          !_gpsStoppedByPolicy &&
           !_preferences.offlineMode &&
           !_gpsService.isAirborne &&
           GpsService.isAccurateForZoneCheck(position) &&
@@ -4524,6 +4531,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[GPS] restartGpsAfterPermission() called');
     debugLog('[GPS] Pre-restart state: gpsStatus=$_gpsStatus, inZone=$_inZone, '
         'isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}');
+
+    // Not on screen and no radio (a background launch, say): hold the start.
+    // _syncGpsWithPolicy makes the first, full start once the app is resumed.
+    if (deferGpsStartAfterPermission(
+      keepTracking: keepTracking,
+      policyApplies: _gpsPolicyApplies,
+      decision: _gpsRunDecision,
+    )) {
+      _gpsStoppedByPolicy = true;
+      _gpsInitialStartPending = true;
+      debugLog('[GPS] Not started yet: waiting for the app to be on screen');
+      return;
+    }
 
     _gpsStoppedByPolicy = false;
     _gpsInitialStartPending = false;

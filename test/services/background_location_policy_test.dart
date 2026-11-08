@@ -110,6 +110,81 @@ void main() {
     });
   });
 
+  // The startup permission check (MainScaffold) asks for a GPS start once it
+  // finds location granted. On a background launch (iOS woke the app, no
+  // radio) that start used to run straight away and send the first fix to
+  // /status. It now waits for the app to come on screen, where the policy
+  // sync makes the first, full start.
+  group('deferGpsStartAfterPermission', () {
+    bool defer(
+      AppLifecycleState? lifecycle, {
+      bool radioActive = false,
+      required bool isIos,
+      bool keepTracking = false,
+      bool policyApplies = true,
+    }) =>
+        deferGpsStartAfterPermission(
+          keepTracking: keepTracking,
+          policyApplies: policyApplies,
+          decision: gpsRunDecision(
+            lifecycle: lifecycle,
+            radioActive: radioActive,
+            isIos: isIos,
+          ),
+        );
+
+    for (final isIos in [false, true]) {
+      final os = isIos ? 'iOS' : 'Android';
+
+      test('a foreground cold start with permission granted starts on $os',
+          () {
+        expect(defer(AppLifecycleState.resumed, isIos: isIos), isFalse);
+      });
+
+      test('a first-time grant with the app back on screen starts on $os', () {
+        expect(defer(AppLifecycleState.resumed, isIos: isIos), isFalse);
+      });
+
+      test('a grant read while the system dialog still holds the app '
+          'inactive waits, and the resume starts it on $os', () {
+        expect(defer(AppLifecycleState.inactive, isIos: isIos), isTrue);
+        expect(
+            gpsRunDecision(
+                lifecycle: AppLifecycleState.resumed,
+                radioActive: false,
+                isIos: isIos),
+            GpsRunDecision.run);
+      });
+
+      test('a background launch does not start on $os', () {
+        expect(defer(null, isIos: isIos), isTrue);
+        expect(defer(AppLifecycleState.paused, isIos: isIos), isTrue);
+        expect(defer(AppLifecycleState.hidden, isIos: isIos), isTrue);
+        expect(defer(AppLifecycleState.detached, isIos: isIos), isTrue);
+      });
+
+      test('the quiet restart on return to the app is never held on $os', () {
+        expect(defer(null, isIos: isIos, keepTracking: true), isFalse);
+      });
+
+      test('the simulator and web are not held on $os', () {
+        expect(defer(null, isIos: isIos, policyApplies: false), isFalse);
+      });
+    }
+
+    test('a backgrounded Android app with a radio session starts', () {
+      expect(
+          defer(AppLifecycleState.paused, radioActive: true, isIos: false),
+          isFalse);
+    });
+
+    test('a backgrounded iOS app with a radio session waits for the screen',
+        () {
+      expect(defer(AppLifecycleState.paused, radioActive: true, isIos: true),
+          isTrue);
+    });
+  });
+
   group('shouldStartConnectionService', () {
     bool start({
       bool followsConnection = true,

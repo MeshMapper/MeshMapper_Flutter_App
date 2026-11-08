@@ -67,6 +67,23 @@ GpsRunDecision gpsRunDecision({
   }
 }
 
+/// True when a GPS start asked for after a location permission check must
+/// wait for the app to come on screen instead of running now.
+///
+/// The startup permission check runs on every launch, including a background
+/// launch (iOS waking the app with no radio), and a start there would send
+/// the first fix to the zone check. Holding it leaves the first, full start to
+/// the policy sync once the app is resumed. A grant read while a system dialog
+/// still holds the app `inactive` waits the same way, for the resume that
+/// follows. [keepTracking] marks the quiet restart that sync itself makes,
+/// which only ever runs on a `run` decision, so it is never held.
+bool deferGpsStartAfterPermission({
+  required bool keepTracking,
+  required bool policyApplies,
+  required GpsRunDecision decision,
+}) =>
+    !keepTracking && policyApplies && decision != GpsRunDecision.run;
+
 /// True when the Android session service should be started now.
 ///
 /// Every input must hold: the platform follows the connection
