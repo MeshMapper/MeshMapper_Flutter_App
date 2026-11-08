@@ -36,6 +36,7 @@ import '../services/api_service.dart';
 import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
 import '../services/background_location_policy.dart';
+import '../services/noise_floor_session_store.dart';
 import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
 import '../services/border_loader.dart';
@@ -1274,6 +1275,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<NoiseFloorSession> _storedNoiseFloorSessions = [];
   Box<NoiseFloorSession>? _noiseFloorSessionBox;
 
+  /// Writes the running session to Hive every few minutes and when the app
+  /// leaves the screen, so a kill does not lose it from History.
+  final NoiseFloorCheckpoint _noiseFloorCheckpoint = NoiseFloorCheckpoint();
+  Timer? _noiseFloorCheckpointTimer;
+  static const Duration _noiseFloorCheckpointInterval = Duration(minutes: 3);
+
   // History session map view
   List<PingEventMarker>? _historySessionMarkers;
   bool _viewingHistorySession = false;
@@ -1519,6 +1526,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
         _autoSaveOfflinePings();
       }
+      // Likewise the History session, which otherwise reaches storage only
+      // when its mode ends.
+      unawaited(_checkpointNoiseFloorSession('app paused'));
     }
   }
 
@@ -14327,8 +14337,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     try {
-      _storedNoiseFloorSessions = _noiseFloorSessionBox!.values.toList()
-        ..sort((a, b) => b.startTime.compareTo(a.startTime)); // Newest first
+      // Newest first. A session the app was killed during is closed here.
+      _storedNoiseFloorSessions =
+          await loadStoredNoiseFloorSessions(_noiseFloorSessionBox!);
       debugLog(
           '[GRAPH] Loaded ${_storedNoiseFloorSessions.length} stored noise floor sessions');
     } catch (e) {
@@ -14353,8 +14364,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       markers: List.of(_startingDeferredHistory),
     );
     _startingDeferredHistory.clear();
+    _noiseFloorCheckpointTimer?.cancel();
+    _noiseFloorCheckpointTimer = Timer.periodic(
+        _noiseFloorCheckpointInterval,
+        (_) => unawaited(_checkpointNoiseFloorSession('periodic')));
     debugLog('[GRAPH] Started $mode noise floor session');
     notifyListeners();
+  }
+
+  /// Writes the running session to Hive (see [NoiseFloorCheckpoint]). A
+  /// launch closes a checkpoint the app never ended.
+  Future<void> _checkpointNoiseFloorSession(String why) async {
+    final session = _currentNoiseFloorSession;
+    if (session == null) return;
+    try {
+      if (await _noiseFloorCheckpoint.write(_noiseFloorSessionBox, session)) {
+        debugLog('[GRAPH] Checkpointed session ($why): '
+            '${session.samples.length} samples, '
+            '${session.markers.length} markers');
+      }
+    } catch (e) {
+      debugError('[GRAPH] Failed to checkpoint noise floor session: $e');
+    }
   }
 
   /// Record a noise floor sample to the current session
@@ -14403,28 +14434,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _endNoiseFloorSession() async {
     if (_currentNoiseFloorSession == null) return;
 
+    _noiseFloorCheckpointTimer?.cancel();
+    _noiseFloorCheckpointTimer = null;
     _currentNoiseFloorSession!.endTime = DateTime.now();
     debugLog(
         '[GRAPH] Ended session: ${_currentNoiseFloorSession!.durationDisplay}, '
         '${_currentNoiseFloorSession!.samples.length} samples, '
         '${_currentNoiseFloorSession!.markers.length} markers');
 
-    // Save to Hive
+    // Save to Hive (over its checkpoint, if any) and keep the last 10
     try {
-      await _noiseFloorSessionBox?.put(
-        _currentNoiseFloorSession!.id,
-        _currentNoiseFloorSession!,
-      );
-
-      // Update stored list
-      _storedNoiseFloorSessions.insert(0, _currentNoiseFloorSession!);
-
-      // Keep only last 10 sessions
-      while (_storedNoiseFloorSessions.length > 10) {
-        final oldest = _storedNoiseFloorSessions.removeLast();
-        await _noiseFloorSessionBox?.delete(oldest.id);
-        debugLog('[GRAPH] Deleted oldest session: ${oldest.id}');
-      }
+      await saveEndedNoiseFloorSession(_noiseFloorSessionBox,
+          _storedNoiseFloorSessions, _currentNoiseFloorSession!);
     } catch (e) {
       debugError('[GRAPH] Failed to save noise floor session: $e');
     }
@@ -14620,6 +14641,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _restoreAutoPingTimer?.cancel();
     _idleDisconnectTimer?.cancel();
     _offlineAutoSaveTimer?.cancel();
+    _noiseFloorCheckpointTimer?.cancel();
     _zoneRefreshTimer?.cancel();
     _cancelZoneGraceTimers();
     _vectorFreshTimer?.cancel();

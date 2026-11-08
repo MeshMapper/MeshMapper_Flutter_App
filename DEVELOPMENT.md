@@ -1136,6 +1136,7 @@ Continuous RSSI measurement of the idle channel, providing ambient noise data fo
 
 - **Polling**: 5-second interval via `MeshCoreConnection.getNoiseFloor()` (MeshCore stats request for radio stats, parses int16LE). After 3 consecutive failures it backs off to a 30-second interval instead of stopping, and returns to 5 seconds on the next success. On Android a write refused with `ERROR_GATT_WRITE_REQUEST_BUSY` (usually a second app talking to the same radio) is retried up to 3 times, 50 to 150 ms apart, in its place in the write queue (`writeRetryingGattBusy` in `lib/services/bluetooth/mobile_bluetooth.dart`).
 - **Sessions**: `NoiseFloorSession` (HiveType 13) records samples + ping event markers over time. Each sample has a timestamp and noise floor value (dBm).
+- **Storage** (`lib/services/noise_floor_session_store.dart`, box `noise_floor_sessions`): History keeps the last 10 ended sessions. The running session is checkpointed into the same box under its own id every 3 minutes and when the app is paused (`NoiseFloorCheckpoint`; a write with no new sample or marker is skipped, since each write rewrites the whole session). A launch closes any session left without an `endTime` by a kill, at its last sample or marker (`loadStoredNoiseFloorSessions`), then trims to 10. The normal end overwrites the checkpoint, so a session is never counted twice.
 - **Event Markers**: `PingEventMarker` records ping events overlaid on the noise floor graph:
   - `txSuccess` (Green) — TX heard by repeater
   - `txFail` (Red) — TX not heard
