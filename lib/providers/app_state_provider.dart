@@ -312,6 +312,38 @@ bool countdownLooksStuck(
   return now.difference(endTime) >= stuckCountdownGrace;
 }
 
+/// Whether an auto-reconnect attempt that ended after its reconnect was over
+/// should disconnect the connection that is up. [abandonedAtGeneration] is
+/// the connect generation an abandon stamped when it caught this attempt in
+/// flight, or null when none did (a user Disconnect ended the reconnect).
+/// A stamped attempt may only close a connection nobody has started since
+/// the abandon: a newer connect bumps the generation and owns what is up.
+@visibleForTesting
+bool shouldDisconnectOrphanedReconnect({
+  required int? abandonedAtGeneration,
+  required int currentGeneration,
+  required bool connected,
+}) {
+  if (!connected) return false;
+  if (abandonedAtGeneration == null) return true;
+  return abandonedAtGeneration == currentGeneration;
+}
+
+/// Whether the auto-reconnect budget, running out, gives the attempt's
+/// connect a bounded grace to finish instead of abandoning at once. A GATT
+/// connect that is about to succeed was otherwise thrown away.
+@visibleForTesting
+bool reconnectBudgetGivesConnectGrace(
+        {required bool connectInFlight, required bool graceUsed}) =>
+    connectInFlight && !graceUsed;
+
+/// An auto-reconnect attempt's connect call while it runs. An abandon that
+/// catches it stamps the connect generation it moved to, which is how the
+/// attempt learns, when it ends, that it no longer owns anything.
+class _ReconnectConnectAttempt {
+  int? abandonedAtGeneration;
+}
+
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Maximum sizes for in-memory lists to prevent unbounded growth during long sessions
@@ -889,6 +921,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Gives up on a radio that keeps dropping right after it reconnects.
   final ReconnectFlapGuard _reconnectFlapGuard = ReconnectFlapGuard();
+
+  /// The auto-reconnect attempt whose connect call is running, if any.
+  _ReconnectConnectAttempt? _reconnectConnectInFlight;
+
+  /// Set once the budget ran out and the in-flight connect got its grace: an
+  /// attempt that then fails abandons instead of retrying.
+  bool _reconnectBudgetSpent = false;
+
+  /// How long a connect still in flight when the budget runs out gets.
+  static const Duration _reconnectInFlightGrace = Duration(seconds: 15);
 
   // Idle disconnect timer — disconnects after 15 min without manual ping or auto-ping
   Timer? _idleDisconnectTimer;
@@ -5279,6 +5321,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Listen for step changes
         _meshCoreConnection!.stepStream.listen((step) {
+          // A superseded attempt (an abandoned reconnect) must not move the
+          // step a newer connection or the abandon's cleanup now owns.
+          if (myGeneration != _connectGeneration) return;
           _connectionStep = step;
           if (step == ConnectionStep.connected) {
             // Update device info
@@ -5345,6 +5390,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final connectionResult = await _deviceModelService.runConnection(
           _meshCoreConnection!.connect,
         );
+        if (myGeneration != _connectGeneration) {
+          // Abandoned while the workflow ran. The abandon closed the link and
+          // its cleanup owns the state; a newer connect may own the transport.
+          debugLog('[CONN] Connection workflow finished after the attempt '
+              'was superseded, abandoning it');
+          return;
+        }
 
         await _postConnectionSetup(connectionResult, device);
         _isConnecting = false;
@@ -7295,6 +7347,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
+    _reconnectBudgetSpent = false;
     _reconnectStartedAt = DateTime.now();
     _lastReconnectWasBondError = false;
     _connectionStep = ConnectionStep.reconnecting;
@@ -7397,6 +7450,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           : ' (armed ${DateTime.now().difference(armed).inSeconds}s ago)';
       debugLog('[CONN] Auto-reconnect timed out after '
           '${_autoReconnectBudget.inSeconds}s$late');
+      if (reconnectBudgetGivesConnectGrace(
+          connectInFlight: _reconnectConnectInFlight != null,
+          graceUsed: _reconnectBudgetSpent)) {
+        _reconnectBudgetSpent = true;
+        debugLog('[CONN] A connect is still in flight, giving it '
+            '${_reconnectInFlightGrace.inSeconds}s more');
+        _reconnectTimeoutTimer = Timer(_reconnectInFlightGrace, () {
+          debugLog('[CONN] Auto-reconnect grace ran out');
+          _abandonAutoReconnect();
+        });
+        return;
+      }
       _abandonAutoReconnect();
     });
 
@@ -7406,6 +7471,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Attempt a single reconnection
   void _attemptReconnect() {
+    if (_reconnectBudgetSpent) {
+      debugLog('[CONN] Auto-reconnect: budget spent, not retrying');
+      _abandonAutoReconnect();
+      return;
+    }
     if (_reconnectAttempt >= _maxReconnectAttempts) {
       debugLog(
           '[CONN] Auto-reconnect: max attempts reached ($_maxReconnectAttempts)');
@@ -7432,18 +7502,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
 
+      final attempt = _ReconnectConnectAttempt();
       try {
         debugLog(
             '[CONN] Auto-reconnect: calling reconnectToRememberedDevice()');
-        await reconnectToRememberedDevice();
+        _reconnectConnectInFlight = attempt;
+        try {
+          await reconnectToRememberedDevice();
+        } finally {
+          if (identical(_reconnectConnectInFlight, attempt)) {
+            _reconnectConnectInFlight = null;
+          }
+        }
 
-        // Timeout or cancel fired while connection was in-flight.
-        // Disconnect the orphaned connection — abandon already cleaned up state.
-        if (!_isAutoReconnecting) {
-          if (_connectionStep == ConnectionStep.connected) {
+        // Timeout or cancel fired while connection was in-flight. Disconnect
+        // an orphaned connection, but only one that is this attempt's own:
+        // after a cancel the user may already be on a newer connection, and
+        // a newer reconnect may own the state by now.
+        if (attempt.abandonedAtGeneration != null || !_isAutoReconnecting) {
+          if (shouldDisconnectOrphanedReconnect(
+            abandonedAtGeneration: attempt.abandonedAtGeneration,
+            currentGeneration: _connectGeneration,
+            connected: _connectionStep == ConnectionStep.connected,
+          )) {
             debugLog(
                 '[CONN] Auto-reconnect completed after timeout — disconnecting orphaned connection');
             disconnect();
+          } else {
+            debugLog('[CONN] Auto-reconnect attempt ended after the '
+                'reconnect was over, leaving the current connection alone');
           }
           return;
         }
@@ -7465,7 +7552,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } catch (e) {
         debugError(
             '[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
-        if (_isAutoReconnecting) {
+        if (attempt.abandonedAtGeneration == null && _isAutoReconnecting) {
           // Check for iOS apple-code 14 (Peer removed pairing information)
           // The MeshCore device cleared its bond keys — clear iOS stale bond before retrying
           await _handleBondErrorIfNeeded(e);
@@ -7548,6 +7635,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Clear reconnect state
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
+    _reconnectBudgetSpent = false;
     _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
 
@@ -7740,6 +7828,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
     _cancelPendingAutoPingRestore();
+    _reconnectBudgetSpent = false;
+
+    // Supersede a connect still in flight, so that when it ends it touches
+    // nothing a newer connection owns (the shared BLE transport, the step).
+    final inFlight = _reconnectConnectInFlight;
+    _reconnectConnectInFlight = null;
+    if (inFlight != null) {
+      _connectGeneration++;
+      inFlight.abandonedAtGeneration = _connectGeneration;
+      _bleTransportConnecting = false;
+    }
 
     // Alert if auto-ping was running before disconnect. Dated to the BLE drop,
     // not to now: this runs off the 30 second timeout, which does not tick
@@ -7770,6 +7869,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Do full disconnect cleanup (releases API session, etc.)
     _fullDisconnectCleanup(
         releaseExtras: releaseExtras, flushQueue: flushQueue);
+
+    // After the cleanup's synchronous start has marked the step disconnected,
+    // so the drop this causes on a half-open link reads as already handled.
+    // The cleanup leaves a BLE link up (it only disposes other transports),
+    // and the stale connect would otherwise finish onto it or keep it open.
+    if (inFlight != null &&
+        _rememberedDevice?.transportType == TransportType.ble) {
+      debugLog('[CONN] Cancelling the in-flight reconnect connect');
+      unawaited(_bluetoothService.cancelConnect().catchError((Object e) {
+        debugWarn('[CONN] Cancelling the in-flight reconnect failed: $e');
+      }));
+    }
     notifyListeners();
   }
 

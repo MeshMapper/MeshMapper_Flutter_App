@@ -958,6 +958,13 @@ class MeshCoreConnection {
     } catch (e) {
       debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);
+      // A disposed connection was abandoned or superseded: whoever disposed
+      // it owns the transport now, which may already carry a newer link.
+      if (_disposed) {
+        debugLog('[CONN] Connection was superseded, leaving the transport '
+            'to its new owner');
+        rethrow;
+      }
       // Clean up BLE connection on failure
       try {
         await _transport.disconnect();
@@ -2270,6 +2277,13 @@ class MeshCoreConnection {
         }
       }
       break;
+    }
+    // After the gate waits, which dispose() releases: a disposed connection
+    // was abandoned or superseded, and the transport may already carry a
+    // newer connection whose replies this frame would steal.
+    if (_disposed) {
+      debugLog('[CONN] Command $code not written: connection disposed');
+      throw const RadioAbortedException();
     }
     if (lease != null && (!lease.active || lease.cancelled)) {
       debugLog('[SCOPES] Command $code not written: the lease has ended');
