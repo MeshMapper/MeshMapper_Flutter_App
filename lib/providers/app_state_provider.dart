@@ -87,6 +87,7 @@ import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
 import '../services/portal_token_store.dart';
+import '../services/reconnect_flap_guard.dart';
 import '../services/recent_coverage_service.dart';
 import '../services/reporting_power.dart';
 import 'device_connection_setup.dart';
@@ -885,6 +886,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _reconnectDelay = Duration(seconds: 3);
   static const Duration _reconnectDelayAfterBondError = Duration(seconds: 5);
   bool _lastReconnectWasBondError = false;
+
+  /// Gives up on a radio that keeps dropping right after it reconnects.
+  final ReconnectFlapGuard _reconnectFlapGuard = ReconnectFlapGuard();
 
   // Idle disconnect timer — disconnects after 15 min without manual ping or auto-ping
   Timer? _idleDisconnectTimer;
@@ -7275,6 +7279,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Start auto-reconnect after unexpected transport disconnect
   Future<void> _startAutoReconnect() async {
+    // Counted at the drop, before the waits below.
+    final keepsDropping = _reconnectFlapGuard.onDrop(DateTime.now());
     _scopeLifecycle.onEvent(ScopeStopEvent.autoReconnect);
     _invalidateLiveSessionRecovery();
     await _waitForLiveSessionRecovery();
@@ -7366,6 +7372,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_gpsService.isAirborne) {
       debugLog('[CONN] Not auto-reconnecting: GPS says aircraft');
       _abandonAutoReconnectForAirborne();
+      return;
+    }
+
+    // A link that reconnects and drops again within seconds, time after time,
+    // would otherwise loop for as long as the user let it, with no alert.
+    if (keepsDropping) {
+      debugWarn('[CONN] Radio dropped ${_reconnectFlapGuard.flaps} times in '
+          'a row within ${_reconnectFlapGuard.window.inSeconds}s of '
+          'reconnecting, giving up');
+      logError(
+          'Disconnected: the radio kept dropping right after reconnecting. '
+          'Check its power and battery.',
+          severity: ErrorSeverity.error);
+      _abandonAutoReconnect();
       return;
     }
 
@@ -7504,6 +7524,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Called when auto-reconnect succeeds
   Future<void> _onReconnectSuccess() async {
+    _reconnectFlapGuard.onReconnectSuccess(DateTime.now());
     // Cancel timers
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -7730,6 +7751,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectAttempt = 0;
     _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
+    _reconnectFlapGuard.reset();
 
     // Reset antenna and power settings so user must choose again on next connect
     _antennaRestoredFromDevice = false;
@@ -7817,6 +7839,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _reconnectAttempt = 0;
       _reconnectStartedAt = null;
       _autoPingWasEnabled = false;
+      _reconnectFlapGuard.reset();
 
       // Cancel any active zone grace period
       _cancelZoneGraceTimers();
