@@ -407,6 +407,23 @@ List<String> _timeline(
 }
 
 void main() {
+  group('scope count', () {
+    test('counts each answer and resets with the other stats', () {
+      fakeAsync((async) {
+        final s = _Scenario(async, withRunner: false);
+        final seen = <int>[];
+        s.ping.onStatsUpdated = (stats) => seen.add(stats.scopeCount);
+        s.ping.recordScopeAnswer();
+        s.ping.recordScopeAnswer();
+        expect(seen, [1, 2]);
+        expect(s.ping.stats.scopeCount, 2);
+        s.ping.resetStats();
+        expect(seen.last, 0);
+        s.ping.dispose();
+      }, initialTime: DateTime(2026, 9, 26, 10));
+    });
+  });
+
   group('the schedule never moves', () {
     test('Passive: identical with no runner, and with a busy runner', () {
       final today = _timeline(withRunner: false);

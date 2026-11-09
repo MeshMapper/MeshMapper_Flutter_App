@@ -10125,6 +10125,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _addScopeLogEntry(ScopeLogEntry entry) {
     _scopeLog.add(entry);
     debugLog('[SCOPES] Log entry added: outcome=${entry.outcome.name}');
+    // The status bar's Scopes chip: one per repeater that answered.
+    if (entry.outcome == ScopeLogOutcome.answered ||
+        entry.outcome == ScopeLogOutcome.withheldHourlyCap) {
+      _pingService?.recordScopeAnswer();
+    }
     notifyListeners();
   }
 

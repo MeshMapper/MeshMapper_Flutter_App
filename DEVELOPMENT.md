@@ -1143,6 +1143,26 @@ Off by default until a region turns it on.
   Never `external_antenna`, `noisefloor`, `altitude` or `power`, and never stamped with the
   running auto mode, the same shape as `DEFER`. Logged under `[SCOPES]`.
 
+- **The status bar's Scopes chip**: `PingStats.scopeCount` counts the repeaters that answered a
+  scope request this session (log outcomes `answered` and `withheldHourlyCap`, one per answer,
+  the same rows the Log tab lists under SCP minus the ones nobody answered). It is counted by
+  `PingService.recordScopeAnswer`, called from `AppStateProvider._addScopeLogEntry`, so it
+  resets with TX/DISC/Trace (`resetStats`, a new `PingService` at connect) and is not cut by
+  Clear logs or the log's 500-entry cap. Trace and Scope share one chip
+  (`statusBarSharedSlot` in `lib/widgets/status_bar.dart`): Trace while `autoMode` is
+  `targeted`, else Scope while `scopeDiscoveryActive` or once `scopeCount > 0`, else no chip.
+
+### Top Status Bar
+
+`lib/widgets/status_bar.dart`: region chip, then TX, RX, DISC, the shared Trace/Scope slot
+(above) and Uploaded. Counts from 1000 are shortened by `formatCompactCount`
+(`lib/utils/compact_count.dart`: "1.4k", "12k", "1.2M", truncated, never rounded up). The
+stats group sits in an `Expanded` + `FittedBox(scaleDown)`, so with large Accessibility text it
+shrinks instead of overflowing. `test/widgets/status_bar_fit_test.dart` renders the real bar
+with the SDK's Roboto and Material Icons fonts at 320/375/393 px and requires 4-digit counts to
+fit a 375 pt phone at normal text without any shrinking; it skips the width cases when
+`$FLUTTER_ROOT/bin/cache/artifacts/material_fonts` is missing.
+
 ### API Queue System
 
 Three data flows (TX pings, RX observations, Discovery results) merge into unified API batch queue:

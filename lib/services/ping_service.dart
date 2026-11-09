@@ -1896,6 +1896,14 @@ class PingService {
     await _wakelockService.disable();
   }
 
+  /// Count one scope request a repeater answered. The scope runner lives on
+  /// the provider, but the count sits with the other session stats so it
+  /// resets with them.
+  void recordScopeAnswer() {
+    _stats = _stats.copyWith(scopeCount: _stats.scopeCount + 1);
+    onStatsUpdated?.call(_stats);
+  }
+
   /// Reset statistics
   void resetStats() {
     _stats = const PingStats();
