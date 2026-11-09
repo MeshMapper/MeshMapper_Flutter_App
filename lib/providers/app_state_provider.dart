@@ -43,6 +43,7 @@ import '../services/border_loader.dart';
 import '../services/debug_file_logger.dart';
 import '../services/disconnect_alert_decision.dart';
 import '../services/offline_session_service.dart';
+import '../services/offline_session_export.dart';
 import '../services/bluetooth/ble_connect_retry_policy.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 import '../services/transport/android_serial_service.dart';
@@ -13363,7 +13364,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (data == null) {
       throw Exception('Session "$filename" not found');
     }
-    final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+    final jsonString = offlineSessionJson(data);
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/$filename');
     await file.writeAsString(jsonString);
@@ -13375,6 +13376,48 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ),
     );
     debugLog('[OFFLINE] Shared session: $filename, status: ${result.status}');
+  }
+
+  bool _isExportingOfflineSessions = false;
+
+  /// True while Export all is writing its files or its share sheet is open.
+  bool get isExportingOfflineSessions => _isExportingOfflineSessions;
+
+  /// Export every stored offline session in one share sheet (#560): one file
+  /// per session, the same name and JSON as [shareOfflineSession].
+  ///
+  /// Only reads the sessions. Nothing is deleted or marked uploaded, whatever
+  /// the share sheet's outcome. A dismissed sheet is not an error. Throws on
+  /// failure so the caller can surface it; does nothing when there are no
+  /// sessions or an export is already running.
+  /// [sharePositionOrigin] is the tapped button's global rect (iPad anchor).
+  Future<void> shareAllOfflineSessions({Rect? sharePositionOrigin}) async {
+    if (_isExportingOfflineSessions) return;
+    // Snapshot: an auto-save during the export must not change what is sent.
+    final sessions = List<OfflineSession>.of(_offlineSessionService.sessions);
+    if (sessions.isEmpty) return;
+    _isExportingOfflineSessions = true;
+    notifyListeners();
+    try {
+      debugLog('[OFFLINE] Exporting all ${sessions.length} sessions');
+      final dir = await getTemporaryDirectory();
+      final files = await writeOfflineSessionExports(sessions, dir);
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: files.map((f) => XFile(f.path)).toList(),
+          subject: 'MeshMapper Offline Sessions',
+          sharePositionOrigin: sharePositionOrigin,
+        ),
+      );
+      debugLog(
+          '[OFFLINE] Shared all ${files.length} sessions, status: ${result.status}');
+    } catch (e) {
+      debugError('[OFFLINE] Failed to export all sessions: $e');
+      rethrow;
+    } finally {
+      _isExportingOfflineSessions = false;
+      notifyListeners();
+    }
   }
 
   /// View a debug log file in-app
