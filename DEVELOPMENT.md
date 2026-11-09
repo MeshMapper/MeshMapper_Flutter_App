@@ -420,6 +420,39 @@ iOS and web skip the resync. The history view answers
 re-syncs (the marker data version reads it) and the cleanup loop takes the
 now-unwanted pins off the map.
 
+### Remembered Map View
+
+The map comes back the way the user left it (#470). `MapViewState`
+(`lib/models/map_view_state.dart`) holds the last camera zoom and the panel fold
+state: the control panel minimised (both orientations), the landscape control
+panel closed, the landscape map control column open, and the portrait map control
+column open. It is its own key, `map_view_state`, in the `user_preferences` Hive
+box, NOT a `UserPreferences` field: it changes during a pinch, so a write must not
+run the settings save path or notify anything keyed on the preferences. A missing
+or malformed entry reads as today's defaults (no zoom, panel expanded, portrait
+column open), so a first launch is unchanged. `AppStateProvider` reads it in
+`_loadPreferences` (which now ends with `_notifyMapNow()` so the cached map
+applies its saved toggles on the next build) and owns it; `HomeScreen`'s
+`_isControlsMinimized` / `_showControlPanel` / `_mapControlsExpanded` are getters
+and setters over it. Store capture mode keeps its fold state local and never
+writes. Writes go through a 1.5 s `Debouncer` (`lib/utils/debouncer.dart`),
+flushed when the app is paused.
+
+Zoom: `_onCameraIdle` calls `_rememberCameraZoom`, which skips a focus camera
+(`_cameraFocusActive`: tapped ping, cell or repeater) and the history session fit,
+and the provider drops a zoom within 0.01 of the stored one (auto-follow ends
+every GPS tick in a camera idle at the same zoom). `MapViewState.clampZoom` clamps
+to the map's 3..17 range and nudges an integer zoom off the integer. The restored
+zoom replaces the first-launch zooms only: `initialCameraPosition` (15), the
+one-time zoom to the last known position (15) and the one-time zoom to the first
+GPS fix (16). With auto-follow on, that GPS zoom also seeds
+`_autoFollowDesiredZoom`, so a follow tick landing mid-animation aims at it, and
+the next camera idle hands zoom back to the camera as before. Until a startup
+zoom has run, a camera idle at the creation zoom is not recorded (the map may
+have been created before preferences loaded and would overwrite the zoom about
+to be restored); a user zoom off the creation zoom is. Tap-to-follow still jumps
+to max zoom, and that zoom is then remembered like any other.
+
 ### 9-Step Connection Workflow
 
 Critical safety: The connection sequence MUST complete in order.

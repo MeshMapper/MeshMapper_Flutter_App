@@ -22,12 +22,36 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _showControlPanel = true;
-  // Store capture mode (debug builds) starts with the controls out of the way.
-  bool _isControlsMinimized = kDebugMode && StoreCaptureConfig.active != null;
+  // The panel fold state lives in AppStateProvider.mapViewState so it survives
+  // a relaunch; these getters read it live (build watches the provider).
+  AppStateProvider get _appState => context.read<AppStateProvider>();
+
+  /// Landscape: the control panel is shown (closed = a small Controls button).
+  bool get _showControlPanel => _appState.mapViewState.controlPanelShown;
+  set _showControlPanel(bool value) => _appState.setMapControlPanelShown(value);
+
+  // Store capture mode (debug builds) starts with the controls out of the way
+  // and keeps its fold state local, so a capture run never rewrites the
+  // user's saved layout.
+  bool? _storeCaptureControlsMinimized =
+      kDebugMode && StoreCaptureConfig.active != null ? true : null;
+
+  bool get _isControlsMinimized =>
+      _storeCaptureControlsMinimized ??
+      _appState.mapViewState.controlsMinimized;
+  set _isControlsMinimized(bool value) {
+    if (_storeCaptureControlsMinimized != null) {
+      _storeCaptureControlsMinimized = value;
+    } else {
+      _appState.setMapControlsMinimized(value);
+    }
+  }
 
   /// Landscape mode: map controls expanded state (mutually exclusive with control panel)
-  bool _mapControlsExpanded = false;
+  bool get _mapControlsExpanded =>
+      _appState.mapViewState.landscapeMapControlsExpanded;
+  set _mapControlsExpanded(bool value) =>
+      _appState.setLandscapeMapControlsExpanded(value);
 
   /// Landscape side panel width (220px gives more room for controls)
   static const double _landscapePanelWidth = 220.0;

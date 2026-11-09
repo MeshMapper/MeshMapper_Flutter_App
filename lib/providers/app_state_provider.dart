@@ -26,10 +26,12 @@ import '../models/log_entry.dart';
 import '../models/remembered_device.dart';
 import '../models/scope_log_entry.dart';
 import '../models/repeater.dart';
+import '../models/map_view_state.dart';
 import '../models/user_preferences.dart';
 import '../services/airborne_release.dart';
 import '../services/api_queue_service.dart';
 import '../utils/coverage_refresh.dart';
+import '../utils/debouncer.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/store_links.dart';
 import '../services/api_service.dart';
@@ -1656,6 +1658,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_portalAccountService.checkLinkOnResume());
     } else if (state == AppLifecycleState.paused) {
       debugLog('[APP] App paused (backgrounded)');
+      // The process may be killed in the background before the debounce fires.
+      _mapViewStateSaver.flush();
       // Save offline pings immediately on pause to prevent data loss if OS kills app
       if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
         _autoSaveOfflinePings();
@@ -1766,6 +1770,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
+
+  /// How the user last left the map (zoom, folded panels). See [MapViewState].
+  MapViewState get mapViewState => _mapViewState;
   bool get onboardingGuideStateLoaded => _onboardingGuideProgress.isLoaded;
   bool get shouldShowOnboardingGuide => _onboardingGuideProgress.isDue;
   WatchBridgeService get watchBridge => _watchBridge;
@@ -13801,6 +13808,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final json = box.get('preferences');
       _onboardingGuideProgress =
           OnboardingGuideProgress.fromStored(box.get(_onboardingGuideVersionKey));
+      _mapViewState = MapViewState.fromStored(box.get(_mapViewStateKey));
+      debugLog('[MAP] Loaded map view: $_mapViewState');
       if (json != null) {
         // The pre-share 6-hex prefix is wiped, not migrated: the filter needs
         // the full key now, and the user is asked for it after the next
@@ -13842,7 +13851,71 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Failed to load preferences: $e');
     }
     _preferencesLoaded = true;
-    notifyListeners();
+    // A map revision bump, not a plain notify: the map sits behind the
+    // mapRevision Selector and applies its saved toggles and the remembered
+    // map view on its next build.
+    _notifyMapNow();
+  }
+
+  // ============================================
+  // Map view (zoom, folded panels) persistence
+  // ============================================
+
+  static const String _mapViewStateKey = 'map_view_state';
+  MapViewState _mapViewState = const MapViewState();
+
+  /// Writes wait until the map has been still for this long, so a pinch (and
+  /// the auto-follow camera's idles) ends in one write.
+  final Debouncer _mapViewStateSaver =
+      Debouncer(const Duration(milliseconds: 1500));
+
+  /// Fold or unfold the control panel (both orientations).
+  void setMapControlsMinimized(bool value) =>
+      _updateMapViewState(_mapViewState.copyWith(controlsMinimized: value));
+
+  /// Landscape: show or close the control panel.
+  void setMapControlPanelShown(bool value) =>
+      _updateMapViewState(_mapViewState.copyWith(controlPanelShown: value));
+
+  /// Landscape: open or close the map's control column.
+  void setLandscapeMapControlsExpanded(bool value) => _updateMapViewState(
+      _mapViewState.copyWith(landscapeMapControlsExpanded: value));
+
+  /// Portrait: open or close the map's control column. No notify: only the
+  /// map reads it, and it rebuilds itself on the tap.
+  void setMapControlsColumnExpanded(bool value) => _updateMapViewState(
+      _mapViewState.copyWith(mapControlsExpanded: value),
+      notify: false);
+
+  /// Remember the zoom the camera settled at. Called by the map on camera
+  /// idle outside transient views; repeats at the same zoom are dropped.
+  void rememberMapZoom(double zoom) {
+    if (!MapViewState.zoomWorthSaving(_mapViewState.zoom, zoom)) return;
+    final clamped = MapViewState.clampZoom(zoom);
+    if (clamped == null) return;
+    _updateMapViewState(_mapViewState.copyWith(zoom: clamped), notify: false);
+  }
+
+  void _updateMapViewState(MapViewState next, {bool notify = true}) {
+    if (next == _mapViewState) return;
+    _mapViewState = next;
+    if (notify) notifyListeners();
+    // Before the stored value has been read, a write would replace it with
+    // the defaults; the change still applies in memory.
+    if (!_preferencesLoaded) return;
+    _mapViewStateSaver.schedule(() => unawaited(_saveMapViewState()));
+  }
+
+  Future<void> _saveMapViewState() async {
+    if (_isDisposed) return;
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put(_mapViewStateKey, _mapViewState.toStorage());
+      debugLog('[MAP] Saved map view: $_mapViewState');
+    } catch (e) {
+      debugError('[MAP] Failed to save map view: $e');
+    }
   }
 
   Future<bool> completeOnboardingGuide() async {
@@ -15061,6 +15134,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _isDisposed = true;
+    _mapViewStateSaver.cancel();
     _scopeLifecycle.onEvent(ScopeStopEvent.dispose);
     _invalidateLiveSessionRecovery();
     // No notify in dispose: the session just has to let the radio go.

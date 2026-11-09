@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 import 'gps_info_chip.dart';
 
 import '../models/log_entry.dart';
+import '../models/map_view_state.dart';
 import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
@@ -659,6 +660,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       false; // Track if we've done the one-time initial zoom to GPS
   bool _hasZoomedToLastKnown =
       false; // Track if we've zoomed to last known position (before GPS)
+  // The zoom MapLibreMap was created at (initialCameraPosition is read once).
+  double? _initialCameraZoom;
+  // False until the camera has been handed the remembered zoom (one of the
+  // startup zooms above) or the user has moved it off the creation zoom.
+  // Until then a camera idle is still the creation camera, possibly built
+  // before preferences loaded, and recording it would overwrite the zoom
+  // about to be restored.
+  bool _zoomRestoreSettled = false;
   bool _loggedMpxSanityCheck =
       false; // One-time log comparing formula vs MapLibre m/px
 
@@ -694,9 +703,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // pushes an empty FeatureCollection so the pins clear without touching the
   // layer styling (see #347).
   bool _showRepeaters = true;
-
-  // Collapsible map controls in landscape
-  bool _mapControlsExpanded = true;
 
   // Rotation lock (disable rotation gestures while keeping pinch-to-zoom)
   bool _rotationLocked = false;
@@ -1779,11 +1785,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _isMapReady &&
         _canAnimateCamera) {
       _hasZoomedToLastKnown = true;
+      _zoomRestoreSettled = true;
       final lastKnownCenter = LatLng(lastKnown.lat, lastKnown.lon);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _animateToPositionWithZoom(lastKnownCenter, 15.0 - _zoomEpsilon);
-          debugLog('[MAP] Initial zoom to last known position');
+          final zoom = _startupZoom(appState, 15.0 - _zoomEpsilon);
+          _animateToPositionWithZoom(lastKnownCenter, zoom);
+          debugLog('[MAP] Initial zoom to last known position '
+              '(zoom=${zoom.toStringAsFixed(2)})');
         }
       });
     }
@@ -1796,8 +1805,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // One-time initial zoom to GPS (even with auto-follow off, centered on GPS).
       if (!_hasInitialZoomed && _isMapReady && _canAnimateCamera) {
         _hasInitialZoomed = true;
+        _zoomRestoreSettled = true;
         final initialPosition = center;
         _lastGpsPosition = initialPosition;
+        // The zoom the user last left the map at, or 16 on a first launch.
+        final initialZoom = _startupZoom(appState, 16.0 - _zoomEpsilon);
+        // Follow ticks aim at the startup zoom too, so one that lands during
+        // this animation cannot strand the camera at an in-between zoom.
+        // _onCameraIdle hands zoom back to the camera once it settles.
+        if (_autoFollow) _autoFollowDesiredZoom ??= initialZoom;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             if (_autoFollow) {
@@ -1805,13 +1821,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   initialPosition,
                   widget.bottomPaddingPixels,
                   widget.rightPaddingPixels,
-                  16.0 - _zoomEpsilon);
-              _animateToPositionWithZoom(adjustedPosition, 16.0 - _zoomEpsilon);
-              debugLog(
-                  '[MAP] Initial zoom to GPS position (with panel offset)');
+                  initialZoom);
+              _animateToPositionWithZoom(adjustedPosition, initialZoom);
+              debugLog('[MAP] Initial zoom to GPS position (with panel offset, '
+                  'zoom=${initialZoom.toStringAsFixed(2)})');
             } else {
-              _animateToPositionWithZoom(initialPosition, 16.0 - _zoomEpsilon);
-              debugLog('[MAP] Initial zoom to GPS position');
+              _animateToPositionWithZoom(initialPosition, initialZoom);
+              debugLog('[MAP] Initial zoom to GPS position '
+                  '(zoom=${initialZoom.toStringAsFixed(2)})');
             }
           }
         });
@@ -2256,9 +2273,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Collapsible map controls (toggle at top, expands downward)
   Widget _buildCollapsibleMapControls(AppStateProvider appState) {
     // Use external state if provided, otherwise use internal state
-    final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
+    // Portrait keeps its own state in the provider so it survives a relaunch.
+    final isExpanded = widget.mapControlsExpanded ??
+        appState.mapViewState.mapControlsExpanded;
     final onToggle = widget.onMapControlsToggle ??
-        () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
+        () => setState(() => appState.setMapControlsColumnExpanded(
+            !appState.mapViewState.mapControlsExpanded));
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2512,11 +2532,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // MapLibre GL map (base tiles via style; coverage overlay added programmatically)
         MapLibreMap(
           styleString: newStyleUrl,
+          // Read once by the platform view at creation, so pin the zoom the
+          // map was created at: _onCameraIdle compares against it.
           initialCameraPosition: CameraPosition(
             target: center,
-            zoom: _defaultZoom,
+            zoom: _initialCameraZoom ??=
+                appState.mapViewState.zoom ?? _defaultZoom,
           ),
-          minMaxZoomPreference: const MinMaxZoomPreference(3, _maxUserZoom),
+          minMaxZoomPreference:
+              const MinMaxZoomPreference(MapViewState.minZoom, _maxUserZoom),
           rotateGesturesEnabled: !_rotationLocked,
           scrollGesturesEnabled: true,
           zoomGesturesEnabled: true,
@@ -3751,8 +3775,38 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// current zoom (line ~1005), so the user can pinch-zoom freely while
   /// auto-follow is on without each tick snapping the zoom back.
   void _onCameraIdle() {
-    if (!_autoFollow || _mapController == null) return;
+    if (_mapController == null) return;
+    _rememberCameraZoom();
+    if (!_autoFollow) return;
     _autoFollowDesiredZoom = null;
+  }
+
+  /// The zoom a startup camera move should land at: the one the user last left
+  /// the map at, else [firstLaunchZoom]. Read live from the provider, because
+  /// the GPS listener can run this before the widget has rebuilt.
+  double _startupZoom(AppStateProvider appState, double firstLaunchZoom) =>
+      appState.mapViewState.zoom ?? firstLaunchZoom;
+
+  /// Record the settled camera zoom so the next launch opens at it. Skipped
+  /// for transient cameras: a focus view (tapped ping, cell or repeater) and
+  /// the history session fit. The provider drops repeats and debounces writes.
+  void _rememberCameraZoom() {
+    if (!mounted) return;
+    final zoom = _mapController?.cameraPosition?.zoom;
+    if (zoom == null || !zoom.isFinite) return;
+    final appState = context.read<AppStateProvider>();
+    if (!appState.preferencesLoaded) return;
+    if (_cameraFocusActive || appState.viewingHistorySession) return;
+    if (!_zoomRestoreSettled) {
+      final created = _initialCameraZoom;
+      if (created == null ||
+          !MapViewState.zoomWorthSaving(created, zoom)) {
+        return;
+      }
+      // The user zoomed before any startup zoom ran: theirs wins.
+      _zoomRestoreSettled = true;
+    }
+    appState.rememberMapZoom(zoom);
   }
 
   /// Add MeshMapper coverage raster overlay as a MapLibre source+layer.
@@ -5042,7 +5096,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Maximum zoom the camera can reach (matches `minMaxZoomPreference`).
   /// Subtracted by [_zoomEpsilon] to dodge the integer-zoom label-blink
   /// bug described above.
-  static const double _maxUserZoom = 17.0 - _zoomEpsilon;
+  static const double _maxUserZoom = MapViewState.maxZoom;
 
   /// How far a tap may land from a cluster badge and still count as hitting
   /// it. The native tap dispatcher is more forgiving than an exact-point
