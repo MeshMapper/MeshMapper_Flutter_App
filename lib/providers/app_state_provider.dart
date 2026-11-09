@@ -110,6 +110,7 @@ import '../utils/geo_validation.dart';
 import '../utils/public_key.dart';
 import '../utils/repeater_collision.dart';
 import '../utils/repeater_nicknames.dart';
+import '../utils/short_hop_ids.dart';
 import '../utils/ping_colors.dart';
 import '../utils/radio_filter.dart' as radio_filter;
 import '../utils/zone_group.dart';
@@ -1068,6 +1069,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     },
   );
 
+  /// Short heard ids to the one repeater they can mean, rebuilt whenever
+  /// [_repeaters] is replaced. Top Heard reads it on every heard packet.
+  List<Repeater>? _shortHopIdsSource;
+  ShortHopIds? _shortHopIds;
+
+  ShortHopIds get _heardIdResolver {
+    if (_shortHopIds == null || !identical(_shortHopIdsSource, _repeaters)) {
+      _shortHopIds = ShortHopIds.fromRepeaters(_repeaters);
+      _shortHopIdsSource = _repeaters;
+    }
+    return _shortHopIds!;
+  }
+
+  /// The widest hop width in play: the device's and the region's.
+  int get _topHeardHopBytes => math.max(_hopBytes, _apiService.apiHopBytes);
+
+  /// The id a heard repeater shows and groups under in Top Heard: a short
+  /// hop id ("A8") that only one known repeater starts with becomes that
+  /// repeater's id ("A81EA4"); anything else is kept. Display only, see
+  /// [ShortHopIds].
+  String _topHeardId(String repeaterId) =>
+      _heardIdResolver.displayId(repeaterId, hopBytes: _topHeardHopBytes);
+
   /// The server's scope stamps, rebuilt whenever [_repeaters] is replaced.
   List<Repeater>? _scopeServerInfoSource;
   Map<String, int?> _scopeServerInfo = const {};
@@ -1882,14 +1906,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _updateTopRepeaters(
       List<({String repeaterId, double snr})> current, OverlayPingType type,
       {Map<String, String>? identities}) {
-    _overlayIdentityById = identities ?? const {};
-    final bestSnr = <String, double>{};
-    for (final r in current) {
-      final key = r.repeaterId.toUpperCase();
-      if (!bestSnr.containsKey(key) || r.snr > bestSnr[key]!) {
-        bestSnr[key] = r.snr;
-      }
-    }
+    // A short hop id that only one known repeater starts with joins that
+    // repeater's row (issue #637), so the identities move with it. Two
+    // different identities landing on one row cancel out, as contested
+    // discovery hashes do.
+    final rekeyed = <String, String>{};
+    final contested = <String>{};
+    (identities ?? const <String, String>{}).forEach((displayId, identity) {
+      final key = _topHeardId(displayId);
+      final existing = rekeyed[key];
+      if (existing != null && existing != identity) contested.add(key);
+      rekeyed[key] = identity;
+    });
+    contested.forEach(rekeyed.remove);
+    _overlayIdentityById = rekeyed.isEmpty ? const {} : rekeyed;
+    final bestSnr = _heardIdResolver.bestSnrByRepeater(current,
+        hopBytes: _topHeardHopBytes);
     final fresh = bestSnr.entries
         .map((e) => (repeaterId: e.key, snr: e.value, type: type))
         .toList()
@@ -1939,7 +1971,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Update the RX overlay slot — window matches auto-ping interval (best SNR wins).
   void _updateRxOverlaySlot(String repeaterId, double snr) {
-    final entry = (repeaterId: repeaterId.toUpperCase(), snr: snr);
+    final entry = (repeaterId: _topHeardId(repeaterId), snr: snr);
     if (_rxOverlayWindowTimer?.isActive ?? false) {
       if (_rxOverlaySlot == null || snr > _rxOverlaySlot!.snr) {
         _rxOverlaySlot = entry;

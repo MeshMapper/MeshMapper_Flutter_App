@@ -189,6 +189,17 @@ conflict warning, since a wider-addressable device may still share two bytes.
 These use the existing duplicate marker style. No collision pass runs on a
 position tick or map rebuild. Load completion uses `_notifyMapNow()`.
 
+A heard hop id carries the width its sender chose, so a 3-byte region can
+still hear repeater `A81EA4` as `A8`. Top Heard (and through it the watch,
+Live Activity and CarPlay rows) shows and groups such an id as the one
+repeater it can mean: `ShortHopIds` (`lib/utils/short_hop_ids.dart`) follows
+the server's `rc_resolve_token` rule (key = hex id, else legacy id; matches
+whose keys form one prefix chain are one device; anything else stays the
+short id) and widens a match to the wider of its advertised width and the
+device/region hop width. The provider builds it once per repeater list
+(prefix map for 1-3 byte ids). It is display only: logs, RX pins and uploads
+keep the raw hop id, and the server resolves it again itself.
+
 Labels and detail/Manage sheets use each repeater's `advert_bytes`, falling
 back to `hop_bytes`, independently of regional TX path-width enforcement.
 Coverage requests use up to 40 characters of the full key to meet the API's
