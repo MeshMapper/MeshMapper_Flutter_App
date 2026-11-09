@@ -27,6 +27,7 @@ import '../utils/cluster_spread.dart';
 import '../utils/coalesced_async_runner.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
+import '../utils/gps_marker_colors.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
@@ -67,7 +68,7 @@ String _repeaterIdentity(Repeater repeater) => rcCleanHex(repeater.hexId);
 /// Repeater shapes have one bitmap per (status color × hop_byte shape) — 12
 /// total. Coverage markers have one bitmap per (ping type × success state) for
 /// the user's currently-selected style — 8 total per style preference. GPS
-/// marker has one bitmap per style — 6 total.
+/// marker has one bitmap per (style × colour choice) — 14 total.
 class _MapImages {
   _MapImages._();
 
@@ -113,10 +114,14 @@ class _MapImages {
 
   static const coverageTypes = ['tx', 'rx', 'disc', 'trace', 'deferred'];
 
-  // GPS marker bitmaps: one per style
-  // Names: gps_arrow, gps_car, etc. The list of styles lives in
-  // _registerMapImages where we map each style key to its CustomPainter.
-  static String gps(String style) => 'gps_$style';
+  // GPS marker bitmaps: one per style and colour choice
+  // Names: gps_arrow, gps_car, etc. for the default colour, gps_car_green etc.
+  // for the others. The list of styles lives in _registerMapImages where we
+  // map each style key to its CustomPainter.
+  static String gps(String style, String color) =>
+      GpsMarkerColors.normalize(color) == GpsMarkerColors.defaultChoice
+          ? 'gps_$style'
+          : 'gps_${style}_$color';
 }
 
 /// Renders a [CustomPainter] into a PNG byte buffer using `dart:ui`.
@@ -1888,6 +1893,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState.currentPosition?.longitude,
         _computedHeading,
         appState.preferences.gpsMarkerStyle,
+        appState.preferences.gpsMarkerColor,
       );
       if (gpsVersion != _lastGpsSyncVersion) {
         // NOT recorded here: _syncGpsSymbol records the version of what it
@@ -4294,7 +4300,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ///     of the state bar; a `new` chip is taller than the rest.
   ///   - 5 cluster badge discs, one per dominant state.
   ///   - 8 coverage marker bitmaps for the user's currently-selected style.
-  ///   - 6 GPS marker bitmaps (one per style).
+  ///   - 14 GPS marker bitmaps (7 styles × 2 colour choices). Every colour is
+  ///     baked up front, so a colour change only swaps the image name.
   ///
   /// The cluster presence-dot strips are NOT registered here: which ones are
   /// reachable depends on the states actually on screen, so
@@ -4350,27 +4357,34 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       stage = 'registering coverage images (${appState.preferences.markerStyle})';
       await _registerCoverageImages(appState.preferences.markerStyle);
 
-      // 4. GPS marker variants: 7 styles
+      // 4. GPS marker variants: 7 styles × every colour choice
       const gpsSize = Size(48, 48);
-      final gpsPainters = <String, CustomPainter>{
-        'arrow': const _ArrowPainter(),
-        'car': const _CarMarkerPainter(),
-        'bike': const _BikeMarkerPainter(),
-        'boat': const _BoatMarkerPainter(),
-        'walk': const _WalkMarkerPainter(),
-        'dog': const _DogMarkerPainter(),
-        'chomper': const _ChomperMarkerPainter(),
+      final gpsPainters = <String, CustomPainter Function(GpsMarkerColors)>{
+        'arrow': _ArrowPainter.new,
+        'car': _CarMarkerPainter.new,
+        'bike': _BikeMarkerPainter.new,
+        'boat': _BoatMarkerPainter.new,
+        'walk': _WalkMarkerPainter.new,
+        'dog': _DogMarkerPainter.new,
+        'chomper': _ChomperMarkerPainter.new,
       };
+      var gpsImageCount = 0;
       for (final entry in gpsPainters.entries) {
-        stage = 'rendering ${_MapImages.gps(entry.key)}';
-        final bytes = await _renderPainterToPng(entry.value, gpsSize);
-        stage = 'adding ${_MapImages.gps(entry.key)}';
-        await _mapController!.addImage(_MapImages.gps(entry.key), bytes);
+        for (final color in GpsMarkerColors.choices) {
+          final name = _MapImages.gps(entry.key, color);
+          final painter =
+              entry.value(GpsMarkerColors.forStyle(entry.key, color));
+          stage = 'rendering $name';
+          final bytes = await _renderPainterToPng(painter, gpsSize);
+          stage = 'adding $name';
+          await _mapController!.addImage(name, bytes);
+          gpsImageCount++;
+        }
       }
 
       _imagesRegistered = true;
       debugLog(
-          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater chip + ${_MapImages.repeaterStatuses.length} cluster badge + 8 coverage + ${gpsPainters.length} GPS marker images');
+          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater chip + ${_MapImages.repeaterStatuses.length} cluster badge + 8 coverage + $gpsImageCount GPS marker images');
       // NOTE: do NOT trigger _syncAllAnnotations here. The repeater cluster
       // source/layers haven't been created yet — _onStyleLoaded calls
       // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
@@ -5663,8 +5677,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       await _mapController!.setGeoJsonSource(
         _gpsPuckSourceId,
-        _buildGpsPuckFeatureCollection(
-            pos.latitude, pos.longitude, style, iconRotate),
+        _buildGpsPuckFeatureCollection(pos.latitude, pos.longitude, style,
+            appState.preferences.gpsMarkerColor, iconRotate),
       );
       _recordGpsSyncVersion(appState, pos);
     } catch (e) {
@@ -5681,20 +5695,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       pos?.longitude,
       _computedHeading,
       appState.preferences.gpsMarkerStyle,
+      appState.preferences.gpsMarkerColor,
     );
   }
 
   /// One-Point FeatureCollection for the GPS puck source. `iconImage` and
   /// `iconRotate` are read by the puck symbol layer's data-driven expressions.
-  Map<String, dynamic> _buildGpsPuckFeatureCollection(
-      double lat, double lon, String style, double iconRotate) {
+  Map<String, dynamic> _buildGpsPuckFeatureCollection(double lat, double lon,
+      String style, String color, double iconRotate) {
     return {
       'type': 'FeatureCollection',
       'features': [
         {
           'type': 'Feature',
           'properties': {
-            'iconImage': _MapImages.gps(style),
+            'iconImage': _MapImages.gps(style, color),
             'iconRotate': iconRotate,
           },
           'geometry': {
@@ -5787,7 +5802,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       await _mapController!.setGeoJsonSource(
         _gpsPuckSourceId,
-        _buildGpsPuckFeatureCollection(pos.latitude, pos.longitude, style,
+        _buildGpsPuckFeatureCollection(
+            pos.latitude,
+            pos.longitude,
+            style,
+            appState.preferences.gpsMarkerColor,
             _gpsIconRotate(style, _computedHeading ?? 0)),
       );
     } catch (_) {}
@@ -6814,6 +6833,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _focusedPingTimestamp,
       _focusedRepeaters.length,
       appState.preferences.gpsMarkerStyle,
+      appState.preferences.gpsMarkerColor,
       appState.preferences.markerStyle,
       txEchoTotal,
       discNodeTotal,
@@ -11389,7 +11409,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
 /// Paints a crisp directional arrow pointing up
 class _ArrowPainter extends CustomPainter {
-  const _ArrowPainter();
+  final GpsMarkerColors colors;
+  const _ArrowPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11409,9 +11430,9 @@ class _ArrowPainter extends CustomPainter {
 
     canvas.drawPath(outlinePath, outlinePaint);
 
-    // Blue arrow on top
+    // Coloured arrow on top
     final arrowPaint = Paint()
-      ..color = const Color(0xFF2196F3) // Material blue
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     final arrowPath = ui.Path()
@@ -11430,7 +11451,8 @@ class _ArrowPainter extends CustomPainter {
 
 /// Paints a car silhouette for GPS position marker
 class _CarMarkerPainter extends CustomPainter {
-  const _CarMarkerPainter();
+  final GpsMarkerColors colors;
+  const _CarMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11449,9 +11471,9 @@ class _CarMarkerPainter extends CustomPainter {
     );
     canvas.drawRRect(outlineRect, outlinePaint);
 
-    // Blue car body
+    // Car body
     final bodyPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     final bodyRect = RRect.fromRectAndRadius(
@@ -11460,9 +11482,9 @@ class _CarMarkerPainter extends CustomPainter {
     );
     canvas.drawRRect(bodyRect, bodyPaint);
 
-    // Windshield (darker blue rectangle near top)
+    // Windshield (darker rectangle near top)
     final windshieldPaint = Paint()
-      ..color = const Color(0xFF1565C0)
+      ..color = colors.shade
       ..style = PaintingStyle.fill;
     final windshieldRect = RRect.fromRectAndRadius(
       Rect.fromCenter(center: Offset(cx, cy - 3), width: 7, height: 4),
@@ -11477,7 +11499,8 @@ class _CarMarkerPainter extends CustomPainter {
 
 /// Paints a bicycle silhouette for GPS position marker
 class _BikeMarkerPainter extends CustomPainter {
-  const _BikeMarkerPainter();
+  final GpsMarkerColors colors;
+  const _BikeMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11490,13 +11513,13 @@ class _BikeMarkerPainter extends CustomPainter {
       ..strokeWidth = 3;
 
     final bikePaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5
       ..strokeCap = StrokeCap.round;
 
     final fillPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     // Two wheels
@@ -11523,11 +11546,11 @@ class _BikeMarkerPainter extends CustomPainter {
           ..strokeWidth = 3.5
           ..strokeCap = StrokeCap.round);
 
-    // Blue wheels
+    // Wheels
     canvas.drawCircle(leftWheel, wheelR, bikePaint);
     canvas.drawCircle(rightWheel, wheelR, bikePaint);
 
-    // Blue frame
+    // Frame
     canvas.drawPath(framePath, bikePaint);
 
     // Seat dot
@@ -11540,7 +11563,8 @@ class _BikeMarkerPainter extends CustomPainter {
 
 /// Paints a boat silhouette for GPS position marker
 class _BoatMarkerPainter extends CustomPainter {
-  const _BoatMarkerPainter();
+  final GpsMarkerColors colors;
+  const _BoatMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11553,7 +11577,7 @@ class _BoatMarkerPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     final fillPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     // Hull outline (wider)
@@ -11587,7 +11611,7 @@ class _BoatMarkerPainter extends CustomPainter {
         Offset(cx, cy + 2),
         Offset(cx, cy - 9),
         Paint()
-          ..color = const Color(0xFF2196F3)
+          ..color = colors.body
           ..strokeWidth = 1.5
           ..strokeCap = StrokeCap.round);
 
@@ -11608,7 +11632,7 @@ class _BoatMarkerPainter extends CustomPainter {
     canvas.drawPath(
         sail,
         Paint()
-          ..color = const Color(0xFF64B5F6)
+          ..color = colors.light
           ..style = PaintingStyle.fill);
   }
 
@@ -11618,7 +11642,8 @@ class _BoatMarkerPainter extends CustomPainter {
 
 /// Paints a walking person silhouette for GPS position marker
 class _WalkMarkerPainter extends CustomPainter {
-  const _WalkMarkerPainter();
+  final GpsMarkerColors colors;
+  const _WalkMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11632,13 +11657,13 @@ class _WalkMarkerPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     final personPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round;
 
     final fillPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     // Head outline + fill
@@ -11676,9 +11701,10 @@ class _WalkMarkerPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-/// Paints a Chomper (cyan wedge) GPS position marker — mouth faces up (direction of travel)
+/// Paints a Chomper (wedge, cyan by default) GPS position marker — mouth faces up (direction of travel)
 class _ChomperMarkerPainter extends CustomPainter {
-  const _ChomperMarkerPainter();
+  final GpsMarkerColors colors;
+  const _ChomperMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11709,9 +11735,9 @@ class _ChomperMarkerPainter extends CustomPainter {
       ..close();
     canvas.drawPath(outlinePath, outlinePaint);
 
-    // Cyan body
+    // Body
     final bodyPaint = Paint()
-      ..color = const Color(0xFF00BCD4)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     final bodyPath = ui.Path()
@@ -11732,10 +11758,8 @@ class _ChomperMarkerPainter extends CustomPainter {
 
 /// Paints a dog silhouette (side profile, facing right) for GPS position marker
 class _DogMarkerPainter extends CustomPainter {
-  const _DogMarkerPainter();
-
-  static const _blue = Color(0xFF2196F3);
-  static const _darkBlue = Color(0xFF1565C0);
+  final GpsMarkerColors colors;
+  const _DogMarkerPainter(this.colors);
 
   /// Body, neck, head and muzzle as one closed silhouette around [cx],[cy].
   ui.Path _bodyPath(double cx, double cy) {
@@ -11796,8 +11820,8 @@ class _DogMarkerPainter extends CustomPainter {
     final body = _bodyPath(cx, cy);
     final tail = _tailPath(cx, cy);
 
-    // Every white outline goes down before any blue, so the halo around one
-    // limb never paints over the blue of the one beside it.
+    // Every white outline goes down before any fill, so the halo around one
+    // limb never paints over the fill of the one beside it.
     final legOutline = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
@@ -11815,20 +11839,20 @@ class _DogMarkerPainter extends CustomPainter {
     canvas.drawPath(body, bodyOutline);
 
     final legPaint = Paint()
-      ..color = _blue
+      ..color = colors.body
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.6
       ..strokeCap = StrokeCap.round;
 
     _drawLegs(canvas, cx, cy, legPaint);
     canvas.drawPath(tail, legPaint);
-    canvas.drawPath(body, Paint()..color = _blue);
+    canvas.drawPath(body, Paint()..color = colors.body);
 
     // Ear and nose read as darker shading on top of the body, the way the car
     // marker's windshield does — no white outline, so nothing separates limbs.
-    canvas.drawPath(_earPath(cx, cy), Paint()..color = _darkBlue);
+    canvas.drawPath(_earPath(cx, cy), Paint()..color = colors.shade);
     canvas.drawCircle(
-        Offset(cx + 11.3, cy - 6.3), 0.9, Paint()..color = _darkBlue);
+        Offset(cx + 11.3, cy - 6.3), 0.9, Paint()..color = colors.shade);
     canvas.drawCircle(
         Offset(cx + 7, cy - 8.5), 1, Paint()..color = Colors.white);
   }

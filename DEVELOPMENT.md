@@ -174,6 +174,22 @@ pixels) for every ID length and state, on both map modes and in the detail
 popup header. Cluster badges remain circular. The matching server change is
 implemented in the server repository.
 
+### GPS Marker Color
+
+Settings > Map > Markers > GPS Marker Color (`UserPreferences.gpsMarkerColor`,
+JSON key `gpsMarkerColor`: `default` or `green`; anything else reads as
+`default`). It applies to every GPS marker style. `default` keeps each style's
+own colour (blue, cyan for Chomper). The colours live in `GpsMarkerColors`
+(`lib/utils/gps_marker_colors.dart`) and the painters in `map_widget.dart` take
+them as a parameter. `_registerMapImages` bakes every style in every colour
+(`gps_car`, `gps_car_green`, ...) in its one existing pass, so a colour change
+only swaps the puck's `iconImage`, through the same version-gated GPS sync a
+style change uses. The marker colour does not follow Color Vision, the same as
+the blue never did: it is the user's own pick and carries no meaning, and every
+style's white outline is what separates it from the coverage under any palette.
+The green is a dark one, so it also stands apart from the pale green
+bidirectional squares of the default palette.
+
 ### Repeater Identity and Collision Handling
 
 Repeater identity is the cleaned full public key. The server's short `id`

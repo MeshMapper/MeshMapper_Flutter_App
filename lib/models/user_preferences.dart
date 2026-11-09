@@ -1,3 +1,4 @@
+import '../utils/gps_marker_colors.dart';
 import '../utils/public_key.dart';
 
 /// User preferences for wardriving configuration
@@ -152,6 +153,10 @@ class UserPreferences {
   /// GPS position marker style (arrow, car, bike, boat, walk)
   final String gpsMarkerStyle;
 
+  /// GPS position marker colour, for every style ('default', 'green').
+  /// See [GpsMarkerColors].
+  final String gpsMarkerColor;
+
   /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
   final String colorVisionType;
 
@@ -235,6 +240,7 @@ class UserPreferences {
     this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
+    this.gpsMarkerColor = GpsMarkerColors.defaultChoice,
     this.colorVisionType = 'none',
     this.mapTilesEnabled = true,
     this.coverageOverlayOpacity = 0.7,
@@ -306,6 +312,8 @@ class UserPreferences {
       liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
+      gpsMarkerColor: GpsMarkerColors.normalize(
+          json['gpsMarkerColor'] is String ? json['gpsMarkerColor'] : null),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
       coverageOverlayOpacity:
@@ -411,6 +419,7 @@ class UserPreferences {
       'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
+      'gpsMarkerColor': gpsMarkerColor,
       'colorVisionType': colorVisionType,
       'mapTilesEnabled': mapTilesEnabled,
       'coverageOverlayOpacity': coverageOverlayOpacity,
@@ -471,6 +480,7 @@ class UserPreferences {
     bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
+    String? gpsMarkerColor,
     String? colorVisionType,
     bool? mapTilesEnabled,
     double? coverageOverlayOpacity,
@@ -535,6 +545,7 @@ class UserPreferences {
           liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
+      gpsMarkerColor: gpsMarkerColor ?? this.gpsMarkerColor,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
       coverageOverlayOpacity:
@@ -623,6 +634,7 @@ class UserPreferences {
         other.liveActivityShowNames == liveActivityShowNames &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
+        other.gpsMarkerColor == gpsMarkerColor &&
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
         other.coverageOverlayOpacity == coverageOverlayOpacity &&
@@ -678,6 +690,7 @@ class UserPreferences {
       liveActivityShowNames,
       markerStyle,
       gpsMarkerStyle,
+      gpsMarkerColor,
       colorVisionType,
       mapTilesEnabled,
       coverageOverlayOpacity,

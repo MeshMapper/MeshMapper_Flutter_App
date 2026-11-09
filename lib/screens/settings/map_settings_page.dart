@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../models/user_preferences.dart';
 import '../../providers/app_state_provider.dart';
+import '../../utils/gps_marker_colors.dart';
 import '../offline_maps_screen.dart';
 import 'repeater_nicknames_page.dart';
 import 'settings_section_card.dart';
@@ -123,6 +124,13 @@ class MapSettingsPage extends StatelessWidget {
               subtitle: Text(_gpsMarkerLabel(prefs.gpsMarkerStyle)),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _showGpsMarkerSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.palette),
+              title: const Text('GPS Marker Color'),
+              subtitle: Text(_gpsMarkerColorLabel(prefs.gpsMarkerColor)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showGpsMarkerColorSelector(context, appState),
             ),
             SwitchListTile(
               secondary: const Icon(Icons.cell_tower),
@@ -277,15 +285,40 @@ class MapSettingsPage extends StatelessWidget {
     );
   }
 
+  static const _gpsMarkerStyles = [
+    'arrow',
+    'car',
+    'bike',
+    'boat',
+    'walk',
+    'dog',
+    'chomper',
+  ];
+
+  /// The settings icon for a GPS marker [style].
+  static Widget _gpsMarkerIcon(String style) {
+    return switch (style) {
+      'car' => const Icon(Icons.directions_car),
+      'bike' => const Icon(Icons.directions_bike),
+      'boat' => const Icon(Icons.directions_boat),
+      'walk' => const Icon(Icons.directions_walk),
+      'dog' => const FaIcon(FontAwesomeIcons.dog),
+      'chomper' => const _ChomperIcon(),
+      _ => const Icon(Icons.navigation),
+    };
+  }
+
+  String _gpsMarkerColorLabel(String color) {
+    return switch (GpsMarkerColors.normalize(color)) {
+      GpsMarkerColors.greenChoice => 'Green',
+      _ => 'Default',
+    };
+  }
+
   void _showGpsMarkerSelector(BuildContext context, AppStateProvider appState) {
     final options = <(String, String, Widget)>[
-      ('arrow', 'Arrow', const Icon(Icons.navigation)),
-      ('car', 'Car', const Icon(Icons.directions_car)),
-      ('bike', 'Bike', const Icon(Icons.directions_bike)),
-      ('boat', 'Boat', const Icon(Icons.directions_boat)),
-      ('walk', 'Walk', const Icon(Icons.directions_walk)),
-      ('dog', 'Dog', const FaIcon(FontAwesomeIcons.dog)),
-      ('chomper', 'Chomper', const _ChomperIcon()),
+      for (final style in _gpsMarkerStyles)
+        (style, _gpsMarkerLabel(style), _gpsMarkerIcon(style)),
     ];
     showModalBottomSheet(
       context: context,
@@ -320,6 +353,63 @@ class MapSettingsPage extends StatelessWidget {
                         secondary: icon,
                         title: Text(label),
                         value: value,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// GPS marker colour picker. Each option shows the current marker style in
+  /// that colour, so the choice previews what the map will show.
+  void _showGpsMarkerColorSelector(
+      BuildContext context, AppStateProvider appState) {
+    final style = appState.preferences.gpsMarkerStyle;
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('GPS Marker Color',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              RadioGroup<String>(
+                groupValue: GpsMarkerColors.normalize(
+                    appState.preferences.gpsMarkerColor),
+                onChanged: (v) {
+                  if (v != null) {
+                    appState.updatePreferences(
+                        appState.preferences.copyWith(gpsMarkerColor: v));
+                  }
+                  Navigator.pop(context);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final color in GpsMarkerColors.choices)
+                      RadioListTile<String>(
+                        secondary: IconTheme.merge(
+                          data: IconThemeData(
+                            color:
+                                GpsMarkerColors.forStyle(style, color).body,
+                          ),
+                          child: _gpsMarkerIcon(style),
+                        ),
+                        title: Text(_gpsMarkerColorLabel(color)),
+                        value: color,
                       ),
                   ],
                 ),
