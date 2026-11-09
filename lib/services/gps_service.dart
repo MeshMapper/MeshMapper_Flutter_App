@@ -14,28 +14,6 @@ import 'android_altitude_channel.dart';
 import 'fix_altitude.dart';
 import 'fix_altitude_resolver.dart';
 
-/// The position stream settings: high accuracy and a 10 m distance filter
-/// everywhere. On Android, both Google's fused provider and Android's own
-/// location service ([useAndroidLocationManager]) are asked for a fix every
-/// second: left unset, the plugin asks every 5 s, and pings reused a stale
-/// fix while driving. `useMSLAltitude` stays off; see the note at the stream.
-@visibleForTesting
-LocationSettings gpsStreamSettings({
-  required bool isAndroid,
-  required bool useAndroidLocationManager,
-}) =>
-    isAndroid
-        ? AndroidSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-            intervalDuration: const Duration(seconds: 1),
-            forceLocationManager: useAndroidLocationManager,
-          )
-        : const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-          );
-
 /// Whether a position stream error means the user declined Google's
 /// "Location Accuracy" dialog rather than turned location off, so GPS should
 /// move to Android's own location service, which never shows that dialog.
@@ -180,12 +158,19 @@ class GpsService {
   static const String _androidLocationManagerKey =
       'gps_android_location_manager';
 
-  /// The stream settings: Google's fused provider on Android, or Android's
-  /// own location service once that is in use. See [gpsStreamSettings].
-  LocationSettings _streamSettings() => gpsStreamSettings(
-        isAndroid: !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
-        useAndroidLocationManager: _useAndroidLocationManager,
-      );
+  /// The stream settings: the plugin default (Google's fused provider on
+  /// Android), or Android's own location service once that is in use.
+  /// `useMSLAltitude` stays off either way; see the note at the stream.
+  LocationSettings _streamSettings() => _useAndroidLocationManager
+      ? AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10,
+          forceLocationManager: true,
+        )
+      : const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10,
+        );
 
   /// Airborne latch state. See [trackAirborne].
   int _airborneStreak = 0;
