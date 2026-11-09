@@ -38,6 +38,7 @@ import '../services/api_service.dart';
 import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
 import '../services/background_location_policy.dart';
+import '../services/precise_location_gate.dart';
 import '../services/noise_floor_session_store.dart';
 import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
@@ -3738,6 +3739,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ),
         );
       }
+      if (_connectRefusedForPreciseLocation) {
+        return const ExternalCommandCompletion(
+          success: false,
+          disposition: ExternalCommandDisposition.refused,
+          message: ExternalCommandReason.other(preciseLocationVoiceMessage),
+        );
+      }
       return ExternalCommandCompletion(
         success: false,
         disposition: ExternalCommandDisposition.refused,
@@ -5384,6 +5392,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('BLE')) return;
     _isConnecting = true;
     final myGeneration = ++_connectGeneration;
     // Read now, so the notify below can start the session service with no
@@ -5634,6 +5643,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('TCP')) return;
     _isConnecting = true;
     // Also invalidates any pending BLE workflow re-run. An abandoned TCP
     // reconnect bumps it again, and this attempt then stands down as the BLE
@@ -5799,6 +5809,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('USB')) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
     // Read now, so the notify below can start the session service with no
@@ -5944,6 +5955,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('serial')) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
     // Read now, so the notify below can start the session service with no
@@ -7733,6 +7745,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_gpsService.isAirborne) {
         debugLog('[CONN] Auto-reconnect abandoned: GPS says aircraft');
         _abandonAutoReconnectForAirborne();
+        return;
+      }
+      // Cheap re-read, no prompt: the session started precise, so this only
+      // catches Precise Location turned off while the radio was away.
+      final precise = await _preciseLocationGate.allowsConnect(
+        platform: PreciseLocationGate.currentPlatform,
+        simulatorEnabled: _gpsService.isSimulatorEnabled,
+        canPrompt: false,
+        entry: 'auto-reconnect',
+      );
+      if (!_isAutoReconnecting) return; // Cancelled during the read
+      if (!precise) {
+        _abandonAutoReconnectForImpreciseLocation();
         return;
       }
 
@@ -9636,6 +9661,79 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugWarn('[APP] Connect refused: GPS says aircraft');
     notifyListeners();
     return true;
+  }
+
+  /// Precise Location block at the front door. True when the connect must not
+  /// start. See `lib/services/precise_location_gate.dart`.
+  ///
+  /// Asks for precise location at most once per tap (iOS temporary full
+  /// accuracy, or the Android fine re-request through
+  /// [preciseLocationUpgradeRequester]) and only while the app is on screen.
+  /// A refusal raises [preciseLocationPromptDue] for the explanation dialog
+  /// and sets no connectionError, like the airborne block. Auto-reconnect
+  /// skips this: [_attemptReconnect] re-reads the accuracy itself, without a
+  /// prompt. Starts no GPS; an Android upgrade only restarts a stream that is
+  /// already running, so its fixes come in precise.
+  Future<bool> _refuseConnectIfImprecise(String entry) async {
+    if (_isAutoReconnecting) return false;
+    if (_preciseLocationCheckInFlight) {
+      debugLog('[CONN] Precise location check already in progress, '
+          'ignoring duplicate tap');
+      return true;
+    }
+    _preciseLocationCheckInFlight = true;
+    _connectRefusedForPreciseLocation = false;
+    var upgradeRequested = false;
+    try {
+      final upgrade = preciseLocationUpgradeRequester;
+      final allowed = await _preciseLocationGate.allowsConnect(
+        platform: PreciseLocationGate.currentPlatform,
+        simulatorEnabled: _gpsService.isSimulatorEnabled,
+        canPrompt: WidgetsBinding.instance.lifecycleState ==
+            AppLifecycleState.resumed,
+        requestFineLocation: upgrade == null
+            ? null
+            : () {
+                upgradeRequested = true;
+                return upgrade();
+              },
+        entry: entry,
+      );
+      if (_isDisposed) return true;
+      if (!allowed) {
+        _connectRefusedForPreciseLocation = true;
+        _preciseLocationPromptDue = true;
+        notifyListeners();
+        return true;
+      }
+      if (upgradeRequested && _gpsService.isWatching) {
+        debugLog('[GPS] Fine location granted, restarting the running '
+            'stream for precise fixes');
+        await restartGpsAfterPermission(keepTracking: true);
+      }
+      if (_isConnecting) {
+        debugLog('[APP] Connection started during the precise location '
+            'check, ignoring this tap');
+        return true;
+      }
+      return false;
+    } finally {
+      _preciseLocationCheckInFlight = false;
+    }
+  }
+
+  /// Ends an auto-reconnect whose location accuracy dropped to approximate
+  /// while the radio was away. Same shape as the airborne abandon.
+  void _abandonAutoReconnectForImpreciseLocation() {
+    debugError('[GPS] Location accuracy is reduced, abandoning '
+        'auto-reconnect');
+    if (!_autoPingWasEnabled) {
+      _playDisconnectAlert(_reconnectStartedAt ?? DateTime.now());
+    }
+    logError('Session ended: Precise Location is off, so your position is '
+        'too rough to map coverage.');
+    _preciseLocationPromptDue = true;
+    _abandonAutoReconnect();
   }
 
   /// The finishing half of an auto-mode stop, with the radio still connected.
@@ -13635,6 +13733,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// auto-reconnect: a BLE flap mid-drive must not pop a dialog.
   bool _carpeaterReentryPromptDue = false;
   bool get carpeaterReentryPromptDue => _carpeaterReentryPromptDue;
+
+  /// Runs the Precise Location check at Connect.
+  final PreciseLocationGate _preciseLocationGate = PreciseLocationGate();
+  bool _preciseLocationCheckInFlight = false;
+
+  /// Set when the last connect tap was refused for approximate location.
+  /// Read by the Siri connect answer; reset at the next check.
+  bool _connectRefusedForPreciseLocation = false;
+  bool _preciseLocationPromptDue = false;
+
+  /// True when a connect was refused (or an auto-reconnect ended) for
+  /// approximate location. MainScaffold shows "Precise Location needed".
+  bool get preciseLocationPromptDue => _preciseLocationPromptDue;
+
+  void acknowledgePreciseLocationPrompt() {
+    _preciseLocationPromptDue = false;
+  }
+
+  /// Android: shows the location disclosure and re-requests fine location,
+  /// which Android 12+ answers with its "precise" upgrade dialog when only
+  /// approximate is granted. Registered by MainScaffold, which owns the
+  /// disclosure; null while no screen can show it. Returns true when the
+  /// system request was made.
+  Future<bool> Function()? preciseLocationUpgradeRequester;
 
   void acknowledgeCarpeaterReentryPrompt() {
     _carpeaterReentryPromptDue = false;

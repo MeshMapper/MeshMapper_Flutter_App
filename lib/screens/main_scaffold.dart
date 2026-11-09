@@ -12,6 +12,7 @@ import '../providers/app_state_provider.dart';
 import '../services/location_consent.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/portal_account_service.dart';
+import '../services/precise_location_gate.dart';
 import '../utils/debug_logger_io.dart';
 import '../widgets/app_toast.dart';
 import 'home_screen.dart';
@@ -37,6 +38,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _carpeaterPromptOpen = false;
   bool _carpeaterNoticeOpen = false;
   bool _linkPromptDialogOpen = false;
+  bool _preciseLocationDialogOpen = false;
+  AppStateProvider? _appStateForUpgrade;
   bool _signInErrorToastOpen = false;
   final _onboardingGate = OnboardingPromptGate();
   final _onboardingGuidePresenter = OnboardingGuidePresenter();
@@ -65,6 +68,12 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
     _onboardingGuidePresenter.coordinator
         .addListener(_onOnboardingReservationChanged);
+    // Android's Precise Location upgrade at Connect goes through the same
+    // disclosure as every other location prompt, which needs this context.
+    if (!kIsWeb && Platform.isAndroid) {
+      _appStateForUpgrade = context.read<AppStateProvider>()
+        ..preciseLocationUpgradeRequester = _requestPreciseLocationUpgrade;
+    }
     // Check disclosure after first frame (needs context)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAndShowDisclosure();
@@ -73,6 +82,7 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   @override
   void dispose() {
+    _appStateForUpgrade?.preciseLocationUpgradeRequester = null;
     _onboardingGuidePresenter.coordinator
         .removeListener(_onOnboardingReservationChanged);
     super.dispose();
@@ -223,6 +233,52 @@ class _MainScaffoldState extends State<MainScaffold> {
       final appState = context.read<AppStateProvider>();
       await appState.restartGpsAfterPermission();
     }
+  }
+
+  /// Android: re-request fine location while only approximate is granted,
+  /// after the usual disclosure (Google Play wants it before every system
+  /// location prompt). Android 12+ answers with its "precise" upgrade dialog.
+  /// True when the request was made. Starts no GPS.
+  Future<bool> _requestPreciseLocationUpgrade() async {
+    if (!mounted) return false;
+    final status = await Permission.locationWhenInUse.status;
+    if (status.isPermanentlyDenied) {
+      debugLog('[GPS] Fine location permanently denied, no re-request');
+      return false;
+    }
+    if (!await _discloseLocation()) return false;
+    final result = await Permission.locationWhenInUse.request();
+    debugLog('[GPS] Fine location re-request returned $result');
+    return true;
+  }
+
+  /// Explains a connect refused for approximate location.
+  void _showPreciseLocationDialog() {
+    debugLog('[GPS] Showing the Precise Location needed dialog');
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text(preciseLocationDialogTitle),
+        content: const Text(preciseLocationDialogBody),
+        actions: [
+          TextButton(
+            onPressed: () {
+              debugLog('[GPS] Precise Location dialog: cancelled');
+              Navigator.pop(dialogContext);
+            },
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              debugLog('[GPS] Precise Location dialog: opening app settings');
+              Navigator.pop(dialogContext);
+              Geolocator.openAppSettings();
+            },
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// One-tap offer to bind the connected radio to the signed-in account.
@@ -506,6 +562,24 @@ class _MainScaffoldState extends State<MainScaffold> {
         if (code == null) return;
         appState.clearPortalSignInError();
         _showPortalSignInError(code);
+      });
+    }
+
+    // A connect refused for approximate location is explained here, whichever
+    // tab the tap came from (the Connection screen, the remembered companion,
+    // Siri).
+    if (appState.preciseLocationPromptDue &&
+        !onboardingModalLaneReserved &&
+        !onboardingPresentationReserved &&
+        !_onboardingGuideOpen &&
+        !_preciseLocationDialogOpen) {
+      _preciseLocationDialogOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _preciseLocationDialogOpen = false;
+        if (!mounted) return;
+        if (!appState.preciseLocationPromptDue) return;
+        appState.acknowledgePreciseLocationPrompt();
+        _showPreciseLocationDialog();
       });
     }
 
