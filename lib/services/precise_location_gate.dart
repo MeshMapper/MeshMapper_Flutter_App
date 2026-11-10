@@ -37,10 +37,6 @@ const String preciseLocationOffBody =
     'to map coverage.\n\nTurn on Precise Location for MeshMapper in your '
     "phone's settings, then come back to the app.";
 
-/// The launch notice while only approximate location is granted.
-const String preciseLocationOffNotice =
-    'Precise Location is off. MeshMapper needs it to map coverage.';
-
 /// What Siri says when the connect intent is refused for approximate location.
 const String preciseLocationVoiceMessage =
     'MeshMapper needs Precise Location. Turn it on for MeshMapper in '

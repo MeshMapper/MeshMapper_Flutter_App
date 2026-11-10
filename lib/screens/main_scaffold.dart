@@ -223,8 +223,9 @@ class _MainScaffoldState extends State<MainScaffold> {
         }
         // Approximate location reads as denied here once the precise
         // upgrade was refused, though the app does have a location.
-        final approximateOnly = await _approximateLocationGranted();
-        _showLocationSettingsPrompt(approximateOnly: approximateOnly);
+        // The Connect tab says so, no notice here.
+        if (await _approximateLocationGranted()) return;
+        _showLocationSettingsPrompt();
         return;
       }
       granted = status.isGranted;
@@ -409,15 +410,13 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  void _showLocationSettingsPrompt({bool approximateOnly = false}) {
+  void _showLocationSettingsPrompt() {
     if (!mounted || _hasShownLocationSettingsPrompt) return;
     _hasShownLocationSettingsPrompt = true;
 
     AppToast.show(
       context,
-      message: approximateOnly
-          ? preciseLocationOffNotice
-          : 'Location permission is disabled in system settings.',
+      message: 'Location permission is disabled in system settings.',
       type: ToastType.warning,
       duration: const Duration(seconds: 8),
       // Times out: left up, it covers the Connect buttons.
