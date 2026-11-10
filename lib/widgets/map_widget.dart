@@ -726,6 +726,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // the first entry and restored ONCE when the last view closes, so switching
   // directly between views animates only once and restores to the original view.
   bool _cameraFocusActive = false;
+
+  /// The zoom a focus view or history fit last left the camera at, until the
+  /// camera moves off it. See [_rememberCameraZoom].
+  double? _transientZoomHeld;
   bool _focusPanelMinimized = false;
   dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
 
@@ -2022,6 +2026,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     } else if (!appState.viewingHistorySession && _wasViewingHistory) {
       _wasViewingHistory = false;
+      // The camera is left at the session fit: not a zoom to remember.
+      _transientZoomHeld = _mapController?.cameraPosition?.zoom;
     }
 
     // Sync native annotations whenever marker data changes (provider triggers
@@ -3796,7 +3802,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (zoom == null || !zoom.isFinite) return;
     final appState = context.read<AppStateProvider>();
     if (!appState.preferencesLoaded) return;
-    if (_cameraFocusActive || appState.viewingHistorySession) return;
+    if (_cameraFocusActive || appState.viewingHistorySession) {
+      _transientZoomHeld = zoom;
+      return;
+    }
+    // A transient view leaves its zoom behind when it closes (the history
+    // fit stays put). That is not the user's until they zoom away from it.
+    final held = _transientZoomHeld;
+    if (held != null) {
+      if (!MapViewState.zoomWorthSaving(held, zoom)) return;
+      _transientZoomHeld = null;
+    }
     if (!_zoomRestoreSettled) {
       final created = _initialCameraZoom;
       if (created == null ||

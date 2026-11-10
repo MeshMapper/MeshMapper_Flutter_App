@@ -126,15 +126,28 @@ void main() {
     test('nothing connected since the cleanup started', () {
       expect(
           cleanupOwnsCurrentConnection(
-              cleanupGeneration: 7, currentGeneration: 7),
+              cleanupGeneration: 7,
+              currentGeneration: 7,
+              newerConnectLive: false),
           isTrue);
     });
 
     test('a connect started during the cleanup owns what is current', () {
       expect(
           cleanupOwnsCurrentConnection(
-              cleanupGeneration: 7, currentGeneration: 8),
+              cleanupGeneration: 7,
+              currentGeneration: 8,
+              newerConnectLive: true),
           isFalse);
+    });
+
+    test('a connect that failed or was cancelled since owns nothing', () {
+      expect(
+          cleanupOwnsCurrentConnection(
+              cleanupGeneration: 7,
+              currentGeneration: 8,
+              newerConnectLive: false),
+          isTrue);
     });
   });
 }

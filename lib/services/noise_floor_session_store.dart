@@ -96,10 +96,14 @@ class NoiseFloorCheckpoint {
         _markers == session.markers.length) {
       return false;
     }
-    _id = session.id;
-    _samples = session.samples.length;
-    _markers = session.markers.length;
-    await box.put(session.id, session);
+    final id = session.id;
+    final samples = session.samples.length;
+    final markers = session.markers.length;
+    await box.put(id, session);
+    // Noted only once written, so a failed write is tried again.
+    _id = id;
+    _samples = samples;
+    _markers = markers;
     return true;
   }
 }

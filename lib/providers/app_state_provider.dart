@@ -358,13 +358,17 @@ bool authCallbackSuperseded({
 /// Whether a disconnect cleanup, at its end, still owns the provider's
 /// current connection objects. [cleanupGeneration] is the connect generation
 /// when the cleanup started; a connect begun during the cleanup's awaits
-/// bumps it and owns whatever is current by then.
+/// bumps it and owns whatever is current by then, for as long as it is
+/// [newerConnectLive] (still connecting, or connected). A connect that
+/// failed or was cancelled since owns nothing: the session and the objects
+/// are the cleanup's again, or the session would be held until it expires.
 @visibleForTesting
 bool cleanupOwnsCurrentConnection({
   required int cleanupGeneration,
   required int currentGeneration,
+  required bool newerConnectLive,
 }) =>
-    cleanupGeneration == currentGeneration;
+    cleanupGeneration == currentGeneration || !newerConnectLive;
 
 /// An auto-reconnect attempt's connect call while it runs. An abandon that
 /// catches it stamps the connect generation it moved to, which is how the
@@ -7412,6 +7416,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return cleanup;
   }
 
+  /// A connect is running or has connected.
+  bool get _connectLive =>
+      _isConnecting || _connectionStep == ConnectionStep.connected;
+
   Future<void> _fullDisconnectCleanupImpl({
     Map<String, dynamic>? releaseExtras,
     bool flushQueue = true,
@@ -7494,6 +7502,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final releaseOwned = cleanupOwnsCurrentConnection(
       cleanupGeneration: cleanupGeneration,
       currentGeneration: _connectGeneration,
+      newerConnectLive: _connectLive,
     );
     if (!releaseOwned && _apiService.hasSession) {
       debugLog('[CONN] Not releasing the API session: a newer connect owns it');
@@ -7523,9 +7532,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (cleanupOwnsCurrentConnection(
       cleanupGeneration: cleanupGeneration,
       currentGeneration: _connectGeneration,
+      newerConnectLive: _connectLive,
     )) {
-      // Nothing connected since the cleanup started, so what is current is
-      // this cleanup's to dispose, as before.
+      // Nothing is connected or connecting since the cleanup started, so
+      // what is current is this cleanup's to dispose, and so is anything it
+      // started with that a failed connect has since swapped out.
+      if (!identical(_meshCoreConnection, cleanupConnection)) {
+        cleanupConnection?.dispose();
+      }
+      if (!identical(_pingService, cleanupPingService)) {
+        cleanupPingService?.dispose();
+      }
+      if (!identical(
+          _transportConnectionSubscription, cleanupTransportSubscription)) {
+        cleanupTransportSubscription?.cancel();
+      }
+      if (cleanupTransport != null &&
+          cleanupTransport != _bluetoothService &&
+          !identical(_activeTransport, cleanupTransport)) {
+        cleanupTransport.dispose();
+      }
       _meshCoreConnection?.dispose();
       _meshCoreConnection = null;
       _pingService?.dispose();
@@ -8222,6 +8248,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _reconnectTimeoutTimer = null;
       _cancelPendingAutoPingRestore();
       _isAutoReconnecting = false;
+      // An attempt still in flight may close what it connects, but not a
+      // connection the user starts after this (that bumps the generation).
+      _reconnectConnectInFlight?.abandonedAtGeneration ??= _connectGeneration;
       _reconnectAttempt = 0;
       _reconnectStartedAt = null;
       _autoPingWasEnabled = false;
@@ -13544,7 +13573,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     try {
       debugLog('[OFFLINE] Exporting all ${sessions.length} sessions');
-      final dir = await getTemporaryDirectory();
+      // Its own folder, emptied first: the last export's copies are gone by
+      // now, and a single session share in the temp root is not overwritten.
+      // Not deleted after the share, which can return before the receiving
+      // app has read the files.
+      final temp = await getTemporaryDirectory();
+      final dir = Directory('${temp.path}/offline_export');
+      if (await dir.exists()) await dir.delete(recursive: true);
+      await dir.create(recursive: true);
       final files = await writeOfflineSessionExports(sessions, dir);
       final result = await SharePlus.instance.share(
         ShareParams(
