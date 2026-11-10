@@ -11,6 +11,7 @@ import '../models/connection_state.dart';
 import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
+import '../services/precise_location_gate.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/slots_chip.dart';
@@ -2113,6 +2114,26 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
             appState.zoneCheckErrorReason == 'gps_stale') {
           final isStale = appState.zoneCheckErrorReason == 'gps_stale';
+          // Approximate-only location never gets under the accuracy limit,
+          // so moving somewhere else would not help: point at the setting.
+          if (!isStale && appState.locationAccuracyReduced) {
+            return _buildMessageContent(
+              context: context,
+              icon: Icons.location_disabled,
+              iconColor: Colors.orange.withValues(alpha: 0.7),
+              title: preciseLocationOffTitle,
+              message: preciseLocationOffBody,
+              action: FilledButton.icon(
+                onPressed: Geolocator.openAppSettings,
+                icon: const Icon(Icons.settings),
+                label: const Text('Open Settings'),
+                style: FilledButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+            );
+          }
           return _buildMessageContent(
             context: context,
             icon: isStale ? Icons.schedule : Icons.gps_off,

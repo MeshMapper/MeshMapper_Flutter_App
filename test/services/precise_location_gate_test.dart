@@ -106,6 +106,44 @@ void main() {
   });
 
   group('PreciseLocationGate', () {
+    group('isApproximateOnly', () {
+      PreciseLocationGate gate({
+        bool granted = true,
+        LocationAccuracyStatus accuracy = LocationAccuracyStatus.reduced,
+        bool readThrows = false,
+      }) =>
+          PreciseLocationGate(
+            checkGranted: () async => granted,
+            readAccuracy: () async =>
+                readThrows ? throw Exception('no plugin') : accuracy,
+          );
+
+      Future<bool> check(PreciseLocationGate g,
+              {PreciseLocationPlatform platform =
+                  PreciseLocationPlatform.android,
+              bool simulator = false}) =>
+          g.isApproximateOnly(platform: platform, simulatorEnabled: simulator);
+
+      test('true for granted, reduced accuracy', () async {
+        expect(await check(gate()), isTrue);
+        expect(
+            await check(gate(), platform: PreciseLocationPlatform.ios), isTrue);
+      });
+
+      test('false for precise, not granted, or a failed read', () async {
+        expect(await check(gate(accuracy: LocationAccuracyStatus.precise)),
+            isFalse);
+        expect(await check(gate(granted: false)), isFalse);
+        expect(await check(gate(readThrows: true)), isFalse);
+      });
+
+      test('false on web and with the GPS simulator', () async {
+        expect(await check(gate(), platform: PreciseLocationPlatform.web),
+            isFalse);
+        expect(await check(gate(), simulator: true), isFalse);
+      });
+    });
+
     test('iOS: allowed after the temporary full accuracy prompt', () async {
       var asks = 0;
       final gate = PreciseLocationGate(

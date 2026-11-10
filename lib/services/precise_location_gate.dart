@@ -28,6 +28,19 @@ const String preciseLocationDialogBody =
     'MeshMapper needs your precise location to map coverage. Approximate '
     'location is off by too much for the map to use.';
 
+/// Title of the zone check screen while only approximate location is granted.
+const String preciseLocationOffTitle = 'Precise Location Is Off';
+
+/// Body of the zone check screen while only approximate location is granted.
+const String preciseLocationOffBody =
+    'MeshMapper only has your approximate location, which is off by too much '
+    'to map coverage.\n\nTurn on Precise Location for MeshMapper in your '
+    "phone's settings, then come back to the app.";
+
+/// The launch notice while only approximate location is granted.
+const String preciseLocationOffNotice =
+    'Precise Location is off. MeshMapper needs it to map coverage.';
+
 /// What Siri says when the connect intent is refused for approximate location.
 const String preciseLocationVoiceMessage =
     'MeshMapper needs Precise Location. Turn it on for MeshMapper in '
@@ -114,6 +127,25 @@ class PreciseLocationGate {
       debugWarn('[GPS] Precise location check: accuracy read failed, '
           'allowing the connect: $e');
       return null;
+    }
+  }
+
+  /// Whether location is granted but only approximate. False when the check
+  /// does not apply (web, GPS simulator, no permission) or a read fails.
+  /// Reads only, never prompts.
+  Future<bool> isApproximateOnly({
+    required PreciseLocationPlatform platform,
+    required bool simulatorEnabled,
+  }) async {
+    if (platform == PreciseLocationPlatform.web || simulatorEnabled) {
+      return false;
+    }
+    try {
+      if (!await _checkGranted()) return false;
+      return await _readAccuracy() == LocationAccuracyStatus.reduced;
+    } catch (e) {
+      debugWarn('[GPS] Location accuracy read failed: $e');
+      return false;
     }
   }
 

@@ -1652,6 +1652,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(_syncConnectionServiceAfterResume());
       }
       _checkTcpHealthAfterResume();
+      unawaited(_recheckLocationAccuracyAfterResume());
       // Diagnostic: timers can be suspended while backgrounded; on resume, log
       // any countdown timer stuck past its deadline (intermittent ping lockout).
       _logStuckTimers('resume');
@@ -12030,6 +12031,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final max = GpsService.maxAccuracyMetersForZoneCheck.toStringAsFixed(0);
     debugLog('[GPS] Waiting for a more accurate fix before the zone check '
         '(${accuracy}m, max ${max}m)');
+    unawaited(_refreshLocationAccuracyReduced());
     _scheduleZoneCheckRetry(
       seconds: 10,
       error: 'GPS accuracy is ${accuracy}m (max ${max}m). '
@@ -13741,6 +13743,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Runs the Precise Location check at Connect.
   final PreciseLocationGate _preciseLocationGate = PreciseLocationGate();
+
+  /// Location is granted but only approximate, as last read while a zone
+  /// check was held for a coarse fix. The zone check screen then says
+  /// Precise Location is off instead of blaming the GPS signal.
+  bool _locationAccuracyReduced = false;
+  bool get locationAccuracyReduced => _locationAccuracyReduced;
+
+  Future<void> _refreshLocationAccuracyReduced() async {
+    final reduced = await _preciseLocationGate.isApproximateOnly(
+      platform: PreciseLocationGate.currentPlatform,
+      simulatorEnabled: _gpsService.isSimulatorEnabled,
+    );
+    if (_isDisposed || reduced == _locationAccuracyReduced) return;
+    _locationAccuracyReduced = reduced;
+    debugLog('[GPS] Location accuracy is '
+        '${reduced ? 'approximate only' : 'no longer approximate'}');
+    notifyListeners();
+  }
+
+  /// Back from the settings with Precise Location turned on: restart a
+  /// running stream so its fixes come in precise, as the connect check does.
+  Future<void> _recheckLocationAccuracyAfterResume() async {
+    if (!_locationAccuracyReduced) return;
+    await _refreshLocationAccuracyReduced();
+    if (_isDisposed || _locationAccuracyReduced) return;
+    if (_gpsService.isWatching) {
+      await restartGpsAfterPermission(keepTracking: true);
+    }
+  }
   bool _preciseLocationCheckInFlight = false;
 
   /// Set when the last connect tap was refused for approximate location.

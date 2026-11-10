@@ -221,7 +221,10 @@ class _MainScaffoldState extends State<MainScaffold> {
           debugLog('[DISCLOSURE] Location denied without a system dialog, '
               'offering app settings');
         }
-        _showLocationSettingsPrompt();
+        // Approximate location reads as denied here once the precise
+        // upgrade was refused, though the app does have a location.
+        final approximateOnly = await _approximateLocationGranted();
+        _showLocationSettingsPrompt(approximateOnly: approximateOnly);
         return;
       }
       granted = status.isGranted;
@@ -393,18 +396,34 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  void _showLocationSettingsPrompt() {
+  /// Android: whether some location (approximate) is granted while the fine
+  /// permission reads as denied.
+  Future<bool> _approximateLocationGranted() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      return permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always;
+    } catch (e) {
+      debugWarn('[DISCLOSURE] Location permission read failed: $e');
+      return false;
+    }
+  }
+
+  void _showLocationSettingsPrompt({bool approximateOnly = false}) {
     if (!mounted || _hasShownLocationSettingsPrompt) return;
     _hasShownLocationSettingsPrompt = true;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Location permission is disabled in system settings.'),
-        action: SnackBarAction(
-          label: 'Settings',
-          onPressed: Geolocator.openAppSettings,
-        ),
-      ),
+    AppToast.show(
+      context,
+      message: approximateOnly
+          ? preciseLocationOffNotice
+          : 'Location permission is disabled in system settings.',
+      type: ToastType.warning,
+      duration: const Duration(seconds: 8),
+      // Times out: left up, it covers the Connect buttons.
+      persist: false,
+      actionLabel: 'Settings',
+      onAction: Geolocator.openAppSettings,
     );
   }
 
