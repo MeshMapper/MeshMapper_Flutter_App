@@ -34,7 +34,6 @@ class MainScaffold extends StatefulWidget {
 class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
-  bool _hasShownLocationSettingsPrompt = false;
   bool _carpeaterPromptOpen = false;
   bool _carpeaterNoticeOpen = false;
   bool _linkPromptDialogOpen = false;
@@ -192,10 +191,8 @@ class _MainScaffoldState extends State<MainScaffold> {
         permission = await Geolocator.requestPermission();
       }
       debugLog('[DISCLOSURE] iOS location permission: $permission');
-      if (permission == LocationPermission.deniedForever) {
-        _showLocationSettingsPrompt();
-        return;
-      }
+      // Denied for good: the Connect tab says so and offers the settings.
+      if (permission == LocationPermission.deniedForever) return;
       granted = permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse;
     } else {
@@ -221,11 +218,8 @@ class _MainScaffoldState extends State<MainScaffold> {
           debugLog('[DISCLOSURE] Location denied without a system dialog, '
               'offering app settings');
         }
-        // Approximate location reads as denied here once the precise
-        // upgrade was refused, though the app does have a location.
-        // The Connect tab says so, no notice here.
-        if (await _approximateLocationGranted()) return;
-        _showLocationSettingsPrompt();
+        // Denied for good, or approximate only once the precise upgrade
+        // was refused: the Connect tab says so and offers the settings.
         return;
       }
       granted = status.isGranted;
@@ -395,35 +389,6 @@ class _MainScaffoldState extends State<MainScaffold> {
       case PortalLinkStatus.failed:
         break;
     }
-  }
-
-  /// Android: whether some location (approximate) is granted while the fine
-  /// permission reads as denied.
-  Future<bool> _approximateLocationGranted() async {
-    try {
-      final permission = await Geolocator.checkPermission();
-      return permission == LocationPermission.whileInUse ||
-          permission == LocationPermission.always;
-    } catch (e) {
-      debugWarn('[DISCLOSURE] Location permission read failed: $e');
-      return false;
-    }
-  }
-
-  void _showLocationSettingsPrompt() {
-    if (!mounted || _hasShownLocationSettingsPrompt) return;
-    _hasShownLocationSettingsPrompt = true;
-
-    AppToast.show(
-      context,
-      message: 'Location permission is disabled in system settings.',
-      type: ToastType.warning,
-      duration: const Duration(seconds: 8),
-      // Times out: left up, it covers the Connect buttons.
-      persist: false,
-      actionLabel: 'Settings',
-      onAction: Geolocator.openAppSettings,
-    );
   }
 
   /// Report a failed sign-in.

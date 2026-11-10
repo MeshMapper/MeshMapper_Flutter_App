@@ -13,7 +13,6 @@ class AppToast {
     Duration duration = const Duration(seconds: 3),
     String? actionLabel,
     VoidCallback? onAction,
-    bool? persist,
   }) {
     final (icon, iconColor, borderColor) = _getTypeStyles(type);
 
@@ -55,9 +54,6 @@ class AppToast {
           margin: const EdgeInsets.all(16),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           duration: duration,
-          // Null keeps Flutter's default: a toast with an action stays until
-          // it is dismissed. False lets it time out after [duration].
-          persist: persist,
           action: actionLabel != null && onAction != null
               ? SnackBarAction(
                   label: actionLabel,

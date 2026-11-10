@@ -1981,6 +1981,24 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
+    // Location not granted: no zone check can run, and Offline Mode needs
+    // location too.
+    if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.location_off,
+        iconColor: Colors.orange.withValues(alpha: 0.7),
+        title: 'Location Permission Required',
+        message: 'MeshMapper needs your location to check your zone and map '
+            'coverage.',
+        action: FilledButton.icon(
+          onPressed: () => _requestLocationPermission(appState),
+          icon: const Icon(Icons.location_on),
+          label: const Text('Enable Location'),
+        ),
+      );
+    }
+
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
       // Build message with nearest zone info if available
@@ -2317,22 +2335,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                   icon: const Icon(Icons.settings),
                   label: const Text('Open Location Settings'),
                 ),
-        );
-      }
-
-      if (appState.gpsStatus == GpsStatus.permissionDenied) {
-        return _buildMessageContent(
-          context: context,
-          icon: Icons.location_off,
-          iconColor: Colors.orange.withValues(alpha: 0.7),
-          title: 'GPS Permission Required',
-          message:
-              'Location access is needed to verify you\'re in an allowed zone.',
-          action: ElevatedButton.icon(
-            onPressed: () => _requestLocationPermission(appState),
-            icon: const Icon(Icons.location_on),
-            label: const Text('Enable Location'),
-          ),
         );
       }
 
