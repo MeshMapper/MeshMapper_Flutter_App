@@ -3,17 +3,94 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
 import 'gps_simulator_service.dart';
+import 'location_consent.dart';
+import 'android_altitude_channel.dart';
+import 'fix_altitude.dart';
+import 'fix_altitude_resolver.dart';
+
+/// The position stream settings: high accuracy and a 10 m distance filter
+/// everywhere. On Android, both Google's fused provider and Android's own
+/// location service ([useAndroidLocationManager]) are asked for a fix every
+/// second: left unset, the plugin asks every 5 s, and pings reused a stale
+/// fix while driving. `useMSLAltitude` stays off; see the note at the stream.
+@visibleForTesting
+LocationSettings gpsStreamSettings({
+  required bool isAndroid,
+  required bool useAndroidLocationManager,
+}) =>
+    isAndroid
+        ? AndroidSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 10,
+            intervalDuration: const Duration(seconds: 1),
+            forceLocationManager: useAndroidLocationManager,
+          )
+        : const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 10,
+          );
+
+/// Whether a position stream error means the user declined Google's
+/// "Location Accuracy" dialog rather than turned location off, so GPS should
+/// move to Android's own location service, which never shows that dialog.
+/// The plugin reports both as location services disabled; only a decline
+/// leaves the device location setting on. Declining used to loop: the error
+/// marked GPS disabled, the dialog closing resumed the app, the resume
+/// restarted GPS, and the restart showed the dialog again (#595).
+@visibleForTesting
+bool shouldUseAndroidLocationManager({
+  required bool isAndroid,
+  required bool alreadyUsing,
+  required Object error,
+  required bool deviceLocationOn,
+}) =>
+    isAndroid &&
+    !alreadyUsing &&
+    error is LocationServiceDisabledException &&
+    deviceLocationOn;
 
 /// GPS service for location tracking
 /// Ported from wardrive.js geolocation logic
 /// Note: Zone validation is now handled server-side by the API
 class GpsService {
+  GpsService({FixAltitudeResolver? altitudeResolver})
+      : _altitude = altitudeResolver ?? _defaultAltitudeResolver();
+
+  /// Resolves and remembers each fix's altitude reference. See
+  /// `fix_altitude.dart` for the rule and `fix_altitude_resolver.dart` for
+  /// the store. Reset whenever the fix source restarts.
+  final FixAltitudeResolver _altitude;
+
+  static FixAltitudeResolver _defaultAltitudeResolver() {
+    final AltitudePlatform platform;
+    if (kIsWeb) {
+      platform = AltitudePlatform.web;
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      platform = AltitudePlatform.android;
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      platform = AltitudePlatform.ios;
+    } else {
+      platform = AltitudePlatform.other;
+    }
+    return FixAltitudeResolver(
+      platform: platform,
+      readNative: platform == AltitudePlatform.android
+          ? AndroidAltitudeChannel().describeLastFix
+          : null,
+    );
+  }
+
+  /// The altitude [position] may be uploaded with: meters, reference and
+  /// accuracy, or unknown when the reference is not (yet) proved. Resolved
+  /// in the background when the fix was accepted; nothing waits here.
+  FixAltitude fixAltitudeOf(Position position) => _altitude.lookup(position);
+
   /// Minimum distance (meters) from last ping before allowing new ping
   static const double minDistanceMeters = 25.0;
 
@@ -38,6 +115,13 @@ class GpsService {
   /// Catches take-off, approach and most small aircraft. A high-speed train
   /// trips it too; that is accepted.
   static const double airborneSpeedMetersPerSecond = 250.0 / 3.6;
+
+  /// Airborne block: a fix whose altitude clears [airborneAltitudeMeters]
+  /// only counts when its speed is unknown or at least this (150 km/h).
+  /// Nothing above 6,000 m flies that slowly, so a known slower speed means
+  /// the altitude is the bad reading (an iOS fix once read 18,490 m in a car
+  /// doing 8 km/h).
+  static const double airborneAltitudeMinSpeedMetersPerSecond = 150.0 / 3.6;
 
   /// Consecutive fixes needed to set or clear the airborne latch. One wild
   /// fix is GPS jitter, three in a row is real (same idea as the provider's
@@ -72,6 +156,36 @@ class GpsService {
   /// skip the following TX ping at walking pace.
   Position? _lastActivityPosition;
   StreamSubscription<Position>? _positionSubscription;
+
+  /// Counts every startWatching() and stopWatching(). A startWatching() call
+  /// that finds the count changed after an await has been overtaken (by a
+  /// newer start or by a stop) and must end without touching any state.
+  int _watchGeneration = 0;
+
+  /// True from the first statement of startWatching() until stopWatching()
+  /// runs or a start ends with no stream for a reason of its own (location
+  /// services off, no permission, no consent).
+  bool _watchRequested = false;
+
+  /// Whether GPS is meant to be running. A start still in flight counts, so
+  /// a caller deciding whether to restart does not start a second one.
+  bool get isWatching => _watchRequested;
+
+  /// Android only: read GPS through Android's location service instead of
+  /// Google's. See [shouldUseAndroidLocationManager]. Saved under
+  /// [_androidLocationManagerKey] so later runs start there and never show
+  /// Google's dialog again.
+  bool _useAndroidLocationManager = false;
+  bool _androidLocationManagerLoaded = false;
+  static const String _androidLocationManagerKey =
+      'gps_android_location_manager';
+
+  /// The stream settings: Google's fused provider on Android, or Android's
+  /// own location service once that is in use. See [gpsStreamSettings].
+  LocationSettings _streamSettings() => gpsStreamSettings(
+        isAndroid: !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
+        useAndroidLocationManager: _useAndroidLocationManager,
+      );
 
   /// Airborne latch state. See [trackAirborne].
   int _airborneStreak = 0;
@@ -144,12 +258,8 @@ class GpsService {
   /// platforms. Android also omits the accuracy on fixes that DO carry an
   /// altitude, so the accuracy alone cannot decide; only the 0/0 pair means
   /// unknown.
-  static double? altitudeOrNull(Position position) {
-    if (position.altitude == 0.0 && position.altitudeAccuracy == 0.0) {
-      return null;
-    }
-    return position.altitude;
-  }
+  static double? altitudeOrNull(Position position) =>
+      reportedAltitudeOrNull(position);
 
   /// The ground speed a fix actually carries in m/s, or null when the
   /// platform had none. Same shape as [altitudeOrNull]: geolocator reports a
@@ -164,12 +274,23 @@ class GpsService {
   /// Pure gate: does this single fix look like it came from an aircraft?
   ///
   /// The altitude test subtracts the fix's own vertical error first, so a
-  /// shaky reading has to be well clear of the line. Unknown altitude and
-  /// unknown speed arrive as 0.0 and never qualify (fail open).
+  /// shaky reading has to be well clear of the line, and is ignored when the
+  /// fix's own known speed is too slow for anything at that height. Unknown
+  /// altitude and unknown speed arrive as 0.0 and never qualify (fail open).
   static bool positionLooksAirborne(Position position) {
-    final altitudeFloor = position.altitude - position.altitudeAccuracy;
-    return altitudeFloor > airborneAltitudeMeters ||
+    return _altitudeGateFires(position) ||
         position.speed > airborneSpeedMetersPerSecond;
+  }
+
+  /// The altitude half of [positionLooksAirborne], shared with the latch so
+  /// the recorded gate always agrees with the test that let the fix through.
+  /// A known speed under [airborneAltitudeMinSpeedMetersPerSecond]
+  /// contradicts the altitude, so the fix does not qualify on it.
+  static bool _altitudeGateFires(Position position) {
+    final altitudeFloor = position.altitude - position.altitudeAccuracy;
+    if (altitudeFloor <= airborneAltitudeMeters) return false;
+    final speed = speedOrNull(position);
+    return speed == null || speed >= airborneAltitudeMinSpeedMetersPerSecond;
   }
 
   /// Feed one accepted fix into the airborne latch.
@@ -187,8 +308,7 @@ class GpsService {
       _airborneStreak++;
       if (!_airborne && _airborneStreak >= airborneStreakRequired) {
         _airborne = true;
-        final altitudeFloor = position.altitude - position.altitudeAccuracy;
-        _airborneGate = altitudeFloor > airborneAltitudeMeters
+        _airborneGate = _altitudeGateFires(position)
             ? AirborneGate.altitude
             : AirborneGate.speed;
         // Both readings of the latching fix, each null when unknown.
@@ -257,34 +377,6 @@ class GpsService {
         permission == LocationPermission.whileInUse;
   }
 
-  /// Request GPS permissions (When In Use)
-  Future<bool> requestPermissions() async {
-    debugLog('[GPS] Requesting location permission...');
-    LocationPermission permission = await Geolocator.checkPermission();
-    debugLog('[GPS] Current permission: $permission');
-
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      debugLog('[GPS] Permission result after request: $permission');
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      debugLog(
-          '[GPS] Permission denied forever - user must enable in Settings');
-      _updateStatus(GpsStatus.permissionDenied);
-      return false;
-    }
-
-    if (permission == LocationPermission.denied) {
-      debugLog('[GPS] Permission denied by user');
-      _updateStatus(GpsStatus.permissionDenied);
-      return false;
-    }
-
-    debugLog('[GPS] Permission granted: $permission');
-    return true;
-  }
-
   /// Check if "Always" location permission is granted
   Future<bool> hasAlwaysPermission() async {
     final permission = await Geolocator.checkPermission();
@@ -293,9 +385,15 @@ class GpsService {
 
   /// Request "Always" location permission for background mode
   /// On iOS, this triggers the second permission dialog after "When In Use" is granted
-  /// On Android 10+, this triggers the "Allow all the time" dialog
+  /// Android never asks: its session service keeps GPS running in the
+  /// background with "While in use" permission
   /// Returns true if permission is granted, false otherwise
   Future<bool> requestAlwaysPermission() async {
+    if (Platform.isAndroid) {
+      debugLog('[GPS] Always permission is iOS only');
+      return false;
+    }
+
     debugLog('[GPS] Requesting Always location permission');
 
     final current = await Geolocator.checkPermission();
@@ -313,19 +411,10 @@ class GpsService {
       return false;
     }
 
-    // Platform-specific request
-    if (Platform.isAndroid) {
-      // Android: Use permission_handler to request locationAlways
-      // This triggers "Allow all the time" dialog on Android 10+
-      final status = await Permission.locationAlways.request();
-      debugLog('[GPS] Android always permission result: $status');
-      return status.isGranted;
-    } else {
-      // iOS: Use Geolocator for the upgrade dialog
-      final permission = await Geolocator.requestPermission();
-      debugLog('[GPS] iOS permission result: $permission');
-      return permission == LocationPermission.always;
-    }
+    // iOS: Use Geolocator for the upgrade dialog
+    final permission = await Geolocator.requestPermission();
+    debugLog('[GPS] iOS permission result: $permission');
+    return permission == LocationPermission.always;
   }
 
   /// Check if location services are enabled
@@ -336,9 +425,25 @@ class GpsService {
   /// Start watching position
   /// Note: This only CHECKS permissions, does not REQUEST them.
   /// Permission requests are handled by the disclosure flow in MainScaffold.
-  Future<void> startWatching() async {
+  ///
+  /// A [stopWatching] or a newer call during any await below wins: this call
+  /// then ends without storing a stream or touching the status.
+  ///
+  /// [keepTracking] is for restarting a watcher that was running a moment ago
+  /// (the app returning from the background). It leaves the airborne latch
+  /// and the altitude tracker alone, so Connect is not re-armed mid-flight,
+  /// and skips the one-off position read, which can show Google's accuracy
+  /// dialog again (#595). The stream starts as usual.
+  Future<void> startWatching({bool keepTracking = false}) async {
     debugLog('[GPS] startWatching() called, current status: $_status');
-    resetAirborne();
+    final generation = ++_watchGeneration;
+    _watchRequested = true;
+    if (!keepTracking) {
+      resetAirborne();
+      _altitude.reset();
+    }
+    await _loadAndroidLocationManagerChoice();
+    if (_isSuperseded(generation)) return;
 
     // Ensure only one active position stream subscription exists.
     // startWatching() can be called multiple times (e.g. after permission flow).
@@ -346,15 +451,20 @@ class GpsService {
       debugLog(
           '[GPS] Existing position subscription found, restarting watcher');
       await _positionSubscription?.cancel();
+      // Checked before the field is cleared: a newer start may have stored
+      // its own stream by now.
+      if (_isSuperseded(generation)) return;
       _positionSubscription = null;
     }
 
     // Check if location services are enabled first (system-level setting)
     final serviceEnabled = await isLocationServiceEnabled();
+    if (_isSuperseded(generation)) return;
     debugLog('[GPS] Location services check: enabled=$serviceEnabled');
     if (!serviceEnabled) {
       debugLog(
           '[GPS] Location services DISABLED at system level - user must enable in Settings');
+      _watchRequested = false;
       _updateStatus(GpsStatus.disabled);
       return;
     }
@@ -366,6 +476,7 @@ class GpsService {
     if (!kIsWeb) {
       // Check permissions (don't request - disclosure flow handles that)
       final permission = await Geolocator.checkPermission();
+      if (_isSuperseded(generation)) return;
       final hasPermission = permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse;
       debugLog(
@@ -378,6 +489,18 @@ class GpsService {
           debugLog(
               '[GPS] Permission not granted - waiting for disclosure flow');
         }
+        _watchRequested = false;
+        _updateStatus(GpsStatus.permissionDenied);
+        return;
+      }
+      // Google Play: no location is read before the disclosure is agreed
+      // to, even when the permission was granted some other way.
+      final agreed = await LocationConsent.hasAgreed();
+      if (_isSuperseded(generation)) return;
+      if (!agreed) {
+        debugLog('[GPS] Location disclosure not agreed yet - '
+            'waiting for disclosure flow');
+        _watchRequested = false;
         _updateStatus(GpsStatus.permissionDenied);
         return;
       }
@@ -391,6 +514,9 @@ class GpsService {
     // Cancel any existing subscription to prevent orphaned listeners
     // (e.g. restartGpsAfterPermission() racing with _initialize())
     await _positionSubscription?.cancel();
+    // Last await before the stream is created and stored just below, so a
+    // call that passes this check cannot be overtaken before it stores.
+    if (_isSuperseded(generation)) return;
     _positionSubscription = null;
 
     _updateStatus(GpsStatus.searching);
@@ -398,12 +524,14 @@ class GpsService {
     // Configure location settings for position stream
     // Note: No timeLimit - we want continuous GPS tracking even when stationary
     // The distanceFilter handles update frequency (10m for RX batch checks at 25m)
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter:
-            10, // Trigger every 10m movement (check RX batches at 25m)
-      ),
+    // No `AndroidSettings(useMSLAltitude: true)`: the altitude reference rule
+    // in fix_altitude.dart relies on the plugin never substituting an NMEA
+    // sea level value. Enabling it would invalidate the pre Android 14
+    // ellipsoid label. The 10 m distance filter triggers the RX batch checks
+    // (at 25 m).
+    late final StreamSubscription<Position> subscription;
+    subscription = Geolocator.getPositionStream(
+      locationSettings: _streamSettings(),
     ).listen(
       (position) {
         debugLog(
@@ -418,43 +546,141 @@ class GpsService {
           return;
         }
         _lastPosition = position;
+        _altitude.track(position);
         trackAirborne(position);
+        recordRecentFix(position);
         _positionController.add(position);
 
         // GPS signal acquired
         _updateStatus(GpsStatus.locked);
       },
-      onError: (error) {
+      onError: (Object error) async {
         debugError('[GPS SERVICE] Position stream error: $error');
+        if (await _switchToAndroidLocationManagerIfDeclined(
+            error, generation, keepTracking)) {
+          return;
+        }
+        // A restart replaced this stream while the check above awaited: the
+        // error is the old stream's and must not mark the new one disabled.
+        if (!identical(_positionSubscription, subscription)) return;
         _updateStatus(GpsStatus.disabled);
       },
     );
+    _positionSubscription = subscription;
+
+    // A quiet restart leaves out the one-off read: it can show Google's
+    // accuracy dialog again, and the stream delivers the first fix anyway.
+    if (keepTracking) return;
 
     // Get initial position
     debugLog('[GPS] Requesting initial position (15s timeout)...');
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        forceAndroidLocationManager: _useAndroidLocationManager,
         timeLimit: const Duration(seconds: 15),
       );
+      if (_isSuperseded(generation)) return;
       debugLog(
           '[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
+      _altitude.track(position);
+      recordRecentFix(position);
       // Note: Don't emit via _positionController here — the stream listener
       // at line 198 already fires with the initial position, so emitting here
       // would cause duplicate position events (~0.15ms apart).
       _updateStatus(GpsStatus.locked);
     } catch (e) {
+      // This one-off read shows its own copy of Google's dialog, and its
+      // decline switches GPS just like the stream's.
+      if (_isSuperseded(generation)) return;
+      if (await _switchToAndroidLocationManagerIfDeclined(
+          e, generation, keepTracking)) {
+        return;
+      }
       debugLog(
           '[GPS] Initial position request failed: $e (will wait for stream updates)');
       // Will receive updates from stream
     }
   }
 
-  /// Stop watching position
+  /// Reads the saved location service choice, once per run (Android only).
+  Future<void> _loadAndroidLocationManagerChoice() async {
+    if (_androidLocationManagerLoaded || kIsWeb || !Platform.isAndroid) return;
+    _androidLocationManagerLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(_androidLocationManagerKey) == true) {
+        _useAndroidLocationManager = true;
+        debugLog('[GPS] Using the Android location service (Google Location '
+            'Accuracy was declined on an earlier run)');
+      }
+    } catch (e) {
+      debugWarn('[GPS] Could not read the location service choice: $e');
+    }
+  }
+
+  /// Moves GPS to Android's location service when [error] is a declined
+  /// Google "Location Accuracy" dialog, saves the choice and restarts the
+  /// watcher. True when this or another caller made the switch for this
+  /// error, so the caller must not mark GPS disabled.
+  ///
+  /// [generation] belongs to the startWatching() call that met [error]. If a
+  /// stop or a newer start came during an await here, nothing is switched or
+  /// restarted, and the result is true so the caller leaves GPS alone: the
+  /// overtaking call owns it now. [keepTracking] is passed on to the restart.
+  Future<bool> _switchToAndroidLocationManagerIfDeclined(
+      Object error, int generation, bool keepTracking) async {
+    final isAndroid = !kIsWeb && Platform.isAndroid;
+    if (!isAndroid || _useAndroidLocationManager) return false;
+    if (error is! LocationServiceDisabledException) return false;
+    var deviceLocationOn = false;
+    try {
+      deviceLocationOn = await Geolocator.isLocationServiceEnabled();
+    } catch (_) {}
+    // Checked before the switch is recorded: a stale error must not set it
+    // with no restart, or a newer stream's own decline would find it set and
+    // mark GPS disabled.
+    if (_isSuperseded(generation)) return true;
+    // The stream and the first one-off read can be declined together:
+    // whichever finishes the check second finds the switch already made.
+    if (_useAndroidLocationManager) return true;
+    if (!shouldUseAndroidLocationManager(
+        isAndroid: isAndroid,
+        alreadyUsing: false,
+        error: error,
+        deviceLocationOn: deviceLocationOn)) {
+      return false;
+    }
+    _useAndroidLocationManager = true;
+    debugWarn('[GPS] Google Location Accuracy declined with device location '
+        'on: using the Android location service from now on');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_androidLocationManagerKey, true);
+    } catch (e) {
+      debugWarn('[GPS] Could not save the location service choice: $e');
+    }
+    if (_isSuperseded(generation)) return true;
+    await startWatching(keepTracking: keepTracking);
+    return true;
+  }
+
+  /// True when a stopWatching() or a newer startWatching() came after the
+  /// call that took [generation]. That call must then return at once.
+  bool _isSuperseded(int generation) {
+    if (generation == _watchGeneration) return false;
+    debugLog('[GPS] startWatching() superseded');
+    return true;
+  }
+
+  /// Stop watching position. Wins over a startWatching() still in flight:
+  /// that call ends without storing a stream.
   void stopWatching() {
     debugLog('[GPS] stopWatching() called');
+    _watchGeneration++;
+    _watchRequested = false;
     _positionSubscription?.cancel();
     _positionSubscription = null;
   }
@@ -564,6 +790,71 @@ class GpsService {
     return null; // Valid
   }
 
+  /// Fixes seen recently, oldest first, capped at [_recentFixCap]. Feeds
+  /// [bestRecentZoneCheckFix], so a coarse fix that lands just after a good
+  /// one cannot stand in for it at a zone check or the connect /auth.
+  final List<Position> _recentFixes = [];
+  static const int _recentFixCap = 30;
+
+  /// Remember a real fix for [bestRecentZoneCheckFix]. Called wherever a fix
+  /// becomes [lastPosition] (stream, initial read, fresh read, simulator).
+  void recordRecentFix(Position position) {
+    _recentFixes.add(position);
+    if (_recentFixes.length > _recentFixCap) _recentFixes.removeAt(0);
+  }
+
+  /// Whether [position] is accurate enough for the server's zone check and
+  /// /auth (50 m). Age is NOT part of this: the server stamps those requests
+  /// with the send time, and a stationary phone's stream goes quiet, so an
+  /// old but accurate fix is still the right one to send.
+  static bool isAccurateForZoneCheck(Position position) =>
+      position.accuracy <= maxAccuracyMetersForZoneCheck;
+
+  /// Pure pick behind [bestRecentZoneCheckFix]: the NEWEST fix in [fixes]
+  /// that is accurate enough for a zone check and no older than
+  /// [maxGpsAgeForManualPing] at [now], or null when there is none. Newest
+  /// rather than most accurate, because the phone may have moved since.
+  static Position? pickZoneCheckFix(Iterable<Position> fixes, DateTime now) {
+    Position? best;
+    for (final fix in fixes) {
+      if (!isAccurateForZoneCheck(fix)) continue;
+      if (now.difference(fix.timestamp) > maxGpsAgeForManualPing) continue;
+      if (best == null || !fix.timestamp.isBefore(best.timestamp)) best = fix;
+    }
+    return best;
+  }
+
+  /// The newest recent fix good enough for a zone check or /auth, or null.
+  Position? bestRecentZoneCheckFix({DateTime? now}) =>
+      pickZoneCheckFix(_recentFixes, now ?? DateTime.now());
+
+  /// Wait at most [timeout] for a fix good enough for a zone check or /auth.
+  /// Returns a recent one at once when there is one; otherwise takes the
+  /// first accurate fix from the stream or from one fresh hardware read
+  /// (the stream is quiet while the phone stands still). Null on timeout.
+  Future<Position?> waitForZoneCheckFix(Duration timeout) async {
+    final recent = bestRecentZoneCheckFix();
+    if (recent != null) return recent;
+
+    final completer = Completer<Position?>();
+    void offer(Position? fix) {
+      if (completer.isCompleted || fix == null) return;
+      if (isAccurateForZoneCheck(fix)) completer.complete(fix);
+    }
+
+    final sub = positionStream.listen(offer);
+    final timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete(null);
+    });
+    unawaited(getFreshPosition(timeout: timeout).then(offer));
+    try {
+      return await completer.future;
+    } finally {
+      timer.cancel();
+      await sub.cancel();
+    }
+  }
+
   /// Request a fresh GPS position from the hardware for auto-ping accuracy.
   /// On mobile, this forces a warm-start GPS read (typically < 1 second when
   /// GPS is already streaming). Falls back to lastPosition on timeout/error.
@@ -577,6 +868,7 @@ class GpsService {
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        forceAndroidLocationManager: _useAndroidLocationManager,
         timeLimit: timeout,
       );
       debugLog(
@@ -588,40 +880,13 @@ class GpsService {
         return _lastPosition;
       }
       _lastPosition = position;
+      _altitude.track(position);
       trackAirborne(position);
+      recordRecentFix(position);
       return position;
     } catch (e) {
       debugLog('[GPS] Fresh position request failed, using cached: $e');
       return _lastPosition;
-    }
-  }
-
-  /// Get current position (single request)
-  Future<Position?> getCurrentPosition() async {
-    if (!await requestPermissions()) {
-      debugLog('[GPS] getCurrentPosition failed: permission denied');
-      return null;
-    }
-
-    if (!await isLocationServiceEnabled()) {
-      debugLog('[GPS] getCurrentPosition failed: location services disabled');
-      return null;
-    }
-
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 15),
-      );
-      if (!isValidLatLng(position.latitude, position.longitude)) {
-        debugWarn(
-            '[GPS] getCurrentPosition returned invalid coords: lat=${position.latitude}, lon=${position.longitude}');
-        return null;
-      }
-      return position;
-    } catch (e) {
-      debugLog('[GPS] getCurrentPosition failed: $e');
-      return null;
     }
   }
 
@@ -651,6 +916,7 @@ class GpsService {
     // Stop real GPS
     stopWatching();
     resetAirborne();
+    _altitude.reset();
 
     // Configure and start simulator
     simulator.configure(
@@ -669,7 +935,9 @@ class GpsService {
         return;
       }
       _lastPosition = position;
+      _altitude.track(position, simulated: true);
       trackAirborne(position);
+      recordRecentFix(position);
       _positionController.add(position);
 
       // Simulator position acquired
@@ -683,7 +951,9 @@ class GpsService {
     final seed = simulator.currentPosition;
     if (seed != null && isValidLatLng(seed.latitude, seed.longitude)) {
       _lastPosition = seed;
+      _altitude.track(seed, simulated: true);
       trackAirborne(seed);
+      recordRecentFix(seed);
       _positionController.add(seed);
     }
 
@@ -724,6 +994,7 @@ class GpsService {
 
   /// Dispose of resources
   void dispose() {
+    _altitude.reset();
     stopWatching();
     simulator.dispose();
     _simulatorSubscription?.cancel();

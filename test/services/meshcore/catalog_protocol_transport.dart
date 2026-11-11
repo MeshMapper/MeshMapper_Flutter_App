@@ -59,7 +59,8 @@ class CatalogProtocolTransport extends FakeCompanionTransport {
         frame.writeByte(ResponseCodes.ok);
       case CommandCodes.getChannel:
         if (data[1] > 0) {
-          emit([ResponseCodes.err, 1]);
+          // ERR_CODE_NOT_FOUND: the firmware's end of the channel list.
+          emit([ResponseCodes.err, ErrorCodes.notFound]);
           return;
         }
         frame.writeByte(ResponseCodes.channelInfo);

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,7 +7,10 @@ import '../../utils/web_file_helpers_stub.dart'
     if (dart.library.html) '../../utils/web_file_helpers.dart';
 
 import '../../providers/app_state_provider.dart';
+import '../../services/offline_session_export.dart';
 import '../../services/offline_session_service.dart';
+import '../../utils/debug_logger_io.dart';
+import '../../utils/share_origin.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: Data.
@@ -83,9 +84,35 @@ class DataSettingsPage extends StatelessWidget {
                         context, appState, session.filename),
                     onDelete: () => _confirmDeleteOfflineSession(
                         context, appState, session.filename),
-                    onDownload: () => _downloadOfflineSession(
-                        context, appState, session.filename),
+                    onDownload: (origin) => _downloadOfflineSession(
+                        context, appState, session.filename, origin),
                   )),
+            // Export all: only with sessions to export (the empty state above
+            // says there are none). Never deletes or marks them uploaded.
+            if (appState.offlineSessions.isNotEmpty)
+              Builder(
+                builder: (tileContext) {
+                  final exporting = appState.isExportingOfflineSessions;
+                  final count = appState.offlineSessions.length;
+                  return ListTile(
+                    leading: const Icon(Icons.download, color: Colors.blue),
+                    title: const Text('Export all'),
+                    subtitle: Text(count == 1
+                        ? '1 session as a JSON file'
+                        : '$count sessions as JSON files'),
+                    trailing: exporting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : null,
+                    enabled: !exporting,
+                    onTap: () => _exportAllOfflineSessions(
+                        context, appState, globalRectOf(tileContext)),
+                  );
+                },
+              ),
           ]),
         ],
       ),
@@ -278,8 +305,8 @@ class DataSettingsPage extends StatelessWidget {
     );
   }
 
-  Future<void> _downloadOfflineSession(
-      BuildContext context, AppStateProvider appState, String filename) async {
+  Future<void> _downloadOfflineSession(BuildContext context,
+      AppStateProvider appState, String filename, Rect? origin) async {
     try {
       final sessionData =
           appState.offlineSessionService.getSessionData(filename);
@@ -294,8 +321,7 @@ class DataSettingsPage extends StatelessWidget {
       }
 
       // Convert to pretty JSON
-      final jsonString =
-          const JsonEncoder.withIndent('  ').convert(sessionData);
+      final jsonString = offlineSessionJson(sessionData);
 
       if (kIsWeb && isWebFileHelpersAvailable) {
         // Web: Create a blob and trigger download
@@ -317,13 +343,56 @@ class DataSettingsPage extends StatelessWidget {
       } else {
         // Mobile: write the JSON to a temp file and open the native share
         // sheet (Save to Files, Drive, email, …) — mirrors the debug-log share.
-        await appState.shareOfflineSession(filename);
+        await appState.shareOfflineSession(filename,
+            sharePositionOrigin: origin);
       }
     } catch (e) {
+      debugError('[OFFLINE] Failed to download session $filename: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error downloading: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Export every offline session at once (#560). Mobile: one share sheet
+  /// with a file per session. Web: one download per session. A dismissed
+  /// share sheet is not an error; the sessions are kept either way.
+  Future<void> _exportAllOfflineSessions(
+      BuildContext context, AppStateProvider appState, Rect? origin) async {
+    try {
+      if (kIsWeb && isWebFileHelpersAvailable) {
+        final sessions = appState.offlineSessions;
+        for (final session in sessions) {
+          downloadFileWeb(
+            content: offlineSessionJson(session.data),
+            filename: session.filename,
+            mimeType: 'application/json',
+          );
+        }
+        debugLog('[OFFLINE] Downloaded all ${sessions.length} sessions');
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Downloaded ${sessions.length} sessions'),
+              duration: const Duration(seconds: 2),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        await appState.shareAllOfflineSessions(sharePositionOrigin: origin);
+      }
+    } catch (e) {
+      debugError('[OFFLINE] Failed to export all sessions: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error exporting: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -338,7 +407,9 @@ class _OfflineSessionTile extends StatelessWidget {
   final bool uploadEnabled;
   final VoidCallback onUpload;
   final VoidCallback onDelete;
-  final VoidCallback onDownload;
+
+  /// Called with the download button's global rect (the iPad share anchor).
+  final ValueChanged<Rect?> onDownload;
 
   const _OfflineSessionTile({
     required this.session,
@@ -454,11 +525,13 @@ class _OfflineSessionTile extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           // Download button - always available
-          IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: onDownload,
-            tooltip: 'Download JSON',
-            color: Colors.blue,
+          Builder(
+            builder: (buttonContext) => IconButton(
+              icon: const Icon(Icons.download),
+              onPressed: () => onDownload(globalRectOf(buttonContext)),
+              tooltip: 'Download JSON',
+              color: Colors.blue,
+            ),
           ),
           // Upload button - only when not uploaded
           if (!isUploaded)

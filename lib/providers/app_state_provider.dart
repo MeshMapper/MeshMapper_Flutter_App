@@ -6,7 +6,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:flutter/widgets.dart'
-    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
+    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState, Rect;
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:app_links/app_links.dart';
@@ -14,7 +14,9 @@ import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
+import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
 import '../models/noise_floor_session.dart';
@@ -22,18 +24,29 @@ import '../models/onboarding_guide_progress.dart';
 import '../models/ping_data.dart';
 import '../models/log_entry.dart';
 import '../models/remembered_device.dart';
+import '../models/scope_log_entry.dart';
 import '../models/repeater.dart';
+import '../models/map_view_state.dart';
 import '../models/user_preferences.dart';
 import '../services/airborne_release.dart';
 import '../services/api_queue_service.dart';
+import '../utils/coverage_refresh.dart';
+import '../utils/debouncer.dart';
 import '../utils/mvt_cells.dart';
+import '../utils/store_links.dart';
 import '../services/api_service.dart';
+import 'repeater_list_state.dart';
 import '../services/audio_service.dart';
+import '../services/background_location_policy.dart';
+import '../services/precise_location_gate.dart';
+import '../services/noise_floor_session_store.dart';
 import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
+import '../services/border_loader.dart';
 import '../services/debug_file_logger.dart';
 import '../services/disconnect_alert_decision.dart';
 import '../services/offline_session_service.dart';
+import '../services/offline_session_export.dart';
 import '../services/bluetooth/ble_connect_retry_policy.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 import '../services/transport/android_serial_service.dart';
@@ -42,9 +55,12 @@ import '../services/transport/tcp_service.dart';
 import '../services/device_model_service.dart';
 import '../services/gps_service.dart';
 import '../services/gps_simulator_service.dart';
+import '../services/idle_session.dart';
 import '../services/link_decision.dart';
+import '../services/location_consent.dart';
 import '../services/meshcore/channel_service.dart';
 import '../services/meshcore/connection.dart';
+import '../services/meshcore/scope_lease.dart' show ScopeCancelToken;
 import '../services/meshcore/crypto_service.dart';
 import '../services/meshcore/packet_validator.dart'
     show PacketValidator, ChannelInfo;
@@ -75,10 +91,16 @@ import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
 import '../services/portal_token_store.dart';
+import '../services/reconnect_flap_guard.dart';
 import '../services/recent_coverage_service.dart';
 import '../services/reporting_power.dart';
 import 'device_connection_setup.dart';
 import '../services/repeater_admin/manage_target.dart';
+import '../services/scope_discovery/scope_discovery_rules.dart';
+import '../services/scope_discovery/scope_lifecycle.dart';
+import '../services/scope_discovery/scope_provider_support.dart';
+import '../services/scope_discovery/scope_runner.dart';
+import '../services/session_recovery_join.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_claim_unclaim.dart';
 import '../services/repeater_admin/repeater_claims_cache.dart';
@@ -86,10 +108,15 @@ import '../services/repeater_admin/repeater_admin_models.dart';
 import '../services/repeater_admin/repeater_admin_module.dart';
 import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/constants.dart';
+import '../utils/distance_formatter.dart';
 import '../utils/geo_validation.dart';
+import '../utils/public_key.dart';
 import '../utils/repeater_collision.dart';
+import '../utils/repeater_nicknames.dart';
+import '../utils/short_hop_ids.dart';
 import '../utils/ping_colors.dart';
 import '../utils/radio_filter.dart' as radio_filter;
+import '../utils/zone_group.dart';
 import '../services/wakelock_service.dart';
 import '../utils/debug_logger_io.dart';
 
@@ -189,6 +216,199 @@ Future<bool> awaitSessionRecoveryBounded(
   } on TimeoutException {
     return false;
   }
+}
+
+/// How long a Disconnect or Close App tap waits for the queued pings to
+/// upload before it releases the session anyway.
+@visibleForTesting
+const Duration disconnectQueueUploadTimeout = Duration(seconds: 5);
+
+/// Run [upload], bounded by [limit]. True when it finished, false when it
+/// timed out or threw. A slow or dead network must not hold the teardown
+/// open with the UI already showing Disconnecting, and a failed upload must
+/// not abandon it: the queue is cleared and the session released either way.
+@visibleForTesting
+Future<bool> uploadQueueBounded(
+  Future<void> Function() upload, {
+  Duration limit = disconnectQueueUploadTimeout,
+}) async {
+  try {
+    await upload().timeout(limit);
+    return true;
+  } on TimeoutException {
+    return false;
+  } catch (e) {
+    debugError('[APP] Queue upload before release failed: $e');
+    return false;
+  }
+}
+
+/// Seconds before the next zone check after [failures] checks in a row got no
+/// answer: 5, 10, 20, 40, then every 60. A flat 5 s retried a dead network
+/// twelve times a minute for as long as it lasted (500 tries in one Android
+/// log), and in a server outage every phone would do the same to /status.
+@visibleForTesting
+int zoneCheckNetworkRetrySeconds(int failures) {
+  if (failures >= 5) return 60;
+  if (failures <= 1) return 5;
+  return 5 << (failures - 1);
+}
+
+/// Whether the error log holds an error the user has not had on screen.
+/// [logged] counts every error ever logged and [seen] is that count when the
+/// Errors tab was last showing. Counts, not times: a phone clock stepped
+/// backwards would stamp new errors before the seen mark and hide them.
+@visibleForTesting
+bool errorLogHasUnseen(
+        {required bool hasEntries, required int logged, required int seen}) =>
+    hasEntries && logged > seen;
+
+/// The Go Online refusal when the server says this spot is in no zone,
+/// naming the nearest zone when the answer carried one. Offline Mode stays
+/// on, and so does wardriving: the check runs before anything is stopped.
+@visibleForTesting
+String goOnlineOutsideZoneMessage(Map<String, dynamic>? nearestZone,
+    {bool isImperial = false}) {
+  const outside = 'You are outside every MeshMapper zone.';
+  const staysOn = 'Offline Mode stays on.';
+  final name = nearestZone?['name'] as String?;
+  final km = (nearestZone?['distance_km'] as num?)?.toDouble();
+  if (name == null || km == null) return '$outside $staysOn';
+  final dist = formatKilometers(km, isImperial: isImperial);
+  return '$outside Nearest zone is $name, $dist away. $staysOn';
+}
+
+/// Whether a connected radio's companion firmware is too old for scope
+/// discovery (below [AppStateProvider.kScopeDiscoveryCompanionVersionCode]).
+/// The Scope Discovery switch still saves either way; this only decides
+/// whether the Settings tile grows its extra warning line. Not connected
+/// means nothing to warn about yet, whatever the last-seen firmware code was.
+@visibleForTesting
+bool scopeDiscoveryFirmwareTooOld(
+        {required bool connected, required int? firmwareCode}) =>
+    connected &&
+    (firmwareCode ?? 0) < AppStateProvider.kScopeDiscoveryCompanionVersionCode;
+
+/// Whether a "cannot ask non-contacts" flip should add a new error-log entry
+/// for the connection that just hit it: only the first time, per connection.
+/// `MeshCoreConnection` already fires
+/// `onScopeCannotAskNonContactsChanged` at most once per connection life (its
+/// own flag never resets to false mid-connection), so this mirrors that
+/// guard at the call site rather than relying on it alone.
+@visibleForTesting
+bool shouldLogScopeContactsFull({required bool alreadyLoggedThisConnection}) =>
+    !alreadyLoggedThisConnection;
+
+/// How long a countdown may sit past its deadline before the stuck-timer
+/// watchdog names it. Its 500 ms tick clears a finished window a moment after
+/// the deadline, so a check that lands in that gap is not a lockout.
+const Duration stuckCountdownGrace = Duration(seconds: 2);
+
+/// Whether a countdown is still running at least [stuckCountdownGrace] past
+/// its deadline, the stuck-lockout fingerprint. Running with no deadline at
+/// all counts as stuck, as it always did.
+@visibleForTesting
+bool countdownLooksStuck(
+    {required bool isRunning,
+    required DateTime? endTime,
+    required DateTime now}) {
+  if (!isRunning) return false;
+  if (endTime == null) return true;
+  return now.difference(endTime) >= stuckCountdownGrace;
+}
+
+/// Whether an auto-reconnect attempt that ended after its reconnect was over
+/// should disconnect the connection that is up. [abandonedAtGeneration] is
+/// the connect generation an abandon stamped when it caught this attempt in
+/// flight, or null when none did (a user Disconnect ended the reconnect).
+/// A stamped attempt may only close a connection nobody has started since
+/// the abandon: a newer connect bumps the generation and owns what is up.
+@visibleForTesting
+bool shouldDisconnectOrphanedReconnect({
+  required int? abandonedAtGeneration,
+  required int currentGeneration,
+  required bool connected,
+}) {
+  if (!connected) return false;
+  if (abandonedAtGeneration == null) return true;
+  return abandonedAtGeneration == currentGeneration;
+}
+
+/// Whether the auto-reconnect budget, running out, gives the attempt's
+/// connect a bounded grace to finish instead of abandoning at once. A GATT
+/// connect that is about to succeed was otherwise thrown away.
+@visibleForTesting
+bool reconnectBudgetGivesConnectGrace(
+        {required bool connectInFlight, required bool graceUsed}) =>
+    connectInFlight && !graceUsed;
+
+/// Whether a connect workflow's auth callback belongs to an attempt that is
+/// over. [createdAtGeneration] is the connect generation when the callback
+/// was made; [sameConnection] is whether the provider still holds the
+/// connection it was made for. An abandoned reconnect bumps the generation
+/// and drops its connection, and a stale attempt must not POST /auth then.
+@visibleForTesting
+bool authCallbackSuperseded({
+  required int createdAtGeneration,
+  required int currentGeneration,
+  required bool sameConnection,
+}) =>
+    createdAtGeneration != currentGeneration || !sameConnection;
+
+/// Whether a disconnect cleanup, at its end, still owns the provider's
+/// current connection objects. [cleanupGeneration] is the connect generation
+/// when the cleanup started; a connect begun during the cleanup's awaits
+/// bumps it and owns whatever is current by then, for as long as it is
+/// [newerConnectLive] (still connecting, or connected). A connect that
+/// failed or was cancelled since owns nothing: the session and the objects
+/// are the cleanup's again, or the session would be held until it expires.
+@visibleForTesting
+bool cleanupOwnsCurrentConnection({
+  required int cleanupGeneration,
+  required int currentGeneration,
+  required bool newerConnectLive,
+}) =>
+    cleanupGeneration == currentGeneration || !newerConnectLive;
+
+/// An auto-reconnect attempt's connect call while it runs. An abandon that
+/// catches it stamps the connect generation it moved to, which is how the
+/// attempt learns, when it ends, that it no longer owns anything.
+class _ReconnectConnectAttempt {
+  int? abandonedAtGeneration;
+}
+
+/// Whether an /auth answer means this phone just took a TX slot the cached
+/// /status count does not know about yet. Not when the server sent its own
+/// count, and not for a reused session (it carries `resume_counter`): that
+/// slot was already ours, and counting it again on every reconnect walked the
+/// estimate down.
+@visibleForTesting
+bool authTookNewSlot(Map<String, dynamic> authResult) =>
+    authResult['tx_allowed'] == true &&
+    !authResult.containsKey('slots_available') &&
+    !authResult.containsKey('resume_counter');
+
+/// The least time between two claims refreshes made by auto-reconnects
+/// inside one session. The server allows 60 `mine` calls an hour.
+@visibleForTesting
+const Duration claimsReconcileReconnectSpacing = Duration(minutes: 10);
+
+/// Whether a connect should refresh the companion's repeater claims (the
+/// `mine` action). A manual connect always does. An auto-reconnect does only
+/// when the session changed or [claimsReconcileReconnectSpacing] has passed
+/// since the last connect-time refresh: a reconnect loop otherwise spent the
+/// server's hourly cap in minutes.
+@visibleForTesting
+bool shouldReconcileClaimsOnConnect({
+  required bool autoReconnect,
+  required String? sessionId,
+  required String? lastSessionId,
+  required DateTime? lastAt,
+  required DateTime now,
+}) {
+  if (!autoReconnect || lastAt == null) return true;
+  if (sessionId != lastSessionId) return true;
+  return now.difference(lastAt) >= claimsReconcileReconnectSpacing;
 }
 
 /// Main application state provider
@@ -299,6 +519,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _connectionError;
   bool _isAuthError = false; // Track if connection failed due to auth
   bool _isNetworkError = false; // Track if connection failed due to network
+  AppUpdateRequirement? _appUpdateRequirement; // Set when /auth said outofdate
+
+  /// How the app was installed (`PackageInfo.installerStore`), read only when
+  /// the server refuses this build. Replaceable in tests, where the real
+  /// plugin call hangs.
+  @visibleForTesting
+  Future<String?> Function() installerStoreReader =
+      () async => (await PackageInfo.fromPlatform()).installerStore;
 
   // Bluetooth adapter state (on/off)
   BluetoothAdapterState _bluetoothAdapterState = BluetoothAdapterState.unknown;
@@ -336,6 +564,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get displayDeviceName =>
       _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
 
+  /// Radio name set by debug-only store capture mode. Display only: it never
+  /// feeds connection logic, which reads [connectedDeviceName].
+  String? _storeCaptureRadioName;
+
+  /// Radio name for the Home screen header, or null when no radio is
+  /// connected. Capture mode shows a fixed name so screenshots carry no
+  /// personal device name.
+  String? get headerRadioName =>
+      _storeCaptureRadioName ??
+      (connectedDeviceName != null ? (displayDeviceName ?? 'Unknown') : null);
+
   // Ping state
   PingStats _pingStats = const PingStats();
   bool _autoPingEnabled = false;
@@ -371,6 +610,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isScanning = false;
   StreamSubscription<DiscoveredDevice>? _activeScanSubscription;
 
+  /// True while connectToDevice is waiting on the BLE transport connect, the
+  /// one stretch of a connect the user can cancel (up to 3 x 15 s when the
+  /// radio is off or out of range).
+  bool _bleTransportConnecting = false;
+
+  /// True while [cancelConnect] is tearing the pending BLE connect down.
+  bool _isCancellingConnect = false;
+
   // TX/RX markers for map
   final List<TxPing> _txPings = [];
   final List<RxPing> _rxPings = [];
@@ -384,6 +631,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<RxLogEntry> _rxLogEntries = [];
   final List<DiscLogEntry> _discLogEntries = [];
   final List<TraceLogEntry> _traceLogEntries = [];
+  final ScopeLogStore _scopeLog = ScopeLogStore(maxEntries: _maxLogEntries);
   final List<PingEventMarker> _deferredPingMarkers = [];
   final List<PingEventMarker> _startingDeferredHistory = [];
 
@@ -400,14 +648,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Top repeaters overlay, updated live on each ping event. The map's Top
   // Heard box, the watch's heard rows and the Live Activity's rows all read
-  // this one list, so the three surfaces cannot disagree.
+  // this one list, so the three surfaces cannot disagree. It holds up to
+  // UserPreferences.topHeardRowsMax rows; the map shows the user's row
+  // setting of them and the other surfaces the first [_surfaceTopHeardRows].
   List<({String repeaterId, double snr, OverlayPingType type})>
       _topRepeatersOverlay = [];
   DateTime? _topRepeatersOverlayUpdatedAt;
 
-  /// How many repeaters the latest ping heard in all, beyond the three the
-  /// overlay keeps. The Live Activity's "HEARD NOW n" header counts them.
-  int _topRepeatersOverlayTotalCount = 0;
+  /// Ping rows the Live Activity, CarPlay and the watch show, whatever the
+  /// in-app Top Heard Rows setting is.
+  static const int _surfaceTopHeardRows = 3;
+
+  /// Every repeater the latest ping heard (upper-case display IDs), regardless
+  /// of how many rows are stored or shown. The Live Activity's "HEARD NOW n"
+  /// header counts them, plus the RX repeater only when it is not one of them.
+  Set<String> _topRepeatersOverlayHeardIds = const {};
 
   /// The fullest identity known for each overlay row, keyed by the display hash
   /// the row is shown under.
@@ -433,6 +688,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // User error log entries
   final List<UserErrorEntry> _errorLogEntries = [];
+
+  // Errors logged so far, how many of them the user has had on screen, and
+  // whether the Errors tab is showing now. The Log tab's dot means an unseen
+  // error, not any error: it used to clear only with Clear all logs.
+  int _errorsLogged = 0;
+  int _errorsSeen = 0;
+  bool _errorLogOnScreen = false;
 
   // User preferences
   UserPreferences _preferences = const UserPreferences();
@@ -501,6 +763,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _zoneCheckRetryCountdown =
       0; // Seconds until next retry (0 = not counting)
   Timer? _zoneCheckRetryTimer; // Fires to trigger the retry
+  int _zoneCheckNetworkFailures = 0; // In a row; any real answer resets it
   Timer? _zoneCheckCountdownTimer; // Ticks every 1s for UI countdown
 
   // Maintenance mode state
@@ -547,14 +810,81 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _sessionRecoveryGeneration = 0;
   Future<SessionRecoveryResult>? _liveSessionRecoveryInFlight;
 
+  /// True while a group handoff holds [_liveSessionRecoveryInFlight]. A
+  /// session_expired arriving then is answered superseded instead of being
+  /// handed the handoff's own future (see [resolveSessionRecoveryJoin]).
+  bool _groupHandoffOwnsRecoverySlot = false;
+
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
+
+  /// Set while [exitApp] runs, so a second Close App cannot pop the app in
+  /// the middle of the first one's disconnect.
+  bool _exitInProgress = false;
 
   /// Bumped by every transport connect entry point. A connection attempt that
   /// finds its captured generation stale has been superseded by a newer
   /// attempt and must not touch shared provider state (#500 review).
   int _connectGeneration = 0;
   bool _isAutoReconnecting = false;
+
+  /// True while a connect re-run (#500) is waiting to start. Both this and
+  /// [_isAutoReconnecting] run while [_connectionStep] reads `disconnected`,
+  /// yet the radio session is not over.
+  bool _connectRerunPending = false;
+
+  /// True while a radio session is live, which is what lets GPS keep
+  /// collecting after the app leaves the screen.
+  bool get _sessionActive => radioSessionActive(
+        step: _connectionStep,
+        autoReconnecting: _isAutoReconnecting,
+        connectRerunPending: _connectRerunPending,
+      );
+
+  /// True when this provider stopped GPS (or never started it) because the app
+  /// is in the background with no radio session. It marks the GPS stream the
+  /// policy owes a restart on return, so a stream stopped for any other reason
+  /// is never started here.
+  bool _gpsStoppedByPolicy = false;
+
+  /// True when init had to hold GPS back, so the first start after it is a
+  /// full one (the one-off position read and the usual resets) rather than the
+  /// quiet restart used when returning from the background.
+  bool _gpsInitialStartPending = false;
+
+  /// How many full disconnect cleanups are running. The cleanup flips
+  /// [_connectionStep] to `disconnected` at its top, long before the queue
+  /// flush and session release finish, so [_sessionActive] alone would let GPS
+  /// stop mid-upload. A failed connect also reads it, to leave the session
+  /// service's stop to that cleanup's end.
+  int _disconnectCleanupDepth = 0;
+
+  /// Whether Android's session service may use location: the permission and
+  /// the in-app disclosure, both. Read at the Connect tap, on return to the
+  /// app and after a permission change, and kept here because
+  /// [_syncConnectionService] runs on every notify and cannot ask.
+  bool _sessionLocationGranted = false;
+
+  /// True while a session service start waits for its answer, so the notifies
+  /// in between do not send a second one.
+  bool _connectionServiceStarting = false;
+
+  /// True once this session has logged that the service was held back for
+  /// want of location. Cleared when the session ends, so each session logs it
+  /// once rather than on every notify.
+  bool _serviceRefusalLogged = false;
+
+  /// True when a session service start came back not started, or was
+  /// accepted and then failed to reach the foreground. No further start is
+  /// tried until the app comes back on screen or the session ends, so a start
+  /// that keeps failing is not resent (and logged) on every notify.
+  bool _connectionServiceStartFailed = false;
+
+  /// True once a start since the app last came on screen was accepted. With
+  /// the session still live, the service can then only read not running
+  /// because the manager's status read shortly after the start found it never
+  /// reached the foreground.
+  bool _connectionServiceStartAccepted = false;
 
   // ============================================
   // MyMeshMapper account + companion linking
@@ -656,6 +986,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _reconnectDelayAfterBondError = Duration(seconds: 5);
   bool _lastReconnectWasBondError = false;
 
+  /// Gives up on a radio that keeps dropping right after it reconnects.
+  final ReconnectFlapGuard _reconnectFlapGuard = ReconnectFlapGuard();
+
+  /// The auto-reconnect attempt whose connect call is running, if any.
+  _ReconnectConnectAttempt? _reconnectConnectInFlight;
+
+  /// When, and in which session, a connect last refreshed the repeater
+  /// claims (see [shouldReconcileClaimsOnConnect]).
+  DateTime? _lastConnectClaimsReconcileAt;
+  String? _lastConnectClaimsReconcileSession;
+
+  /// Set once the budget ran out and the in-flight connect got its grace: an
+  /// attempt that then fails abandons instead of retrying.
+  bool _reconnectBudgetSpent = false;
+
+  /// How long a connect still in flight when the budget runs out gets.
+  static const Duration _reconnectInFlightGrace = Duration(seconds: 15);
+
   // Idle disconnect timer — disconnects after 15 min without manual ping or auto-ping
   Timer? _idleDisconnectTimer;
   static const Duration _idleDisconnectTimeout = Duration(minutes: 15);
@@ -673,6 +1021,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Zone transfer state — tracks session zone for zone-to-zone detection
   String? _sessionZoneCode;
+  // The group that zone belonged to when the session was minted, or null.
+  String? _sessionGroupCode;
   bool _isZoneTransferInProgress = false;
   String? _zoneTransferFrom;
   String? _zoneTransferTo;
@@ -690,11 +1040,71 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _anonymousReconnectEnabling = true;
 
   // Repeater markers state
-  List<Repeater> _repeaters = [];
+  RepeaterListState _repeaterListState = const RepeaterListState();
+  List<Repeater> get _repeaters => _repeaterListState.repeaters;
   Set<String> _repeaterConflictHexIds = const {};
   int _siriRepeaterCatalogRevision = 0;
-  bool _repeatersLoaded = false;
-  String? _repeatersLoadedForIata;
+  bool get _repeatersLoaded => _repeaterListState.loadedAt != null;
+  String? get _repeatersLoadedForIata => _repeaterListState.zone;
+  final Set<(String, String?)> _repeaterLoadsInFlight = {};
+
+  /// When the repeater list last loaded (scope discovery refreshes a list
+  /// older than an hour at connect).
+  DateTime? get _repeatersLoadedAt => _repeaterListState.loadedAt;
+
+  /// True while a scope-discovery repeater list refresh (connect-time,
+  /// mode-start or periodic) is in flight, so only one runs at a time.
+  bool _scopeRepeaterRefreshInFlight = false;
+
+  // ============================================
+  // Scope discovery (background scope runner)
+  // ============================================
+  static const String _scopeHourBudgetKey = 'scope_hour_budget';
+  static const String _scopeQueryCacheKey = 'scope_query_cache';
+  ScopeQueryCache _scopeQueryCache = ScopeQueryCache.fromJson(null);
+  late ScopeHourlyBudget _scopeHourlyBudget =
+      ScopeHourlyBudget(save: _saveScopeHourBudget);
+  late final ScopeSerialWriter _scopeCacheWriter =
+      ScopeSerialWriter('scope query cache', _saveScopeQueryCache);
+
+  /// The scope wiring: the runner gate, the badge, borrowed routes per
+  /// connection, the stop events and the refresh discard.
+  late final ScopeLifecycle _scopeLifecycle = ScopeLifecycle(
+    cancelHostRunner: (reason) => _pingService?.cancelScopeRunner(reason),
+    onBadgeChanged: () {
+      if (!_isDisposed) notifyListeners();
+    },
+  );
+
+  /// Short heard ids to the one repeater they can mean, rebuilt whenever
+  /// [_repeaters] is replaced. Top Heard reads it on every heard packet.
+  List<Repeater>? _shortHopIdsSource;
+  ShortHopIds? _shortHopIds;
+
+  ShortHopIds get _heardIdResolver {
+    if (_shortHopIds == null || !identical(_shortHopIdsSource, _repeaters)) {
+      _shortHopIds = ShortHopIds.fromRepeaters(_repeaters);
+      _shortHopIdsSource = _repeaters;
+    }
+    return _shortHopIds!;
+  }
+
+  /// The widest hop width in play: the device's and the region's.
+  int get _topHeardHopBytes => math.max(_hopBytes, _apiService.apiHopBytes);
+
+  /// The id a heard repeater shows and groups under in Top Heard: a short
+  /// hop id ("A8") that only one known repeater starts with becomes that
+  /// repeater's id ("A81EA4"); anything else is kept. Display only, see
+  /// [ShortHopIds].
+  String _topHeardId(String repeaterId) =>
+      _heardIdResolver.displayId(repeaterId, hopBytes: _topHeardHopBytes);
+
+  /// The server's scope stamps, rebuilt whenever [_repeaters] is replaced.
+  List<Repeater>? _scopeServerInfoSource;
+  Map<String, int?> _scopeServerInfo = const {};
+
+  /// True while a scope request is out (the Scopes badge).
+  bool get isScopeRequestActive => _scopeLifecycle.requestActive;
 
   // ============================================
   // Regional CARpeaters (the region's shared list from /auth)
@@ -729,6 +1139,134 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     return null;
+  }
+
+  // ============================================
+  // Repeater nicknames (personal labels, kept on the phone)
+  // ============================================
+
+  /// Box key for the saved nicknames, an untyped map in the preferences box.
+  static const String _repeaterNicknamesKey = 'repeater_nicknames';
+
+  /// The user's nicknames, keyed by the repeater's full public key.
+  ///
+  /// Global to the phone and never scoped to a zone or IATA: a nickname must
+  /// survive leaving a region and coming back. Nothing clears or filters this
+  /// on a zone change, a catalogue reload, a disconnect, a log clear or a
+  /// session end. Only [setRepeaterNickname] and [setRepeaterNicknameByKey]
+  /// change it, and resolution against whatever catalogue is loaded brings a
+  /// nickname back when its repeater is in view again.
+  Map<String, RepeaterNickname> _repeaterNicknames = const {};
+
+  /// Every saved nickname as (full public key, entry), sorted by nickname
+  /// without regard to case, then by key so two repeaters given the same
+  /// nickname keep their order. Unmodifiable.
+  List<MapEntry<String, RepeaterNickname>> get repeaterNicknames =>
+      List.unmodifiable(_repeaterNicknames.entries.toList()
+        ..sort((a, b) {
+          final byName = a.value.nickname
+              .toLowerCase()
+              .compareTo(b.value.nickname.toLowerCase());
+          return byName != 0 ? byName : a.key.compareTo(b.key);
+        }));
+
+  /// How many nicknames are saved.
+  int get repeaterNicknameCount => _repeaterNicknames.length;
+
+  /// The nickname saved for [repeater], or null when it has none.
+  String? nicknameForRepeater(Repeater repeater) =>
+      RepeaterNicknames.nicknameFor(repeater, _repeaterNicknames);
+
+  /// The text for a Top Heard row: its nickname when the row resolves to one
+  /// repeater that has one, else that repeater's server name when the Top
+  /// Heard names setting is on, else [repeaterId] unchanged.
+  String topHeardLabel(String repeaterId) {
+    final id = repeaterId.toUpperCase();
+    return RepeaterNicknames.labelFor(
+          displayId: id,
+          identity: _overlayIdentityById[id],
+          repeaters: _repeaters,
+          hopBytes: _hopBytes,
+          nicknames: _repeaterNicknames,
+          useServerName: _preferences.topHeardShowNames,
+        ) ??
+        repeaterId;
+  }
+
+  /// Give [repeater] the nickname [nickname], or remove its nickname when
+  /// [nickname] is null or blank. Does nothing for a repeater without a full
+  /// public key, which the UI never offers.
+  Future<void> setRepeaterNickname(Repeater repeater, String? nickname) async {
+    final key = normalizePublicKey(repeater.hexId);
+    if (key == null) {
+      debugWarn('[SETTINGS] Repeater nickname ignored: no full public key');
+      return;
+    }
+    final n = RepeaterNicknames.normalizeNickname(nickname);
+    await _onRepeaterNicknamesChanged(
+      key,
+      set: n == null
+          ? null
+          : RepeaterNickname(
+              nickname: n,
+              name: repeater.name,
+              hex: repeater.displayHexId(),
+            ),
+    );
+  }
+
+  /// Like [setRepeaterNickname] for a repeater known only by [publicKey], as
+  /// in the Settings list, whose entries may not be in the current catalogue.
+  ///
+  /// [name] and [hex] describe the repeater in the list: the arguments when
+  /// given (Undo re-adds a removed entry this way), else the existing entry's.
+  Future<void> setRepeaterNicknameByKey(
+    String publicKey,
+    String? nickname, {
+    String? name,
+    String? hex,
+  }) async {
+    final key = normalizePublicKey(publicKey);
+    if (key == null) {
+      debugWarn('[SETTINGS] Repeater nickname ignored: not a full public key');
+      return;
+    }
+    final n = RepeaterNicknames.normalizeNickname(nickname);
+    final existing = _repeaterNicknames[key];
+    await _onRepeaterNicknamesChanged(
+      key,
+      set: n == null
+          ? null
+          : RepeaterNickname(
+              nickname: n,
+              name: name ?? existing?.name ?? '',
+              hex: hex ?? existing?.hex ?? key.substring(0, 4),
+            ),
+    );
+  }
+
+  /// Apply one change to the nicknames: [set] is the new entry for [key], or
+  /// null to remove it. Replaces the map rather than editing it, since the
+  /// getters hand out views of it.
+  Future<void> _onRepeaterNicknamesChanged(
+    String key, {
+    required RepeaterNickname? set,
+  }) async {
+    final next = Map<String, RepeaterNickname>.of(_repeaterNicknames);
+    if (set == null) {
+      next.remove(key);
+    } else {
+      next[key] = set;
+    }
+    _repeaterNicknames = Map.unmodifiable(next);
+    // Part of the Siri preflight key, so the snapshot rebuilds.
+    _siriRepeaterCatalogRevision++;
+    // The Top Heard overlay only rebuilds on the map revision.
+    _notifyMapNow();
+    _scheduleLiveActivitySync();
+    await _saveRepeaterNicknames();
+    debugLog('[SETTINGS] Repeater nickname '
+        '${set != null ? 'set' : 'cleared'} for ${_pkPrefix(key)}');
   }
 
   // ============================================
@@ -773,9 +1311,52 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         isPingSending: _isPingSending,
         isRepeaterAdminActive: isRepeaterAdminActive,
         isAutoReconnecting: _isAutoReconnecting,
+        scopeRadioBusy: isScopeRadioBusy,
         companionFirmwareSupported:
             companionSupportsRepeaterAdmin(companionFirmwareVersionCode),
       );
+
+  /// True while a scope lease holds the radio or a reply to a command it
+  /// wrote is still owed (Manage waits for it). Replies owed to ordinary
+  /// traffic do not count.
+  bool get isScopeRadioBusy => scopeRadioBusy(
+      isScopeLeaseActive: _meshCoreConnection?.isScopeLeaseActive ?? false,
+      hasScopeReplyDebt: _meshCoreConnection?.hasScopeReplyDebt ?? false);
+
+  /// Rebuilds Manage when [connection]'s scope-busy flag flips. The
+  /// connection fires only on a real change, never per frame, and this is a
+  /// plain notify: the map does not render it (Rule 9).
+  void _wireScopeRadioBusy(MeshCoreConnection connection) {
+    connection.onScopeRadioBusyChanged = () {
+      if (_isDisposed || !identical(_meshCoreConnection, connection)) return;
+      notifyListeners();
+    };
+  }
+
+  /// Drops a warning in the error log the first time [connection]'s "cannot
+  /// ask non-contacts" flag flips to true: users rarely go back to Settings
+  /// mid-drive to see a note there. Fired once, only on the transition, and
+  /// [shouldLogScopeContactsFull] latches it to once per connection even so.
+  /// The plain notify afterward is a rebuild hook for the raw flag; the map
+  /// does not render it (Rule 9).
+  void _wireScopeCannotAskNonContacts(MeshCoreConnection connection) {
+    var loggedThisConnection = false;
+    connection.onScopeCannotAskNonContactsChanged = () {
+      if (_isDisposed || !identical(_meshCoreConnection, connection)) return;
+      if (shouldLogScopeContactsFull(
+          alreadyLoggedThisConnection: loggedThisConnection)) {
+        loggedThisConnection = true;
+        logError(
+          "Your radio's contact list is full, so scope discovery can only "
+          'ask repeaters saved as contacts. Companion firmware v1.17 or '
+          'newer fixes this, or remove some contacts.',
+          severity: ErrorSeverity.warning,
+          autoSwitch: false,
+        );
+      }
+      notifyListeners();
+    };
+  }
 
   /// The connected companion's cached claims, or the deduplicated cache while
   /// no companion is connected.
@@ -811,8 +1392,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Regional boundary polygons (from /border API — always displayed on map)
   List<Map<String, dynamic>> _regionBorders = [];
-  String? _bordersLoadedForZone;
-  bool _bordersFetchInProgress = false;
+  final BorderLoader _borderLoader =
+      BorderLoader(cache: kIsWeb ? null : HiveBorderCacheStore());
 
   // Regional channels from API (for UI display)
   List<String> _regionalChannels = [];
@@ -835,6 +1416,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<NoiseFloorSession> _storedNoiseFloorSessions = [];
   Box<NoiseFloorSession>? _noiseFloorSessionBox;
 
+  /// Writes the running session to Hive every few minutes and when the app
+  /// leaves the screen, so a kill does not lose it from History.
+  final NoiseFloorCheckpoint _noiseFloorCheckpoint = NoiseFloorCheckpoint();
+  Timer? _noiseFloorCheckpointTimer;
+  static const Duration _noiseFloorCheckpointInterval = Duration(minutes: 3);
+
   // History session map view
   List<PingEventMarker>? _historySessionMarkers;
   bool _viewingHistorySession = false;
@@ -854,11 +1441,222 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _initialize();
   }
 
+  /// The background-location policy does not apply on web (the browser owns
+  /// the lifecycle) or while the GPS simulator feeds positions.
+  bool get _gpsPolicyApplies => !kIsWeb && !_gpsService.isSimulatorEnabled;
+
+  GpsRunDecision get _gpsRunDecision => gpsRunDecision(
+        lifecycle: WidgetsBinding.instance.lifecycleState,
+        // GPS outlives the step change: the location stream keeps the
+        // backgrounded iOS process alive through the final upload.
+        radioActive: _sessionActive || _disconnectCleanupDepth > 0,
+        isIos: defaultTargetPlatform == TargetPlatform.iOS,
+      );
+
+  /// Stops GPS while the app is in the background with no radio session, and
+  /// starts it again quietly when the app is back on screen.
+  ///
+  /// Runs on every lifecycle change and every notify, so it must stay cheap
+  /// and synchronous apart from the unawaited restart. [why] names the trigger
+  /// in the log.
+  void _syncGpsWithPolicy(String why) {
+    if (!_gpsPolicyApplies) return;
+    switch (_gpsRunDecision) {
+      case GpsRunDecision.stop:
+        if (_gpsService.isWatching) {
+          _gpsStoppedByPolicy = true;
+          _gpsService.stopWatching();
+          debugLog(
+              '[GPS] Stopped: app in the background with no radio ($why)');
+        }
+      case GpsRunDecision.run:
+        if (_gpsStoppedByPolicy) {
+          final keepTracking = !_gpsInitialStartPending;
+          // Cleared before the restart so a notify during it cannot start a
+          // second one.
+          _gpsStoppedByPolicy = false;
+          _gpsInitialStartPending = false;
+          debugLog(keepTracking
+              ? '[GPS] Restarting: $why'
+              : '[GPS] Starting: $why');
+          unawaited(restartGpsAfterPermission(keepTracking: keepTracking));
+        }
+      case GpsRunDecision.keep:
+        break;
+    }
+  }
+
+  /// Whether the session service holds its wake lock: while a mode runs, and
+  /// while a reconnect or a zone grace period has paused one that will
+  /// resume. Their own timers (the reconnect's 30 s give-up, the grace
+  /// period's 5 s polling) must not drift with the screen off. The hand-offs
+  /// count too: a mode's start (its session check runs before the mode is
+  /// on), and the short wait before a mode is restored after a reconnect or
+  /// a zone change, so the lock does not drop for that moment.
+  bool get _keepServiceAwake =>
+      _autoPingEnabled ||
+      _autoPingStarting ||
+      _restoreAutoPingTimer != null ||
+      (_isAutoReconnecting && _autoPingWasEnabled) ||
+      (_isInZoneGracePeriod && _autoPingWasEnabledBeforeGrace);
+
+  /// What Android's session service notification says right now. The service
+  /// runs for the whole radio session, so it reads the mode's stats while one
+  /// runs and the connection's state between modes.
+  ({String title, String body}) _serviceNotificationNow() {
+    if (_autoPingEnabled) {
+      return androidNotificationContent(
+        mode: _autoMode,
+        txCount: _pingStats.txCount,
+        rxCount: _pingStats.rxCount,
+        queueSize: _queueSize,
+      );
+    }
+    if (_isInZoneGracePeriod) return androidZoneGraceNotificationContent();
+    if (_isAutoReconnecting) {
+      return (
+        title: 'MeshMapper - Reconnecting',
+        body: 'Trying to reach ${_rememberedDevice?.name ?? 'your radio'}',
+      );
+    }
+    // From the Connect tap on, and through a connect re-run's wait.
+    if (_connectionStep != ConnectionStep.connected) {
+      return androidConnectingNotificationContent();
+    }
+    return androidConnectedNotificationContent(
+      radioName: _rememberedDevice?.name ?? 'your radio',
+    );
+  }
+
+  /// Reads whether location may be used for the session service (see
+  /// [_sessionLocationGranted]). Android only. A check that fails counts as
+  /// not granted: the service cannot reach the foreground without location.
+  Future<void> _refreshSessionLocationGranted() async {
+    if (!BackgroundServiceManager.followsConnection) return;
+    try {
+      _sessionLocationGranted = await _gpsService.checkPermissions() &&
+          await LocationConsent.hasAgreed();
+    } catch (e) {
+      debugWarn('[BACKGROUND] Could not check location permission: $e');
+      _sessionLocationGranted = false;
+    }
+  }
+
+  /// Starts Android's session service while a radio session is live and the
+  /// app is on screen, and keeps its notification in step with the session.
+  ///
+  /// Runs on every notify, so it stays synchronous and cheap: it asks the
+  /// platform nothing, and the start and the update are sent without waiting
+  /// (the update drops content that has not changed). It never stops the
+  /// service. The paths that end a session do that, once their upload and
+  /// session release are done. Until then (disconnecting, or the cleanup
+  /// after the step reads disconnected) nothing is pushed, so the
+  /// notification and the mode's wake lock stay as they were through the
+  /// upload.
+  void _syncConnectionService() {
+    if (!BackgroundServiceManager.followsConnection) return;
+    if (!_sessionActive) {
+      _serviceRefusalLogged = false;
+      _clearConnectionServiceStartFailure();
+      return;
+    }
+    bool wouldStart({required bool locationGranted}) =>
+        shouldStartConnectionService(
+          followsConnection: BackgroundServiceManager.followsConnection,
+          running: BackgroundServiceManager.isRunning,
+          starting: _connectionServiceStarting,
+          sessionActive: _sessionActive,
+          step: _connectionStep,
+          lifecycle: WidgetsBinding.instance.lifecycleState,
+          locationGranted: locationGranted,
+        );
+    if (wouldStart(locationGranted: _sessionLocationGranted)) {
+      if (_connectionServiceStartFailed) return;
+      if (_connectionServiceStartAccepted) {
+        // Accepted, and now not running with the session still live: the
+        // check after the start found it never reached the foreground.
+        _markConnectionServiceStartFailed();
+        return;
+      }
+      _connectionServiceStarting = true;
+      final n = _serviceNotificationNow();
+      unawaited(BackgroundServiceManager.startService(
+        title: n.title,
+        body: n.body,
+        keepAwake: _keepServiceAwake,
+        mayStart: () =>
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed &&
+            _sessionActive,
+      ).whenComplete(() {
+        _connectionServiceStarting = false;
+        if (BackgroundServiceManager.isRunning) {
+          _connectionServiceStartAccepted = true;
+        } else if (_sessionActive) {
+          // Refused, or the channel call failed; the manager logged why. A
+          // session that ended meanwhile sent a stop, which is no failure.
+          _markConnectionServiceStartFailed();
+        }
+      }));
+      return;
+    }
+    if (!_sessionLocationGranted &&
+        !_serviceRefusalLogged &&
+        wouldStart(locationGranted: true)) {
+      _serviceRefusalLogged = true;
+      debugWarn('[BACKGROUND] Not starting the service: location not granted');
+    }
+    if (BackgroundServiceManager.isRunning &&
+        _connectionStep != ConnectionStep.disconnecting) {
+      final n = _serviceNotificationNow();
+      unawaited(BackgroundServiceManager.updateNotification(
+        title: n.title,
+        body: n.body,
+        keepAwake: _keepServiceAwake,
+      ));
+    }
+  }
+
+  /// Holds back further session service starts (see
+  /// [_connectionServiceStartFailed]). Logged once, when it is set.
+  void _markConnectionServiceStartFailed() {
+    _connectionServiceStartFailed = true;
+    _connectionServiceStartAccepted = false;
+    debugWarn('[BACKGROUND] Not retrying the service start until the app is '
+        'back on screen');
+  }
+
+  /// Lets the session service be started again: on return to the app, and
+  /// when a session ends.
+  void _clearConnectionServiceStartFailure() {
+    _connectionServiceStartFailed = false;
+    _connectionServiceStartAccepted = false;
+  }
+
+  /// On return to the app (Android): re-read the location grant, bring the
+  /// service in line with the session (a service that died in the background
+  /// is noticed, one left running with no session is stopped), then start it
+  /// again if the session still wants it.
+  Future<void> _syncConnectionServiceAfterResume() async {
+    await _refreshSessionLocationGranted();
+    await BackgroundServiceManager.healAfterResume(
+        sessionActive: _sessionActive);
+    if (_isDisposed) return;
+    _syncConnectionService();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _syncGpsWithPolicy('app ${state.name}');
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
+      if (BackgroundServiceManager.followsConnection) {
+        // Back on screen: a start that failed earlier gets one more try.
+        _clearConnectionServiceStartFailure();
+        unawaited(_syncConnectionServiceAfterResume());
+      }
       _checkTcpHealthAfterResume();
+      unawaited(_recheckLocationAccuracyAfterResume());
       // Diagnostic: timers can be suspended while backgrounded; on resume, log
       // any countdown timer stuck past its deadline (intermittent ping lockout).
       _logStuckTimers('resume');
@@ -866,10 +1664,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_portalAccountService.checkLinkOnResume());
     } else if (state == AppLifecycleState.paused) {
       debugLog('[APP] App paused (backgrounded)');
+      // The process may be killed in the background before the debounce fires.
+      _mapViewStateSaver.flush();
       // Save offline pings immediately on pause to prevent data loss if OS kills app
       if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
         _autoSaveOfflinePings();
       }
+      // Likewise the History session, which otherwise reaches storage only
+      // when its mode ends.
+      unawaited(_checkpointNoiseFloorSession('app paused'));
     }
   }
 
@@ -915,8 +1718,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// This logging is here to capture the real trigger on-device; the actual fix
   /// is deferred until a debug log confirms it. See countdown_timer_service.dart.
   void _logStuckTimers(String reason) {
+    final now = DateTime.now();
     void check(String name, CountdownTimerService t) {
-      if (t.isRunning && t.remainingMs == 0) {
+      if (countdownLooksStuck(
+          isRunning: t.isRunning, endTime: t.endTime, now: now)) {
         debugWarn(
             '[TIMER] $name isRunning past its deadline (stuck, remaining=0) — '
             'locks ping controls until restart [$reason]');
@@ -971,6 +1776,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
+
+  /// How the user last left the map (zoom, folded panels). See [MapViewState].
+  MapViewState get mapViewState => _mapViewState;
   bool get onboardingGuideStateLoaded => _onboardingGuideProgress.isLoaded;
   bool get shouldShowOnboardingGuide => _onboardingGuideProgress.isDue;
   WatchBridgeService get watchBridge => _watchBridge;
@@ -991,6 +1799,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get connectionError => _connectionError;
   bool get isAuthError => _isAuthError;
   bool get isNetworkError => _isNetworkError;
+
+  /// Non-null while the current connection error is the server refusing
+  /// this build as out of date. Tied to the error text so every path that
+  /// clears or replaces the error also drops the panel.
+  AppUpdateRequirement? get appUpdateRequirement {
+    final requirement = _appUpdateRequirement;
+    if (requirement == null || _connectionError != requirement.errorMessage) {
+      return null;
+    }
+    return requirement;
+  }
   BluetoothAdapterState get bluetoothAdapterState => _bluetoothAdapterState;
   bool get isBluetoothOn => _bluetoothAdapterState == BluetoothAdapterState.on;
   bool get isBluetoothOff =>
@@ -1066,39 +1885,62 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int? get currentBatteryPercent => _currentBatteryPercent;
   List<DiscoveredDevice> get discoveredDevices => _discoveredDevices;
   bool get isScanning => _isScanning;
+
+  /// Whether the connect in progress can be cancelled right now: a BLE
+  /// transport connect on mobile, not an auto-reconnect.
+  bool get canCancelConnect =>
+      !kIsWeb &&
+      _bleTransportConnecting &&
+      !_isAutoReconnecting &&
+      _connectionStep == ConnectionStep.transportConnecting;
+
+  /// True while a user cancel of the pending connect is still unwinding.
+  bool get isCancellingConnect => _isCancellingConnect;
   List<TxPing> get txPings => List.unmodifiable(_txPings);
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
 
-  /// Top 3 repeaters by best SNR from TX/DISC/Trace pings
+  /// The in-app Top Heard rows: the latest ping's repeaters by best SNR from
+  /// TX/DISC/Trace pings, up to the user's Top Heard Rows setting.
   List<({String repeaterId, double snr, OverlayPingType type})>
-      get topRepeatersBySnr => _topRepeatersOverlay;
+      get topRepeatersBySnr =>
+          _topRepeatersOverlay.take(_preferences.topHeardRows).toList();
 
   /// Best RX observation in the current 5-second window
   ({String repeaterId, double snr})? get rxOverlaySlot => _rxOverlaySlot;
 
   /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
-  /// Replaces all 3 slots entirely (no carryover from previous pings). Only a
-  /// ping that heard something calls this, so a silent ping leaves the last
+  /// Replaces every stored row entirely (no carryover from previous pings),
+  /// keeping up to [UserPreferences.topHeardRowsMax] so a higher Top Heard Rows
+  /// setting takes effect on the next rebuild without waiting for a ping. Only
+  /// a ping that heard something calls this, so a silent ping leaves the last
   /// heard set in place on the map, the watch and the Live Activity alike.
   /// - Parameter identities: display hash to the fullest identity this ping
   ///   carried for it, for the ping types that carry more than a path byte.
   void _updateTopRepeaters(
       List<({String repeaterId, double snr})> current, OverlayPingType type,
       {Map<String, String>? identities}) {
-    _overlayIdentityById = identities ?? const {};
-    final bestSnr = <String, double>{};
-    for (final r in current) {
-      final key = r.repeaterId.toUpperCase();
-      if (!bestSnr.containsKey(key) || r.snr > bestSnr[key]!) {
-        bestSnr[key] = r.snr;
-      }
-    }
+    // A short hop id that only one known repeater starts with joins that
+    // repeater's row (issue #637), so the identities move with it. Two
+    // different identities landing on one row cancel out, as contested
+    // discovery hashes do.
+    final rekeyed = <String, String>{};
+    final contested = <String>{};
+    (identities ?? const <String, String>{}).forEach((displayId, identity) {
+      final key = _topHeardId(displayId);
+      final existing = rekeyed[key];
+      if (existing != null && existing != identity) contested.add(key);
+      rekeyed[key] = identity;
+    });
+    contested.forEach(rekeyed.remove);
+    _overlayIdentityById = rekeyed.isEmpty ? const {} : rekeyed;
+    final bestSnr = _heardIdResolver.bestSnrByRepeater(current,
+        hopBytes: _topHeardHopBytes);
     final fresh = bestSnr.entries
         .map((e) => (repeaterId: e.key, snr: e.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
-    _topRepeatersOverlay = fresh.take(3).toList();
-    _topRepeatersOverlayTotalCount = fresh.length;
+    _topRepeatersOverlay = fresh.take(UserPreferences.topHeardRowsMax).toList();
+    _topRepeatersOverlayHeardIds = bestSnr.keys.toSet();
     _topRepeatersOverlayUpdatedAt = DateTime.now();
   }
 
@@ -1142,7 +1984,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Update the RX overlay slot — window matches auto-ping interval (best SNR wins).
   void _updateRxOverlaySlot(String repeaterId, double snr) {
-    final entry = (repeaterId: repeaterId.toUpperCase(), snr: snr);
+    final entry = (repeaterId: _topHeardId(repeaterId), snr: snr);
     if (_rxOverlayWindowTimer?.isActive ?? false) {
       if (_rxOverlaySlot == null || snr > _rxOverlaySlot!.snr) {
         _rxOverlaySlot = entry;
@@ -1158,10 +2000,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Clear all overlay state (top 3 + RX slot).
+  /// Clear all overlay state (top heard rows + RX slot).
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
-    _topRepeatersOverlayTotalCount = 0;
+    _topRepeatersOverlayHeardIds = const {};
     _topRepeatersOverlayUpdatedAt = null;
     _overlayIdentityById = const {};
     _rxOverlaySlot = null;
@@ -1175,22 +2017,32 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<DiscLogEntry> get discLogEntries => List.unmodifiable(_discLogEntries);
   List<TraceLogEntry> get traceLogEntries =>
       List.unmodifiable(_traceLogEntries);
+  List<ScopeLogEntry> get scopeLogEntries => _scopeLog.entries;
   List<UserErrorEntry> get errorLogEntries =>
       List.unmodifiable(_errorLogEntries);
-  List<UnifiedPingLogEntry> get unifiedPingLogEntries {
-    final merged = <UnifiedPingLogEntry>[
-      ..._txLogEntries.map((e) => UnifiedPingLogEntry(
-          type: PingLogType.tx, timestamp: e.timestamp, entry: e)),
-      ..._rxLogEntries.map((e) => UnifiedPingLogEntry(
-          type: PingLogType.rx, timestamp: e.timestamp, entry: e)),
-      ..._discLogEntries.map((e) => UnifiedPingLogEntry(
-          type: PingLogType.disc, timestamp: e.timestamp, entry: e)),
-      ..._traceLogEntries.map((e) => UnifiedPingLogEntry(
-          type: PingLogType.trace, timestamp: e.timestamp, entry: e)),
-    ];
-    merged.sort();
-    return merged;
+
+  /// True while the error log holds an error the user has not seen yet.
+  bool get hasUnseenErrors => errorLogHasUnseen(
+      hasEntries: _errorLogEntries.isNotEmpty,
+      logged: _errorsLogged,
+      seen: _errorsSeen);
+
+  /// Told by the Log screen whenever the Errors tab comes on or goes off
+  /// screen. Everything logged so far counts as seen once it is showing.
+  void setErrorLogOnScreen(bool onScreen) {
+    if (_errorLogOnScreen == onScreen) return;
+    _errorLogOnScreen = onScreen;
+    if (!onScreen || !hasUnseenErrors) return;
+    _errorsSeen = _errorsLogged;
+    notifyListeners();
   }
+  List<UnifiedPingLogEntry> get unifiedPingLogEntries => mergeUnifiedPingLog(
+        tx: _txLogEntries,
+        rx: _rxLogEntries,
+        disc: _discLogEntries,
+        trace: _traceLogEntries,
+        scopes: _scopeLog.entries,
+      );
 
   ({double lat, double lon})? get mapNavigationTarget => _mapNavigationTarget;
   int get mapNavigationTrigger => _mapNavigationTrigger;
@@ -1218,6 +2070,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get zoneName => _currentZone?['name'] as String?;
   String? get zoneCode => _currentZone?['code'] as String?;
 
+  /// The multi-region group the current zone belongs to, or null.
+  ZoneGroup? get zoneGroup => parseZoneGroup(_currentZone);
+  String? get zoneGroupCode => zoneGroup?.code;
+
+  /// Full code to show for the zone: the group's when there is one.
+  String? get displayZoneCode => zoneGroupCode ?? zoneCode;
+
+  /// [displayZoneCode] cut for the short labels (chips, status bar,
+  /// Live Activity, watch, Siri).
+  String? get shortZoneCode {
+    final code = displayZoneCode;
+    return code == null ? null : shortZoneLabel(code);
+  }
+
+  /// Name to show for the zone: the group's when the server sent one.
+  String? get displayZoneName => zoneGroup?.name ?? zoneName;
+
+  /// Subdomain coverage is read from (`<code>.meshmapper.net`): the group's
+  /// own site merges every member. Repeaters and borders are still fetched
+  /// from the member's site (which already answers for the whole group) but
+  /// are keyed on this code, see [_repeaterContextKey].
+  String? get coverageHostCode => zoneGroupCode ?? zoneCode;
+
+  /// The context the repeater list and the borders are keyed on: the group
+  /// when the zone belongs to one, else the zone. A move between two members
+  /// of the same group keeps the key, so neither list is cleared or refetched
+  /// for it. Leaving the group changes the key and clears both, as a plain
+  /// zone change always did.
+  String? get _repeaterContextKey => coverageHostCode;
+
+  /// Logs the group once per change, so a drive across a group's members
+  /// does not repeat it on every zone check.
+  void _noteZoneGroupChange(String? previous) {
+    final group = zoneGroup;
+    if (group?.code == previous) return;
+    debugLog(group == null
+        ? '[APP] Zone group: none'
+        : '[APP] Zone group: ${group.code} (${group.members.length} members)');
+  }
+
   /// MapWidget handshake: whether the coverage overlay is currently on the
   /// map. Gates the post-wardrive fresh-tile flow — no overlay, no fetches.
   void reportVectorOverlayActive(bool active) {
@@ -1235,8 +2127,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? _coveragePatchCells
           : const {};
 
-  /// Drop the session patch — the cells belong to one region + grid preset
-  /// (called on zone change and when the Grid Mode preference changes).
+  /// Drop the session patch: the cells belong to one region or group plus
+  /// grid preset (called on a coverage host change and when the Grid Mode
+  /// preference changes).
   void clearCoveragePatch() {
     _coveragePatchCells.clear();
     _coveragePatchVersion++;
@@ -1251,13 +2144,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// the z14 tile. attempt 1 fires +7s after upload; attempt 2 (+10s) runs
   /// only when attempt 1 saw no changed tiles (ingestion can lag the post).
   Future<void> _freshenAffectedVectorTiles({required int attempt}) async {
-    final zone = zoneCode;
+    final zone = coverageHostCode;
     if (zone == null ||
         zone != _pendingFreshZone ||
         _pendingFreshCoords.isEmpty) {
-      // Zone changed since the coords were queued: they belong to the OLD
-      // region's grid — freshening them against the new region's server
-      // would be pure wasted renders.
+      // Coverage host changed since the coords were queued: they belong to
+      // the OLD region's (or group's) grid, so freshening them against the
+      // new host's server would be pure wasted renders.
       _pendingFreshCoords.clear();
       return;
     }
@@ -1347,7 +2240,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           anyVerdict = true;
           debugLog('[COVERAGE] No new tile ${e.key} (unchanged)');
         } else {
-          debugLog('[COVERAGE] Tile ${e.key} fresh check failed');
+          final reason = result.noVerdictReason ?? 'unknown';
+          if (reason == 'header absent') {
+            debugLog('[COVERAGE] Tile ${e.key} no verdict (header absent)');
+          } else {
+            debugLog('[COVERAGE] Tile ${e.key} fresh check failed ($reason)');
+          }
         }
         if (e.value[0] == 14 && result.body != null) {
           z14Bodies.add(result.body!);
@@ -1438,6 +2336,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final seen = <int>{};
     for (final body in bodies) {
       for (final cell in decodeCoverageCells(body)) {
+        // A block's i/j index k by k 300 m blocks, not cells of this grid,
+        // so it can never be the user's own cell. Fresh z14 tiles carry no
+        // blocks today; this keeps a block from matching by accident.
+        if (cell.isBlock) continue;
         if (wanted.contains('${cell.i}_${cell.j}') && seen.add(cell.id)) {
           out.add(cell);
         }
@@ -1448,6 +2350,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   int? get zoneSlotsAvailable => _currentZone?['slots_available'] as int?;
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
+
+  /// The zone's flood veto for the current radio preset, as /status (or a
+  /// later /auth) reported it. Null when the server sent no `flood_disabled`
+  /// key (an older server); `slotsChipState` then falls back to guessing
+  /// from `slots_max == 0`.
+  bool? get zoneFloodDisabled {
+    final zone = _currentZone;
+    if (zone == null || !zone.containsKey('flood_disabled')) return null;
+    return zone['flood_disabled'] == true;
+  }
   String? get nearestZoneName => _nearestZone?['name'] as String?;
   String? get nearestZoneCode => _nearestZone?['code'] as String?;
   double? get nearestZoneDistanceKm =>
@@ -1532,6 +2444,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       '${(_zoneGraceSecondsRemaining % 60).toString().padLeft(2, '0')}';
 
   // Zone transfer getters
+  /// The group the session's zone belonged to when the session was minted,
+  /// or null. Compared against [zoneGroupCode] on every zone check.
+  String? get sessionGroupCode => _sessionGroupCode;
   bool get isZoneTransferInProgress => _isZoneTransferInProgress;
   String? get zoneTransferFrom => _zoneTransferFrom;
   String? get zoneTransferTo => _zoneTransferTo;
@@ -1569,15 +2484,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get repeaterCount => _repeaters.length;
 
   /// Lazy tap-to-inspect: fetch raw coverage points for a clicked map cell from
-  /// the current zone's app endpoint. Returns `[]` when there is no zone or on
-  /// failure. The caller aggregates these into a GRID SUMMARY (read-only — no
-  /// state mutation, so no `notifyListeners`).
+  /// the coverage host's app endpoint (the region's, or the group's when the
+  /// zone belongs to one). Returns `[]` when there is no zone or on failure.
+  /// The caller aggregates these into a GRID SUMMARY (read-only: no state
+  /// mutation, so no `notifyListeners`).
   Future<List<Map<String, dynamic>>> fetchCellCoverage({
     required double lat,
     required double lon,
     required double radiusMeters,
   }) {
-    final zone = zoneCode;
+    final zone = coverageHostCode;
     if (zone == null || zone.isEmpty) {
       return Future.value(const <Map<String, dynamic>>[]);
     }
@@ -1590,7 +2506,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Lazy tap-to-inspect: fetch the coverage points referencing a repeater
-  /// (hex-prefix superset) from the current zone's app endpoint. The caller
+  /// (hex-prefix superset) from the coverage host's app endpoint (the
+  /// region's, or the group's when the zone belongs to one). The caller
   /// aggregates these into the repeater's BIDIR/TX/RX/DISC/DEAD totals + max
   /// range.
   ///
@@ -1602,7 +2519,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<List<Map<String, dynamic>>?> fetchRepeaterCoveragePoints({
     required String prefix,
   }) {
-    final zone = zoneCode;
+    final zone = coverageHostCode;
     if (zone == null || zone.isEmpty) {
       debugWarn('[COVERAGE] repeater points requested with no zone, '
           'reporting unavailable rather than empty');
@@ -1663,15 +2580,69 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ? _apiService.apiSmartPingDays
       : _preferences.smartPingDays;
 
+  /// Whether flood (TX) pings wait only in green squares and discovery
+  /// requests are never held: the server's when enforced, else the user's.
+  bool get smartPingFloodOnly => _apiService.enforceSmartPing
+      ? _apiService.apiSmartPingFloodOnly
+      : _preferences.smartPingFloodOnly;
+
+  /// Companion firmware code (byte 1 of RESP_CODE_DEVICE_INFO) scope
+  /// discovery needs to ask a repeater at all. Below it the setting still
+  /// saves, but nothing is asked and nothing extra goes on the air.
+  static const int kScopeDiscoveryCompanionVersionCode =
+      kScopeDiscoveryFirmwareFloor;
+
+  /// Whether scope discovery is forced on by the regional admin (auth
+  /// `scope_discovery`).
+  bool get enforceScopeDiscovery => _apiService.enforceScopeDiscovery;
+
+  /// Effective scope discovery switch: the admin's veto wins over the user,
+  /// same shape as [smartPingEnabled].
+  bool get scopeDiscoveryEnabled =>
+      _apiService.enforceScopeDiscovery || _preferences.scopeDiscoveryEnabled;
+
+  /// Effective refresh window in days: the server's when enforced, else the
+  /// user's.
+  int get scopeRefreshDays => _apiService.enforceScopeDiscovery
+      ? _apiService.apiScopeRefreshDays
+      : _preferences.scopeDiscoveryDays;
+
+  /// Whether scope discovery may actually run right now: the server offered
+  /// it on the last live auth, the effective switch is on, Offline Mode never
+  /// asks, and the connected companion's firmware can carry the request.
+  bool get scopeDiscoveryActive => scopeDiscoveryGateOpen(_scopeGateInputs);
+
+  ScopeGateInputs get _scopeGateInputs => (
+        offered: _apiService.scopeDiscoveryOffered,
+        enforced: _apiService.enforceScopeDiscovery,
+        userEnabled: _preferences.scopeDiscoveryEnabled,
+        offlineMode: offlineMode,
+        firmwareCode: companionFirmwareVersionCode,
+      );
+
+  /// Whether the connected radio's firmware is below the scope discovery
+  /// floor. Drives the extra warning line on the Settings switch; see
+  /// [scopeDiscoveryFirmwareTooOld].
+  bool get scopeDiscoveryNeedsNewerFirmware => scopeDiscoveryFirmwareTooOld(
+      connected: isConnected, firmwareCode: companionFirmwareVersionCode);
+
+  /// True while the connected companion has stopped asking a repeater that
+  /// is not a saved contact for its scopes (its contact table is full).
+  /// Raw, not gated on being connected. The transition to true also drops a
+  /// warning in the error log; see [_wireScopeCannotAskNonContacts].
+  bool get scopeCannotAskNonContacts =>
+      _meshCoreConnection?.scopeCannotAskNonContacts ?? false;
+
   /// Null means the ordinary all-time overlay. Regional window overrides apply.
   int? get coverageOverlayDays =>
       smartPingEnabled && _preferences.smartPingRecentCoverageOnly
           ? smartPingDays
           : null;
 
-  /// A patch must come from the same region, grid, preset and time filter.
+  /// A patch must come from the same region or group, grid, preset and time
+  /// filter.
   String get coverageOverlayContext =>
-      '$zoneCode|${_preferences.coverageGridSize}|$radioFilterKey|$coverageOverlayDays';
+      '$coverageHostCode|${_preferences.coverageGridSize}|$radioFilterKey|$coverageOverlayDays';
 
   bool get discDropEnabled =>
       _preferences.discDropEnabled || _apiService.enforceDiscDrop;
@@ -1859,7 +2830,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseEndsAt: phase.endsAt,
       phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
       isConnected: isConnected,
-      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      zoneCode: shortZoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       showRepeaterNames: _preferences.liveActivityShowNames,
     );
   }
@@ -1923,7 +2894,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseDurationMs: phaseDurationMs,
       pingColor: pingColor,
       isConnected: isConnected,
-      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      zoneCode: shortZoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       txCount: _pingStats.txCount,
       rxCount: _pingStats.rxCount,
       discoveryCount: _pingStats.discCount,
@@ -1974,10 +2945,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final position = _resolveWatchPosition();
     final ranking = _resolveRankingPosition();
 
-    // The wrist mirrors the map's "Top Heard" overlay: the latest ping's top
-    // three by SNR plus the current RX slot. Same source, so the two surfaces
-    // can never disagree.
-    final top = _topRepeatersOverlay;
+    // The wrist mirrors the map's "Top Heard" overlay: the top three of the
+    // same stored list, plus the current RX slot. Same source, so the two
+    // surfaces can never disagree. The list is cut to three here by design: the
+    // Live Activity, CarPlay and watch show 3 ping rows plus RX, whatever the
+    // in-app Top Heard Rows setting is. buildHeard's RX cap is the backstop.
+    final top = _topRepeatersOverlay.take(_surfaceTopHeardRows).toList();
     final rxSlot = _rxOverlaySlot;
 
     // Overlay IDs are hex path hashes. Resolved from the fullest identity each
@@ -2006,6 +2979,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       rxAt: _liveActivityRxUpdatedAt,
       lat: ranking?.lat,
       lon: ranking?.lon,
+      nicknames: _repeaterNicknames,
     );
 
     // The readout still needs the fix and Top Heard, but none of the arrays
@@ -2295,6 +3269,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       traceEntries: _traceLogEntries,
       repeaters: _repeaters,
       hopBytes: _hopBytes,
+      nicknames: _repeaterNicknames,
     );
     final phase = _resolveWatchPhase();
     final passive = sessionStartAvailability(AutoMode.passive);
@@ -2331,7 +3306,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         phaseTitle: phase.title,
         phaseDetail: phase.detail,
         phaseEndsAt: phase.endsAt,
-        zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+        zoneCode: shortZoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
         txCount: _pingStats.txCount,
         rxCount: _pingStats.rxCount,
         discoveryCount: _pingStats.discCount,
@@ -2389,7 +3364,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phase.title,
       phase.detail,
       phase.endsAt?.millisecondsSinceEpoch,
-      zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      shortZoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       _pingStats.txCount,
       _pingStats.rxCount,
       _pingStats.discCount,
@@ -2716,11 +3691,51 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
 
+    // The dial runs on its own and is never abandoned. The intent only waits
+    // up to the answer window for it: a reachable radio finishes well inside
+    // that, and an unreachable one would outlast iOS's 30 second limit on the
+    // intent, which then discards our answer and shows a generic failure.
+    final shortId =
+        command.id.length > 8 ? command.id.substring(0, 8) : command.id;
+    final window = lastCompanionAnswerWindow(command.expiresAt);
+    final dialStarted = DateTime.now();
+    debugLog('[SIRI] Connect $shortId: dialling ${remembered!.displayName}, '
+        'answering within ${window.inMilliseconds}ms');
+    var answered = false;
+    final dial = _reconnectForSiri(remembered).then((completion) {
+      final elapsed = DateTime.now().difference(dialStarted).inMilliseconds;
+      debugLog('[SIRI] Connect $shortId: dial finished in ${elapsed}ms, '
+          'success=${completion.success}'
+          '${answered ? ' (after the intent was answered)' : ''}');
+      return completion;
+    });
+    final completion = await dial.timeout(window, onTimeout: () {
+      debugLog('[SIRI] Connect $shortId: still dialling after '
+          '${window.inMilliseconds}ms, answering that it is underway');
+      return ExternalCommandCompletion(
+        success: true,
+        disposition: ExternalCommandDisposition.admitted,
+        message: ExternalCommandReason.other(
+          'MeshMapper is connecting to ${remembered.displayName}. '
+          'Check the app in a moment.',
+        ),
+      );
+    });
+    answered = true;
+    return completion;
+  }
+
+  /// One reconnect to [remembered] for the connect intent, as a completion.
+  /// Never throws, because the intent may already have been answered and
+  /// nothing else awaits it.
+  Future<ExternalCommandCompletion> _reconnectForSiri(
+    RememberedDevice remembered,
+  ) async {
     try {
       await reconnectToRememberedDevice();
       final reconnectedDevice =
           (_activeTransport ?? _bluetoothService).connectedDevice;
-      if (isConnected && reconnectedDevice?.id == remembered!.id) {
+      if (isConnected && reconnectedDevice?.id == remembered.id) {
         return ExternalCommandCompletion(
           success: true,
           disposition: ExternalCommandDisposition.admitted,
@@ -2729,12 +3744,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ),
         );
       }
+      if (_connectRefusedForPreciseLocation) {
+        return const ExternalCommandCompletion(
+          success: false,
+          disposition: ExternalCommandDisposition.refused,
+          message: ExternalCommandReason.other(preciseLocationVoiceMessage),
+        );
+      }
       return ExternalCommandCompletion(
         success: false,
         disposition: ExternalCommandDisposition.refused,
         message: ExternalCommandReason.other(
           _connectionError ??
-              'MeshMapper could not connect to ${remembered!.displayName}.',
+              'MeshMapper could not connect to ${remembered.displayName}.',
         ),
       );
     } catch (error) {
@@ -2744,7 +3766,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         disposition: ExternalCommandDisposition.refused,
         message: ExternalCommandReason.other(
           _connectionError ??
-              'MeshMapper could not connect to ${remembered!.displayName}.',
+              'MeshMapper could not connect to ${remembered.displayName}.',
         ),
       );
     }
@@ -2969,7 +3991,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       pingColor: pingColor,
       modeColor: _resolveLiveActivityModeColor(phase.phase),
       isConnected: isConnected,
-      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      zoneCode: shortZoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       noiseFloorDbm: _bucketedNoiseFloorDbm(),
       companionBatteryPct: _bucketedCompanionBatteryPct(),
       showRepeaterNames: _preferences.liveActivityShowNames,
@@ -3090,16 +4112,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? (endsAt: t.endTime!, durationMs: null, remainingSec: t.remainingSec)
           : null;
 
-  /// The Live Activity's rows are the map's Top Heard box, the same list the
-  /// watch mirrors, so the three surfaces cannot disagree. The ordering, the
-  /// RX slot and the current-or-last rule live in [buildLiveActivityHeard].
+  /// The Live Activity's rows are the first three of the map's Top Heard list,
+  /// the same three the watch mirrors, so the surfaces cannot disagree. The
+  /// ordering, the RX slot and the current-or-last rule live in
+  /// [buildLiveActivityHeard].
   ({
     List<LiveActivityRepeater> repeaters,
     int totalCount,
     bool isCurrent,
   }) _buildLiveActivityRepeaters() => buildLiveActivityHeard(
-        top: _topRepeatersOverlay,
-        topTotalCount: _topRepeatersOverlayTotalCount,
+        top: _topRepeatersOverlay.take(_surfaceTopHeardRows).toList(),
+        topHeardIds: _topRepeatersOverlayHeardIds,
         rxSlot: _rxOverlaySlot,
         topAt: _topRepeatersOverlayUpdatedAt,
         rxAt: _liveActivityRxUpdatedAt,
@@ -3120,31 +4143,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String? _resolveRepeaterDisplayName(String rawId) {
     final displayId = rawId.toUpperCase();
-
-    // Try the fullest identity the row arrived with, then the display hash.
-    //
-    // **The fallback is the point.** A discovery response's public key is a
-    // better identity, but the catalogue is matched by an 8-character `hexId`
-    // that the API frequently omits, and the display hash additionally resolves
-    // through `displayHexId` — which falls back to the short numeric ID when
-    // there is no hex at all. Trying only the longer form threw away the lookup
-    // that was doing the work, and left named repeaters unnamed.
-    final identity = _overlayIdentityById[displayId];
-    final match = (identity == null
-            ? null
-            : ExternalSurfaceGeoBuilder.resolveRepeater(
-                repeaters: _repeaters,
-                id: identity,
-                hopBytes: _hopBytes,
-              )) ??
-        ExternalSurfaceGeoBuilder.resolveRepeater(
-          repeaters: _repeaters,
-          id: displayId,
-          hopBytes: _hopBytes,
-        );
-
-    final name = match?.name;
-    return name == null || name == 'Unknown' ? null : name;
+    // Why the display hash is tried as well as the identity: see
+    // resolveOverlayRow.
+    final match = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+      displayId: displayId,
+      identity: _overlayIdentityById[displayId],
+      repeaters: _repeaters,
+      hopBytes: _hopBytes,
+    );
+    if (match == null) return null;
+    // The user's nickname wins over the server's name.
+    final nickname = RepeaterNicknames.nicknameFor(match, _repeaterNicknames);
+    if (nickname != null) return nickname;
+    final name = match.name;
+    return name == 'Unknown' ? null : name;
   }
 
   // ============================================
@@ -3178,6 +4190,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Every queued item is stamped with the mode that produced it.
     _apiQueueService.autoModeGetter = () => wireAutoMode;
     _apiQueueService.radioConfigGetter = () => liveRadioConfig;
+    _apiQueueService.scopesAllowedGetter = () => _apiService.scopeDiscoveryOffered;
 
     // MyMeshMapper portal account. Mobile only — the sign-in flow needs an
     // OS-registered URL scheme, which the web build cannot have.
@@ -3244,13 +4257,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // those pings honestly instead of uploading claims the server will skip
     // while reporting success.
     _apiService.onSessionIdChanged = (previousSessionId, newSessionId) async {
-      await _apiQueueService.dropStaleTaggedItems();
-      // The server credits one deferred square per session id, so a square
-      // reported under the old session is owed again under the new one.
-      _recentCoverage.clearDeferred();
+      await _onSessionReplaced();
     };
 
     _apiService.onSessionExpiredRecovery = _recoverExpiredLiveSession;
+
+    // A keepalive that finds the session expired while nothing is running
+    // lets it lapse instead of minting one that would never see a ping. The
+    // next Start or manual ping re-mints it through its own session check.
+    _apiService.isSessionIdle = () => sessionIsIdle(
+          autoPingEnabled: _autoPingEnabled,
+          autoPingStarting: _autoPingStarting,
+          pendingDisable: isPendingDisable,
+          pingSending: _isPingSending,
+          pingInProgress: isPingInProgress,
+          repeaterAdminOpen: _repeaterAdminSession != null,
+          queuedItems: _apiQueueService.queueSize,
+        );
+
+    // A live /auth answer (a session recovery included) can withdraw scope
+    // discovery while a lease is mid-exchange; the runner must stop before
+    // its next write, not at the next sweep. Restoring it while Passive or
+    // Hybrid keeps running re-arms the periodic repeater refresh, the same
+    // sequence a fresh mode start uses.
+    _apiService.onScopeDiscoveryChanged = () => _scopeLifecycle.onGateChanged(
+        _scopeGateInputs,
+        passiveOrHybridRunning: _isPassiveOrHybridModeRunning,
+        startRepeaterRefresh: _startScopeRepeaterRefreshForRunningMode);
 
     _apiService.onRegionalCarpeaters = (keys, error) {
       unawaited(_onRegionalCarpeaters(keys, error));
@@ -3334,6 +4367,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         BackgroundServiceManager.updateNotification(
           title: n.title,
           body: n.body,
+          keepAwake: _keepServiceAwake,
         );
       }
     };
@@ -3349,17 +4383,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_vectorOverlayActive) {
         // Queue the batch's coords for the +7s fresh-tile check; the user's
         // own cells land on the map via the session patch (see
-        // _freshenAffectedVectorTiles). A DEFER changes no tile (the server
-        // keeps deferrals in a table nothing renders), so it is left out and
-        // a batch of nothing but deferrals arms nothing.
-        final hasCoverageRows = uploadedItems.any((i) => i.type != 'DEFER');
-        for (final item in uploadedItems) {
-          if (item.type == 'DEFER') continue;
-          if (_pendingFreshCoords.length >= 16) break;
-          _pendingFreshCoords.add([item.latitude, item.longitude]);
-        }
-        if (hasCoverageRows) {
-          _pendingFreshZone = zoneCode;
+        // _freshenAffectedVectorTiles). A DEFER or a SCOPES changes no tile
+        // (see changesCoverage), so each is left out and a batch of nothing
+        // but those arms nothing: a SCOPES uploaded after its DISC used to
+        // schedule a second refresh, retry included, for unchanged tiles.
+        final refresh = coverageRefreshFor(uploadedItems,
+            alreadyPending: _pendingFreshCoords.length);
+        _pendingFreshCoords.addAll(refresh.coords);
+        if (refresh.armsRefresh) {
+          _pendingFreshZone = coverageHostCode;
           _vectorFreshTimer?.cancel();
           _vectorFreshTimer = Timer(const Duration(seconds: 7), () {
             _freshenAffectedVectorTiles(attempt: 1);
@@ -3395,7 +4427,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
     await _loadRegionalCarpeaters();
+    await _loadRepeaterNicknames();
     await _loadRepeaterClaims();
+    await _loadScopeDiscoveryState();
     await _loadLastRadioConfig();
     await _loadWatchPairingPreference();
     await _loadDeviceAntennaPreferences();
@@ -3559,9 +4593,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
-      if (_inZone == null && !_preferences.offlineMode) {
-        debugLog('[GEOFENCE] First GPS lock, triggering zone check');
-        await checkZoneStatus();
+      // A coarse fix is never sent: the server would only answer 403
+      // gps_inaccurate, once per fix. Wait for the stream (or the 10 s
+      // retry's fresh read) to bring a better one. A retry already armed for
+      // another reason (network, server) owns the next attempt, so a fix does
+      // not stack a second request on top of it.
+      // Nor while the policy holds GPS off (a background launch, or a late
+      // fix after a background stop): the zone check would send this fix to
+      // the server with the app off screen and no radio. The start on resume
+      // brings a fresh first lock.
+      if (_gpsStoppedByPolicy) {
+        // Held; see above.
+      } else if (_inZone == null && !_preferences.offlineMode) {
+        if (!GpsService.isAccurateForZoneCheck(position)) {
+          _noteZoneCheckWaitingForGps(position);
+        } else if (_isCheckingZone ||
+            (_zoneCheckCountdownTimer != null &&
+                _zoneCheckErrorReason != 'gps_inaccurate')) {
+          // In flight or a retry is already scheduled; let that one answer.
+        } else {
+          debugLog('[GEOFENCE] First GPS lock, triggering zone check');
+          await checkZoneStatus();
+        }
         _firstGpsLockLogged = true;
       } else if (_inZone == null &&
           _preferences.offlineMode &&
@@ -3575,9 +4628,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Skip zone checks when offline mode is enabled
       // Not while airborne: at cruise every fix is 100 m from the last, and
       // this branch would ask the server about zones once a second for hours.
+      // Not on a coarse fix either: a jumpy weak fix often lands 100 m away,
+      // and its 403 used to replace a good result moments old.
+      // Nor while a no-answer retry is counting down: driving in an outage
+      // hit /status every 100 m and reset the backoff each time.
       if (!isConnected &&
+          !_gpsStoppedByPolicy &&
           !_preferences.offlineMode &&
           !_gpsService.isAirborne &&
+          GpsService.isAccurateForZoneCheck(position) &&
+          !(_zoneCheckCountdownTimer != null &&
+              _zoneCheckErrorReason == 'network') &&
           _shouldRecheckZone(position)) {
         // Throttle log to once per 30s to avoid spam while driving
         final now = DateTime.now();
@@ -3611,9 +4672,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] GPS position listener attached to stream');
 
     // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
-    debugLog('[INIT] Starting GPS service...');
-    await _gpsService.startWatching();
-    debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
+    // A cold start that is not on screen yet, with no radio (a location-
+    // triggered launch, say), must not start GPS. _syncGpsWithPolicy makes the
+    // first, full start when the app comes on screen.
+    if (!_gpsPolicyApplies || _gpsRunDecision == GpsRunDecision.run) {
+      debugLog('[INIT] Starting GPS service...');
+      await _gpsService.startWatching();
+      debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
+    } else {
+      _gpsStoppedByPolicy = true;
+      _gpsInitialStartPending = true;
+      debugLog('[GPS] Not started yet: waiting for the app to be on screen');
+    }
 
     // Initialize audio service for sound notifications
     await _audioService.initialize();
@@ -3623,17 +4693,39 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Final init state: gpsStatus=$_gpsStatus, '
         'inZone=$_inZone, isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}, '
         'offlineMode=${_preferences.offlineMode}');
+    if (kDebugMode && StoreCaptureConfig.active != null) {
+      unawaited(_seedStoreCapture());
+    }
     notifyListeners();
   }
 
   /// Restart GPS service after permission disclosure is accepted
-  /// Called from MainScaffold after user grants location permission
-  Future<void> restartGpsAfterPermission() async {
+  /// Called from MainScaffold after user grants location permission.
+  ///
+  /// [keepTracking] is for the return from the background, where the watcher
+  /// was running a moment ago (see [GpsService.startWatching]).
+  Future<void> restartGpsAfterPermission({bool keepTracking = false}) async {
     debugLog('[GPS] restartGpsAfterPermission() called');
     debugLog('[GPS] Pre-restart state: gpsStatus=$_gpsStatus, inZone=$_inZone, '
         'isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}');
 
-    await _gpsService.startWatching();
+    // Not on screen and no radio (a background launch, say): hold the start.
+    // _syncGpsWithPolicy makes the first, full start once the app is resumed.
+    if (deferGpsStartAfterPermission(
+      keepTracking: keepTracking,
+      alreadyWatching: _gpsService.isWatching,
+      policyApplies: _gpsPolicyApplies,
+      decision: _gpsRunDecision,
+    )) {
+      _gpsStoppedByPolicy = true;
+      _gpsInitialStartPending = true;
+      debugLog('[GPS] Not started yet: waiting for the app to be on screen');
+      return;
+    }
+
+    _gpsStoppedByPolicy = false;
+    _gpsInitialStartPending = false;
+    await _gpsService.startWatching(keepTracking: keepTracking);
     _gpsStatus = _gpsService.status; // Sync after restart
 
     debugLog('[GPS] GPS restarted, new status: $_gpsStatus');
@@ -3648,6 +4740,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog(
           '[GPS] Permission granted with existing position - triggering zone check');
       await checkZoneStatus();
+    }
+    // A permission just granted lets the session service start on this
+    // notify, for a radio session already live.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
     }
     notifyListeners();
   }
@@ -3713,6 +4810,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isScanning = true;
     _discoveredDevices = [];
     _connectionError = null;
+    // A failed connect leaves the step at error, and the bottom Scan button
+    // only enables at disconnected, so clearing the error alone left it grey
+    // until the app was restarted.
+    if (_connectionStep == ConnectionStep.error) {
+      debugLog('[SCAN] Clearing failed connect state (error -> disconnected)');
+      _connectionStep = ConnectionStep.disconnected;
+    }
     _isAuthError = false;
     _isNetworkError = false;
     notifyListeners();
@@ -3742,6 +4846,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           _discoveredDevices.add(enrichedDevice);
           selectedDevice = enrichedDevice;
+          // Once per new device, so "my companion is not listed" reports
+          // show what the scan actually saw.
+          debugLog('[SCAN] Found "${enrichedDevice.name}" '
+              'id=${enrichedDevice.id} rssi=${enrichedDevice.rssi}');
           notifyListeners();
         }
       },
@@ -3756,6 +4864,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await completer.future;
     _activeScanSubscription = null;
 
+    if (_isScanning) _logScanSummary('ended');
     _isScanning = false;
     notifyListeners();
 
@@ -3773,8 +4882,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _activeScanSubscription?.cancel();
     _activeScanSubscription = null;
     await _bluetoothService.stopScan();
+    if (_isScanning) _logScanSummary('stopped');
     _isScanning = false;
     notifyListeners();
+  }
+
+  void _logScanSummary(String how) {
+    final n = _discoveredDevices.length;
+    debugLog('[SCAN] Scan $how: $n device${n == 1 ? '' : 's'} found');
   }
 
   // ============================================
@@ -3827,7 +4942,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Creates the two-stage auth callback for MeshCoreConnection Step 6.
   /// Shared by all transport types (BLE, TCP, USB Serial).
   Future<Map<String, dynamic>?> Function() _createAuthCallback() {
+    // Made right after the attempt installs its connection, so these name
+    // the attempt this callback serves.
+    final generation = _connectGeneration;
+    final connection = _meshCoreConnection;
+    bool superseded() => authCallbackSuperseded(
+          createdAtGeneration: generation,
+          currentGeneration: _connectGeneration,
+          sameConnection: identical(_meshCoreConnection, connection),
+        );
+    Map<String, dynamic> supersededResult(String where) {
+      debugLog('[AUTH] Connect attempt superseded $where, not calling the '
+          'API');
+      return {
+        'success': false,
+        'reason': 'superseded',
+        'message': 'Connection attempt superseded',
+      };
+    }
+
     return () async {
+      if (superseded()) return supersededResult('before auth');
       final publicKey = _meshCoreConnection!.devicePublicKey;
       if (publicKey == null) {
         debugError('[APP] Cannot request auth: no public key');
@@ -3913,6 +5048,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // last one left in preferences (#426).
       _applyConnectingDevicePower(deviceName);
 
+      // The server refuses a fix coarser than 50 m, so send the best one
+      // there is: the current fix, a good one from the last 60 s, or a short
+      // bounded wait for one. With none, the current fix goes as before.
+      final authFix = await _pickAuthFix();
+      if (superseded()) return supersededResult('while preparing auth');
+
       // Stage 1: Try existing public_key authentication
       debugLog(
           '[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
@@ -3932,6 +5073,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       final result = await _apiService.requestAuth(
         reason: 'connect',
+        // An answer that lands after an abandon must not install a session
+        // the disconnected app would then think it holds.
+        shouldStoreSession: () => !superseded(),
         publicKey: publicKey,
         who: deviceName,
         appVersion: _appVersion,
@@ -3941,10 +5085,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _meshCoreConnection!.deviceInfo?.manufacturer ??
             'Unknown',
         radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-        lat: _currentPosition?.latitude,
-        lon: _currentPosition?.longitude,
-        accuracyMeters: _currentPosition?.accuracy,
+        lat: authFix?.latitude,
+        lon: authFix?.longitude,
+        accuracyMeters: authFix?.accuracy,
       );
+      if (superseded()) return supersededResult('during auth');
 
       if (result != null && result['maintenance'] == true) {
         _maintenanceMode = true;
@@ -4013,8 +5158,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         };
       }
 
+      if (superseded()) return supersededResult('before registration');
       final registerResult = await _apiService.requestAuth(
         reason: 'register',
+        shouldStoreSession: () => !superseded(),
         contactUri: contactUri,
         who: deviceName,
         appVersion: _appVersion,
@@ -4024,9 +5171,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _meshCoreConnection!.deviceInfo?.manufacturer ??
             'Unknown',
         radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-        lat: _currentPosition?.latitude,
-        lon: _currentPosition?.longitude,
-        accuracyMeters: _currentPosition?.accuracy,
+        lat: authFix?.latitude,
+        lon: authFix?.longitude,
+        accuracyMeters: authFix?.accuracy,
       );
 
       if (registerResult == null) {
@@ -4122,6 +5269,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
         _isNetworkError = reason == 'network_error';
         _connectionError = _getErrorMessage(reason, serverMessage);
+        if (reason == 'outofdate') {
+          _appUpdateRequirement = await _buildAppUpdateRequirement(
+              _connectionError!, serverMessage);
+        }
       } else {
         _connectionError = 'Authentication failed';
       }
@@ -4139,6 +5290,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isConnecting = false;
     _connectionStep = ConnectionStep.error;
     notifyListeners();
+    // The failed connect ends the session, unless a reconnect or a connect
+    // re-run carries it on. A disconnect cleanup still running (the failed
+    // link's own, usually) stops the service at its end instead, after its
+    // session release: a stop landing in the middle of that release can let
+    // the backgrounded process freeze before it is sent.
+    if (BackgroundServiceManager.followsConnection &&
+        !_isAutoReconnecting &&
+        !_connectRerunPending &&
+        _disconnectCleanupDepth == 0) {
+      unawaited(BackgroundServiceManager.stopService());
+    }
+  }
+
+  /// Works out the update panel's version line and store link after the
+  /// server refused this build. The installer read never throws: a failure
+  /// falls back to the store listing for the platform.
+  Future<AppUpdateRequirement> _buildAppUpdateRequirement(
+      String errorMessage, String? serverMessage) async {
+    String? installerStore;
+    try {
+      installerStore =
+          await installerStoreReader().timeout(const Duration(seconds: 2));
+    } catch (e) {
+      debugWarn('[APP] Could not read installer store: $e');
+    }
+    final link = StoreLinks.resolve(defaultTargetPlatform, installerStore,
+        isBetaBuild: AppConstants.isDevelopmentBuild);
+    final required = parseRequiredAppVersion(serverMessage);
+    debugLog('[APP] App out of date: have $_appVersion, server needs '
+        '${required ?? 'unknown'}, installer ${installerStore ?? 'unknown'}, '
+        'update via ${link.uri}');
+    return AppUpdateRequirement(
+      errorMessage: errorMessage,
+      versionLine: appUpdateVersionLine(_appVersion, required),
+      link: link,
+    );
   }
 
   /// Set up disconnect listener for non-BLE transports (TCP, USB Serial).
@@ -4165,6 +5352,44 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
+  /// Cancel a BLE connect that is still waiting on the radio.
+  ///
+  /// Only the transport stage can be cancelled: past it the handshake is
+  /// talking to the radio and has its own cleanup. The in-flight
+  /// connectToDevice is invalidated through [_connectGeneration], so its
+  /// failure is ignored and no error card is shown.
+  Future<void> cancelConnect() async {
+    if (!canCancelConnect || _isCancellingConnect) {
+      debugLog('[CONN] Cancel ignored: connect is not at a cancellable stage '
+          '(step=$_connectionStep, transport=$_bleTransportConnecting, '
+          'cancelling=$_isCancellingConnect)');
+      return;
+    }
+    debugLog('[CONN] User cancelled the connect');
+    _isCancellingConnect = true;
+    _connectGeneration++;
+    _bleTransportConnecting = false;
+    notifyListeners();
+    try {
+      await _bluetoothService.cancelConnect();
+    } catch (e) {
+      debugWarn('[CONN] Cancelling the BLE connect failed: $e');
+    } finally {
+      _isCancellingConnect = false;
+      _isConnecting = false;
+      _connectionStep = ConnectionStep.disconnected;
+      _connectionError = null;
+      _isAuthError = false;
+      _isNetworkError = false;
+      notifyListeners();
+      // The cancelled attempt is abandoned without a cleanup of its own, so
+      // the session ends here.
+      if (BackgroundServiceManager.followsConnection) {
+        unawaited(BackgroundServiceManager.stopService());
+      }
+    }
+  }
+
   /// Connect to a discovered device
   Future<void> connectToDevice(DiscoveredDevice device) async {
     if (_isConnecting) {
@@ -4172,8 +5397,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('BLE')) return;
     _isConnecting = true;
     final myGeneration = ++_connectGeneration;
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -4201,12 +5432,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // During auto-reconnect the internal retry loop is capped to one
         // attempt: the reconnect ladder retries on its own, and a 3x15s
         // internal loop would eat the whole 30s reconnect budget in one call.
-        await _bluetoothService.connect(device.id,
-            maxAttempts: _isAutoReconnecting ? 1 : null);
+        _bleTransportConnecting = true;
+        notifyListeners(); // shows the Cancel button
+        try {
+          await _bluetoothService.connect(device.id,
+              maxAttempts: _isAutoReconnecting ? 1 : null);
+        } finally {
+          if (myGeneration == _connectGeneration) {
+            _bleTransportConnecting = false;
+            notifyListeners(); // hides it
+          }
+        }
+        if (myGeneration != _connectGeneration) {
+          // Cancelled (or superseded) just as the link opened. The canceller
+          // closes the link; this attempt must not build on it.
+          debugLog('[CONN] Transport connected after the attempt was '
+              'cancelled, abandoning it');
+          return;
+        }
         transportConnectedAt = DateTime.now();
         _activeTransport = _bluetoothService;
         debugLog('[APP] Creating new MeshCoreConnection');
         _meshCoreConnection = MeshCoreConnection(transport: _bluetoothService);
+        _wireScopeRadioBusy(_meshCoreConnection!);
+        _wireScopeCannotAskNonContacts(_meshCoreConnection!);
 
         if (!_preferences.offlineMode) {
           _meshCoreConnection!.onRequestAuth = _createAuthCallback();
@@ -4217,6 +5466,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Listen for step changes
         _meshCoreConnection!.stepStream.listen((step) {
+          // A superseded attempt (an abandoned reconnect) must not move the
+          // step a newer connection or the abandon's cleanup now owns.
+          if (myGeneration != _connectGeneration) return;
           _connectionStep = step;
           if (step == ConnectionStep.connected) {
             // Update device info
@@ -4283,6 +5535,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final connectionResult = await _deviceModelService.runConnection(
           _meshCoreConnection!.connect,
         );
+        if (myGeneration != _connectGeneration) {
+          // Abandoned while the workflow ran. The abandon closed the link and
+          // its cleanup owns the state; a newer connect may own the transport.
+          debugLog('[CONN] Connection workflow finished after the attempt '
+              'was superseded, abandoning it');
+          return;
+        }
 
         await _postConnectionSetup(connectionResult, device);
         _isConnecting = false;
@@ -4311,20 +5570,48 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         workflowRerunUsed = true;
         debugLog(
             '[CONN] Handshake died ${sinceTransportConnect!.inSeconds}s after transport connect, re-running connection workflow once: $e');
+        // Set before the failure's cleanup can flip the step to disconnected,
+        // so the session reads as live (GPS, the session service) until the
+        // re-run takes over or is abandoned. Every exit below clears it.
+        _connectRerunPending = true;
         // The failed run's transport disconnect emits a 'disconnected' event
         // whose listener starts _fullDisconnectCleanup. That event was queued
         // before this timer, and microtasks drain before timers fire, so after
         // the delay the tracked future (if any) is the cleanup for THIS
         // failure. Waiting it out means the cleanup cannot tear down the
         // re-run's fresh connection.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        final cleanupInFlight = _fullCleanupInFlight;
-        if (cleanupInFlight != null) {
-          await cleanupInFlight;
+        try {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          final cleanupInFlight = _fullCleanupInFlight;
+          if (cleanupInFlight != null) {
+            await cleanupInFlight;
+          }
+        } catch (cleanupError) {
+          // The cleanup's error would otherwise leave this method with the
+          // flag still set, and the session would read as live for good: no
+          // later disconnect could stop GPS or the session service.
+          _connectRerunPending = false;
+          debugWarn('[CONN] Disconnect cleanup failed, abandoning the '
+              'workflow re-run: $cleanupError');
+          // A newer attempt owns the shared state; the check below hands
+          // over to it without touching that state.
+          if (myGeneration == _connectGeneration) {
+            await _handleConnectionError(e);
+            return;
+          }
         }
         if (myGeneration != _connectGeneration) {
           debugLog(
               '[CONN] Skipping workflow re-run: a newer connection attempt owns the transport');
+          _connectRerunPending = false;
+          // The newer attempt may already have failed, and its stop was held
+          // back while this re-run was pending. One still connecting owns
+          // the service.
+          if (BackgroundServiceManager.followsConnection &&
+              !_sessionActive &&
+              !_isConnecting) {
+            unawaited(BackgroundServiceManager.stopService());
+          }
           return;
         }
         if (_isConnecting) {
@@ -4332,11 +5619,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // still up (e.g. _postConnectionSetup threw on a live link), so
           // there is nothing safe to re-run on top of. Hand the error to the
           // normal failure path instead of swallowing it.
+          _connectRerunPending = false;
           await _handleConnectionError(e);
           return;
         }
         _isConnecting = true;
         _connectionStep = ConnectionStep.transportConnecting;
+        _connectRerunPending = false;
         _connectionError = null;
         // The disconnect cleanup cleared the BLE scan cache; restore the
         // device name for the re-run.
@@ -4359,13 +5648,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('TCP')) return;
     _isConnecting = true;
-    _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Also invalidates any pending BLE workflow re-run. An abandoned TCP
+    // reconnect bumps it again, and this attempt then stands down as the BLE
+    // one in connectToDevice does.
+    final myGeneration = ++_connectGeneration;
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
     _isNetworkError = false;
     notifyListeners();
+    TcpService? tcpService;
+    StreamSubscription? mySubscription;
+    // Closes only what this attempt opened, leaving anything a newer
+    // connection has installed since.
+    void releaseSupersededTransport() {
+      if (identical(_transportConnectionSubscription, mySubscription)) {
+        _transportConnectionSubscription = null;
+      }
+      mySubscription?.cancel();
+      if (identical(_activeTransport, tcpService)) _activeTransport = null;
+      tcpService?.dispose();
+    }
+
     try {
       if (_meshCoreConnection != null) {
         debugLog('[APP] Disposing previous MeshCoreConnection');
@@ -4375,14 +5686,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       await _apiQueueService.clearBeforeConnect();
 
-      final tcpService = TcpService(host: host, port: port);
+      tcpService = TcpService(host: host, port: port);
       debugLog('[APP] Connecting TCP transport to $host:$port');
       await tcpService.openConnection();
+      if (myGeneration != _connectGeneration) {
+        debugLog('[CONN] TCP transport connected after the attempt was '
+            'superseded, abandoning it');
+        releaseSupersededTransport();
+        return;
+      }
       _activeTransport = tcpService;
       _setupTransportDisconnectListener(tcpService);
+      mySubscription = _transportConnectionSubscription;
 
       debugLog('[APP] Creating new MeshCoreConnection (TCP)');
       _meshCoreConnection = MeshCoreConnection(transport: tcpService);
+      _wireScopeRadioBusy(_meshCoreConnection!);
+      _wireScopeCannotAskNonContacts(_meshCoreConnection!);
 
       if (!_preferences.offlineMode) {
         _meshCoreConnection!.onRequestAuth = _createAuthCallback();
@@ -4392,6 +5712,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _meshCoreConnection!.stepStream.listen((step) {
+        // A superseded attempt must not move the step a newer connection or
+        // the abandon's cleanup now owns.
+        if (myGeneration != _connectGeneration) return;
         _connectionStep = step;
         if (step == ConnectionStep.connected) {
           _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
@@ -4450,6 +5773,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final connectionResult = await _deviceModelService.runConnection(
         _meshCoreConnection!.connect,
       );
+      if (myGeneration != _connectGeneration) {
+        debugLog('[CONN] TCP connection workflow finished after the attempt '
+            'was superseded, abandoning it');
+        releaseSupersededTransport();
+        return;
+      }
 
       final device = DiscoveredDevice(
         id: '$host:$port',
@@ -4461,6 +5790,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await TcpService.saveConnection(host, port, displayDeviceName ?? '');
       _isConnecting = false;
     } catch (e) {
+      if (myGeneration != _connectGeneration) {
+        // A newer attempt (or the abandon's cleanup) owns the error state
+        // and whatever transport is current now.
+        debugLog('[CONN] Superseded TCP connection attempt failed, '
+            'ignoring: $e');
+        releaseSupersededTransport();
+        return;
+      }
       await _handleConnectionError(e);
       if (_activeTransport != null && _activeTransport != _bluetoothService) {
         _activeTransport!.dispose();
@@ -4477,8 +5814,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('USB')) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -4513,6 +5856,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       debugLog('[APP] Creating new MeshCoreConnection (USB Serial)');
       _meshCoreConnection = MeshCoreConnection(transport: serialService);
+      _wireScopeRadioBusy(_meshCoreConnection!);
+      _wireScopeCannotAskNonContacts(_meshCoreConnection!);
 
       if (!_preferences.offlineMode) {
         _meshCoreConnection!.onRequestAuth = _createAuthCallback();
@@ -4615,8 +5960,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_refuseConnectIfAirborne()) return;
+    if (await _refuseConnectIfImprecise('serial')) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
+    // Read now, so the notify below can start the session service with no
+    // await between the tap's state change and the start.
+    if (BackgroundServiceManager.followsConnection) {
+      await _refreshSessionLocationGranted();
+    }
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -4636,6 +5987,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       debugLog('[APP] Creating new MeshCoreConnection (generic transport)');
       _meshCoreConnection = MeshCoreConnection(transport: transport);
+      _wireScopeRadioBusy(_meshCoreConnection!);
+      _wireScopeCannotAskNonContacts(_meshCoreConnection!);
 
       if (!_preferences.offlineMode) {
         _meshCoreConnection!.onRequestAuth = _createAuthCallback();
@@ -4819,11 +6172,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[MAP] Radio preset changed for repeaters '
           '(${priorRepeaterFilterKey ?? 'none'} -> ${radioFilterKey ?? 'none'}); '
           'reloading repeater list for zone ${zone ?? 'unknown'}');
-      _repeatersLoaded = false;
-      _repeatersLoadedForIata = null;
+      _invalidateRepeatersForContext();
       if (zone != null && zone.isNotEmpty) {
         _fetchRepeatersForZone(
             zone); // fire-and-forget, matches the zone-check path
+      }
+    } else {
+      // Scope discovery reads the server's scope stamps off this list, so a
+      // stale one is refreshed at connect (fire-and-forget).
+      final zone = zoneCode;
+      if (zone != null &&
+          zone.isNotEmpty &&
+          scopeRepeaterRefreshDue(
+              active: scopeDiscoveryActive,
+              loadedAt: _repeatersLoadedAt,
+              now: DateTime.now())) {
+        unawaited(_refreshRepeatersForScopes(zone));
       }
     }
     _syncRecentCoverage();
@@ -4888,6 +6252,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     _pingService!.unifiedRxHandler = _unifiedRxHandler;
+    _pingService!.scopeRunnerFactory = _buildScopeRunner;
 
     _pingService!.checkExternalAntennaConfigured = () {
       return _preferences.externalAntennaSet;
@@ -4969,11 +6334,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         BackgroundServiceManager.updateNotification(
           title: n.title,
           body: n.body,
+          keepAwake: _keepServiceAwake,
         );
       }
     };
 
-    _pingService!.checkRecentCoverage = _recentCoverage.isCovered;
+    _pingService!.checkRecentCoverage =
+        (lat, lon, kind) => _recentCoverage.isCovered(lat, lon,
+            forTx: kind == BankedPingType.tx);
+    _pingService!.isRecentCoverageActive = () => _recentCoverage.isActive;
 
     // A marker per deferral once the phone has moved the minimum ping
     // distance, and one DEFER per fixed 300 m square per API session. The
@@ -5034,7 +6403,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onEchoReceived = (txPing, repeater, isNew) {
-      _recentCoverage.markCovered(txPing.latitude, txPing.longitude);
+      _recentCoverage.markCovered(
+          txPing.latitude, txPing.longitude, CoverageColor.green);
       debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
       debugLog(
           '[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
@@ -5173,8 +6543,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _addDiscLogEntry(entry);
     };
 
+    _pingService!.onDiscPingAborted = _removeDiscLogEntry;
+
     _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
-      _recentCoverage.markCovered(discPing.latitude, discPing.longitude);
+      _recentCoverage.markCovered(
+          discPing.latitude, discPing.longitude, CoverageColor.cyan);
       debugLog(
           '[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
       if (isNew) {
@@ -5462,6 +6835,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _sessionZoneCode = zoneCode;
+      _sessionGroupCode = zoneGroupCode;
 
       if (!_preferences.offlineMode) {
         _startZoneRefreshTimer();
@@ -5510,11 +6884,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // Repeater administrators: refresh the cached claims for this companion.
-    // Strictly non-fatal, and skipped on an old server.
-    try {
-      unawaited(_reconcileRepeaterClaims(reason: 'connect'));
-    } catch (e) {
-      debugWarn('[RADMIN] Claims reconcile failed to start: $e');
+    // Strictly non-fatal, and skipped on an old server. Auto-reconnects in
+    // one session refresh at most every few minutes.
+    final now = DateTime.now();
+    final session = _apiService.sessionId;
+    if (shouldReconcileClaimsOnConnect(
+      autoReconnect: _isAutoReconnecting,
+      sessionId: session,
+      lastSessionId: _lastConnectClaimsReconcileSession,
+      lastAt: _lastConnectClaimsReconcileAt,
+      now: now,
+    )) {
+      _lastConnectClaimsReconcileAt = now;
+      _lastConnectClaimsReconcileSession = session;
+      try {
+        unawaited(_reconcileRepeaterClaims(reason: 'connect'));
+      } catch (e) {
+        debugWarn('[RADMIN] Claims reconcile failed to start: $e');
+      }
+    } else {
+      debugLog('[RADMIN] Claims reconcile skipped on reconnect: refreshed '
+          '${now.difference(_lastConnectClaimsReconcileAt!).inSeconds}s ago');
     }
   }
 
@@ -5727,7 +7117,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             externalAntenna: _preferences.externalAntenna,
             noiseFloor: _meshCoreConnection?.lastNoiseFloor,
             power: _preferences.powerLevel,
-            altitude: entry.alt,
+            altitude: entry.altitude.meters,
+            altitudeRef: entry.altitude.wireReference,
+            altitudeAccuracy: entry.altitude.accuracy,
           );
 
           // Update UI (throttled — dense mesh RX must not churn the map)
@@ -5744,7 +7136,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (
           lat: pos.latitude,
           lon: pos.longitude,
-          alt: GpsService.altitudeOrNull(pos),
+          altitude: _gpsService.fixAltitudeOf(pos),
         );
       },
 
@@ -6007,6 +7399,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     bool flushQueue = true,
   }) {
     late final Future<void> cleanup;
+    // Counted before the call: its synchronous prefix runs inside it and can
+    // already notify.
+    _disconnectCleanupDepth++;
     cleanup = _fullDisconnectCleanupImpl(
       releaseExtras: releaseExtras,
       flushQueue: flushQueue,
@@ -6014,10 +7409,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (identical(_fullCleanupInFlight, cleanup)) {
         _fullCleanupInFlight = null;
       }
+      _disconnectCleanupDepth--;
+      if (!_isDisposed) _syncGpsWithPolicy('disconnect cleanup done');
     });
     _fullCleanupInFlight = cleanup;
     return cleanup;
   }
+
+  /// A connect is running or has connected.
+  bool get _connectLive =>
+      _isConnecting || _connectionStep == ConnectionStep.connected;
 
   Future<void> _fullDisconnectCleanupImpl({
     Map<String, dynamic>? releaseExtras,
@@ -6030,8 +7431,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _cancelPendingAutoPingRestore();
+    _scopeLifecycle.onEvent(ScopeStopEvent.disconnectCleanup);
     _isConnecting = false;
     _connectionStep = ConnectionStep.disconnected;
+    // Connect is enabled again from here, so a connect the user starts during
+    // the awaits below can install its own connection before this cleanup
+    // ends. The end disposes only what is current now (see there).
+    final cleanupGeneration = _connectGeneration;
+    final cleanupConnection = _meshCoreConnection;
+    final cleanupPingService = _pingService;
+    final cleanupTransport = _activeTransport;
+    final cleanupTransportSubscription = _transportConnectionSubscription;
 
     // Cancel any active zone grace period
     _cancelZoneGraceTimers();
@@ -6064,6 +7474,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop RX logger
     _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
 
+    // Save offline pings, as disconnect() does. The noise floor session above
+    // is already stored, so skipping this left a drive in History with no
+    // offline file once the unsaved pings were gone (no-op with no pings).
+    await _saveOfflineSession();
+
     // Force upload any pending items BEFORE releasing session
     if (flushQueue && _apiService.hasSession) {
       debugLog('[CONN] Flushing API queue before session release');
@@ -6079,8 +7494,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Clear any remaining items and stop batch timer
     await _apiQueueService.clearOnDisconnect();
 
-    // Release API session (best effort - don't block on failure)
-    if (_devicePublicKey != null && _apiService.hasSession) {
+    // Release API session (best effort - don't block on failure).
+    // A connect the user started during the awaits above may already hold
+    // the session (the server hands the same key the same id), so only
+    // release it when nothing has connected since this cleanup began. An
+    // unreleased session expires on the server.
+    final releaseOwned = cleanupOwnsCurrentConnection(
+      cleanupGeneration: cleanupGeneration,
+      currentGeneration: _connectGeneration,
+      newerConnectLive: _connectLive,
+    );
+    if (!releaseOwned && _apiService.hasSession) {
+      debugLog('[CONN] Not releasing the API session: a newer connect owns it');
+    }
+    if (releaseOwned && _devicePublicKey != null && _apiService.hasSession) {
       debugLog('[CONN] Releasing API session due to disconnect');
       try {
         await _apiService.requestAuth(
@@ -6102,22 +7529,84 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     await closeRepeaterAdminSession();
 
-    _meshCoreConnection?.dispose();
-    _meshCoreConnection = null;
-    _pingService?.dispose();
-    _pingService = null;
+    if (cleanupOwnsCurrentConnection(
+      cleanupGeneration: cleanupGeneration,
+      currentGeneration: _connectGeneration,
+      newerConnectLive: _connectLive,
+    )) {
+      // Nothing is connected or connecting since the cleanup started, so
+      // what is current is this cleanup's to dispose, and so is anything it
+      // started with that a failed connect has since swapped out.
+      if (!identical(_meshCoreConnection, cleanupConnection)) {
+        cleanupConnection?.dispose();
+      }
+      if (!identical(_pingService, cleanupPingService)) {
+        cleanupPingService?.dispose();
+      }
+      if (!identical(
+          _transportConnectionSubscription, cleanupTransportSubscription)) {
+        cleanupTransportSubscription?.cancel();
+      }
+      if (cleanupTransport != null &&
+          cleanupTransport != _bluetoothService &&
+          !identical(_activeTransport, cleanupTransport)) {
+        cleanupTransport.dispose();
+      }
+      _meshCoreConnection?.dispose();
+      _meshCoreConnection = null;
+      _pingService?.dispose();
+      _pingService = null;
 
-    // Clean up non-BLE transport
-    _transportConnectionSubscription?.cancel();
-    _transportConnectionSubscription = null;
-    if (_activeTransport != null && _activeTransport != _bluetoothService) {
-      _activeTransport!.dispose();
+      // Clean up non-BLE transport
+      _transportConnectionSubscription?.cancel();
+      _transportConnectionSubscription = null;
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
+    } else {
+      // A connect started during this cleanup owns the current objects.
+      // Dispose only the ones this cleanup started with, where the new
+      // connect has not taken them over (the shared BLE service, say).
+      debugLog('[CONN] A newer connect started during disconnect cleanup, '
+          'leaving its connection alone');
+      if (!identical(_meshCoreConnection, cleanupConnection)) {
+        cleanupConnection?.dispose();
+      }
+      if (!identical(_pingService, cleanupPingService)) {
+        cleanupPingService?.dispose();
+      }
+      if (!identical(
+          _transportConnectionSubscription, cleanupTransportSubscription)) {
+        cleanupTransportSubscription?.cancel();
+      }
+      if (cleanupTransport != null &&
+          cleanupTransport != _bluetoothService &&
+          !identical(_activeTransport, cleanupTransport)) {
+        cleanupTransport.dispose();
+      }
     }
-    _activeTransport = null;
+
+    // A reconnect keeps the foreground service running (see
+    // _startAutoReconnect), and nothing else stops it once the reconnect is
+    // given up, or when a drop skips the reconnect (USB, no remembered
+    // radio). Stop it last, after the queue upload and session release above,
+    // so the process is not frozen in the background halfway through them.
+    // Android's session service runs for the whole radio session, so it stays
+    // up when the session carries on past this cleanup (a connect re-run).
+    if (shouldStopServiceAtCleanupEnd(
+      followsConnection: BackgroundServiceManager.followsConnection,
+      sessionActive: _sessionActive,
+    )) {
+      await BackgroundServiceManager.stopService();
+    }
   }
 
   /// Start auto-reconnect after unexpected transport disconnect
   Future<void> _startAutoReconnect() async {
+    // Counted at the drop, before the waits below.
+    final keepsDropping = _reconnectFlapGuard.onDrop(DateTime.now());
+    _scopeLifecycle.onEvent(ScopeStopEvent.autoReconnect);
     _invalidateLiveSessionRecovery();
     await _waitForLiveSessionRecovery();
     // Defensive: cancel zone grace period if active
@@ -6131,6 +7620,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
+    _reconnectBudgetSpent = false;
     _reconnectStartedAt = DateTime.now();
     _lastReconnectWasBondError = false;
     _connectionStep = ConnectionStep.reconnecting;
@@ -6164,10 +7654,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // to the car instead of at the radio going out of range. The abandon path
     // stops the service through _fullDisconnectCleanup, and a success that
     // restores auto-ping updates this notification rather than starting a
-    // second service.
+    // second service. The notification reads Reconnecting from here (see
+    // _serviceNotificationNow).
+    final reconnecting = _serviceNotificationNow();
     await BackgroundServiceManager.updateNotification(
-      title: 'MeshMapper - Reconnecting',
-      body: 'Trying to reach ${_rememberedDevice?.name ?? 'your radio'}',
+      title: reconnecting.title,
+      body: reconnecting.body,
+      keepAwake: _keepServiceAwake,
     );
 
     // Clean up dead BLE-dependent objects
@@ -6208,6 +7701,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    // A link that reconnects and drops again within seconds, time after time,
+    // would otherwise loop for as long as the user let it, with no alert.
+    if (keepsDropping) {
+      debugWarn('[CONN] Radio dropped ${_reconnectFlapGuard.flaps} times in '
+          'a row within ${_reconnectFlapGuard.window.inSeconds}s of '
+          'reconnecting, giving up');
+      logError(
+          'Disconnected: the radio kept dropping right after reconnecting. '
+          'Check its power and battery.',
+          severity: ErrorSeverity.error);
+      _abandonAutoReconnect();
+      return;
+    }
+
     // Start overall timeout
     _reconnectTimeoutTimer = Timer(_autoReconnectBudget, () {
       final armed = _reconnectStartedAt;
@@ -6216,6 +7723,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           : ' (armed ${DateTime.now().difference(armed).inSeconds}s ago)';
       debugLog('[CONN] Auto-reconnect timed out after '
           '${_autoReconnectBudget.inSeconds}s$late');
+      if (reconnectBudgetGivesConnectGrace(
+          connectInFlight: _reconnectConnectInFlight != null,
+          graceUsed: _reconnectBudgetSpent)) {
+        _reconnectBudgetSpent = true;
+        debugLog('[CONN] A connect is still in flight, giving it '
+            '${_reconnectInFlightGrace.inSeconds}s more');
+        _reconnectTimeoutTimer = Timer(_reconnectInFlightGrace, () {
+          debugLog('[CONN] Auto-reconnect grace ran out');
+          _abandonAutoReconnect();
+        });
+        return;
+      }
       _abandonAutoReconnect();
     });
 
@@ -6225,6 +7744,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Attempt a single reconnection
   void _attemptReconnect() {
+    if (_reconnectBudgetSpent) {
+      debugLog('[CONN] Auto-reconnect: budget spent, not retrying');
+      _abandonAutoReconnect();
+      return;
+    }
     if (_reconnectAttempt >= _maxReconnectAttempts) {
       debugLog(
           '[CONN] Auto-reconnect: max attempts reached ($_maxReconnectAttempts)');
@@ -6250,19 +7774,49 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _abandonAutoReconnectForAirborne();
         return;
       }
+      // Cheap re-read, no prompt: the session started precise, so this only
+      // catches Precise Location turned off while the radio was away.
+      final precise = await _preciseLocationGate.allowsConnect(
+        platform: PreciseLocationGate.currentPlatform,
+        simulatorEnabled: _gpsService.isSimulatorEnabled,
+        canPrompt: false,
+        entry: 'auto-reconnect',
+      );
+      if (!_isAutoReconnecting) return; // Cancelled during the read
+      if (!precise) {
+        _abandonAutoReconnectForImpreciseLocation();
+        return;
+      }
 
+      final attempt = _ReconnectConnectAttempt();
       try {
         debugLog(
             '[CONN] Auto-reconnect: calling reconnectToRememberedDevice()');
-        await reconnectToRememberedDevice();
+        _reconnectConnectInFlight = attempt;
+        try {
+          await reconnectToRememberedDevice();
+        } finally {
+          if (identical(_reconnectConnectInFlight, attempt)) {
+            _reconnectConnectInFlight = null;
+          }
+        }
 
-        // Timeout or cancel fired while connection was in-flight.
-        // Disconnect the orphaned connection — abandon already cleaned up state.
-        if (!_isAutoReconnecting) {
-          if (_connectionStep == ConnectionStep.connected) {
+        // Timeout or cancel fired while connection was in-flight. Disconnect
+        // an orphaned connection, but only one that is this attempt's own:
+        // after a cancel the user may already be on a newer connection, and
+        // a newer reconnect may own the state by now.
+        if (attempt.abandonedAtGeneration != null || !_isAutoReconnecting) {
+          if (shouldDisconnectOrphanedReconnect(
+            abandonedAtGeneration: attempt.abandonedAtGeneration,
+            currentGeneration: _connectGeneration,
+            connected: _connectionStep == ConnectionStep.connected,
+          )) {
             debugLog(
                 '[CONN] Auto-reconnect completed after timeout — disconnecting orphaned connection');
             disconnect();
+          } else {
+            debugLog('[CONN] Auto-reconnect attempt ended after the '
+                'reconnect was over, leaving the current connection alone');
           }
           return;
         }
@@ -6272,7 +7826,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog(
               '[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
           _lastReconnectWasBondError = false;
-          _onReconnectSuccess();
+          await _onReconnectSuccess();
         } else if (_isAutoReconnecting) {
           // Connection failed but didn't throw - try again
           debugLog(
@@ -6284,7 +7838,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } catch (e) {
         debugError(
             '[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
-        if (_isAutoReconnecting) {
+        if (attempt.abandonedAtGeneration == null && _isAutoReconnecting) {
           // Check for iOS apple-code 14 (Peer removed pairing information)
           // The MeshCore device cleared its bond keys — clear iOS stale bond before retrying
           await _handleBondErrorIfNeeded(e);
@@ -6342,12 +7896,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Called when auto-reconnect succeeds
-  void _onReconnectSuccess() {
+  Future<void> _onReconnectSuccess() async {
+    _reconnectFlapGuard.onReconnectSuccess(DateTime.now());
     // Cancel timers
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
+
+    // The connect workflow's step 6 POSTs /auth on every reconnect (the
+    // server reuses a live session, else mints one), so an online reconnect
+    // lands with a session and this branch is not taken. It is the backstop
+    // for the one state that must never persist: connected, online, and no
+    // session (a group handoff superseded in its release-to-mint gap). Ends
+    // as the abandon path does when the session cannot be had, before the
+    // reconnect state below is cleared so that path sees it as today.
+    if (!_preferences.offlineMode && !_apiService.hasSession) {
+      if (!await _reacquireSessionAfterReconnect()) return;
+    }
 
     final wasAutoPing = _autoPingWasEnabled;
     final previousMode = _autoModeBeforeReconnect;
@@ -6355,6 +7921,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Clear reconnect state
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
+    _reconnectBudgetSpent = false;
     _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
 
@@ -6387,11 +7954,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
     } else {
-      // No auto-ping to restore, so nothing needs the foreground service any
-      // more. _startAutoReconnect deliberately left it running to keep the
-      // process alive through the reconnect window; without this it would sit
-      // there showing "Reconnecting" for a link that is already back up.
-      unawaited(BackgroundServiceManager.stopService());
+      // iOS: no auto-ping to restore, so nothing needs the per-mode service
+      // any more. _startAutoReconnect deliberately left it running to keep
+      // the process alive through the reconnect window; without this it
+      // would sit there for a link that is already back up. Android's session
+      // service runs for the whole connection, and the notify below turns its
+      // notification back to Connected.
+      if (!BackgroundServiceManager.followsConnection) {
+        unawaited(BackgroundServiceManager.stopService());
+      }
       // No auto-ping to restore — start idle timer
       _startIdleDisconnectTimer();
     }
@@ -6399,16 +7970,141 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Re-acquires an API session for a reconnected radio that has none, the
+  /// way a live session is replaced (`_mintAndApplyReplacementSession`, the
+  /// recovery's and the handoff's back half), then re-arms what the connect
+  /// path's session branch arms: session zone, zone refresh timer, keepalive.
+  /// False means the reconnect ended here (or was superseded): with the
+  /// radio still connected, through the live-link path; with the link gone,
+  /// by handing back to the ordinary auto-reconnect.
+  Future<bool> _reacquireSessionAfterReconnect() async {
+    final connection = _meshCoreConnection;
+    final publicKey = _devicePublicKey;
+    final zone = zoneCode;
+    if (connection == null ||
+        publicKey == null ||
+        zone == null ||
+        zone.isEmpty) {
+      debugError('[CONN] Reconnected without an API session and no zone to '
+          're-join: ending the session');
+      await _abandonReconnectOnLiveLink(
+          'no region to re-join after reconnecting');
+      return false;
+    }
+    debugWarn('[CONN] Reconnected without an API session: re-acquiring one '
+        'in $zone');
+    // _ownsSessionRecovery reads !_isAutoReconnecting, which is still set
+    // here on purpose (the abandon path reads the reconnect state), so the
+    // ownership test is the reconnect's own.
+    bool owns() =>
+        !_isDisposed &&
+        _isAutoReconnecting &&
+        !_userRequestedDisconnect &&
+        !_preferences.offlineMode &&
+        _connectionStep == ConnectionStep.connected &&
+        identical(_meshCoreConnection, connection) &&
+        _devicePublicKey == publicKey;
+    final result = await _mintAndApplyReplacementSession(
+      connection: connection,
+      publicKey: publicKey,
+      iataCode: zone,
+      owns: owns,
+      tag: '[CONN]',
+      what: 'reconnect',
+    );
+    // The step does not change on a transport drop, and the BLE listener
+    // leaves a drop alone while _isAutoReconnecting is set (an attempt's own
+    // failure is the usual cause), so a link lost during the POST above is
+    // read off the transport itself rather than off owns().
+    final linkUp =
+        _activeTransport?.connectionStatus == ConnectionStatus.connected;
+    switch (reconnectBackstopOutcome(
+      superseded: result == SessionRecoveryResult.superseded,
+      minted: result == SessionRecoveryResult.recovered,
+      linkUp: linkUp,
+    )) {
+      case ReconnectBackstopOutcome.superseded:
+        return false;
+      case ReconnectBackstopOutcome.handBackToReconnect:
+        debugWarn('[CONN] Link dropped while re-acquiring a session after '
+            'reconnect (mint ${result.name}): reconnecting again');
+        await _restartAutoReconnectAfterBackstop();
+        return false;
+      case ReconnectBackstopOutcome.abandonOnLiveLink:
+        debugError('[CONN] Could not re-acquire a session after reconnect: '
+            'ending the session');
+        await _abandonReconnectOnLiveLink(
+            'could not re-acquire a session after reconnecting');
+        return false;
+      case ReconnectBackstopOutcome.restore:
+        break;
+    }
+    _sessionZoneCode = zone;
+    _sessionGroupCode = zoneGroupCode;
+    _startZoneRefreshTimer();
+    _apiService.enableHeartbeat(
+      gpsProvider: () {
+        final pos = _gpsService.lastPosition;
+        if (pos == null) return null;
+        return (lat: pos.latitude, lon: pos.longitude);
+      },
+    );
+    debugLog('[CONN] Session re-acquired after reconnect in $zone');
+    return true;
+  }
+
+  /// Ends a reconnect that landed with the radio connected but no session,
+  /// the way a failed visible transfer's auth does: through `disconnect()`,
+  /// which deletes the channel while BLE is still up (Rule 8), restores the
+  /// radio's name and path mode, and closes the transport.
+  /// `_abandonAutoReconnect` assumes a dead link and does none of that, so
+  /// taken here it showed Disconnected with the radio still connected and
+  /// the channel still on it, and a later Connect could stumble on the open
+  /// link. The abandon's alert is kept, dated to the drop as there, and the
+  /// reason goes to the error log so the user learns why the session ended.
+  Future<void> _abandonReconnectOnLiveLink(String why) async {
+    if (_autoPingWasEnabled) {
+      _playDisconnectAlert(_reconnectStartedAt ?? DateTime.now());
+    }
+    logError('Disconnected: $why', severity: ErrorSeverity.error);
+    await disconnect();
+  }
+
+  /// Hands a reconnect whose link dropped during the session backstop back
+  /// to the ordinary auto-reconnect. The BLE listener already saw the drop
+  /// and, with `_isAutoReconnecting` still set, left it to an attempt that
+  /// was no longer running, and `_onReconnectSuccess` cancelled the reconnect
+  /// timers before the backstop ran, so nothing else restarts it. The
+  /// auto-ping state captured at the original drop is carried over:
+  /// `_startAutoReconnect` reads it from `_autoPingEnabled`, which the
+  /// backstop never got as far as restoring.
+  Future<void> _restartAutoReconnectAfterBackstop() async {
+    final wasAutoPing = _autoPingWasEnabled;
+    final previousMode = _autoModeBeforeReconnect;
+    _isAutoReconnecting = false;
+    _reconnectAttempt = 0;
+    await _startAutoReconnect();
+    // The airborne branch inside abandons at once and has already cleared
+    // this state; only a reconnect that is actually running takes it back.
+    if (_isAutoReconnecting) {
+      _autoPingWasEnabled = wasAutoPing;
+      _autoModeBeforeReconnect = previousMode;
+    }
+  }
+
   /// Cancel auto-reconnect (called from UI cancel button)
   void cancelAutoReconnect() {
     debugLog('[CONN] Auto-reconnect cancelled by user');
-    _abandonAutoReconnect();
+    // The user ended it, so the "stopped unexpectedly" alert would be wrong.
+    _abandonAutoReconnect(alert: false);
   }
 
   /// Abandon auto-reconnect and do full cleanup. [releaseExtras] rides on the
   /// session release; [flushQueue] false drops the preserved queue instead of
-  /// uploading it first.
+  /// uploading it first. [alert] false skips the disconnect alert (a user
+  /// cancel).
   void _abandonAutoReconnect({
+    bool alert = true,
     Map<String, dynamic>? releaseExtras,
     bool flushQueue = true,
   }) {
@@ -6418,12 +8114,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
     _cancelPendingAutoPingRestore();
+    _reconnectBudgetSpent = false;
+
+    // Supersede a connect still in flight, so that when it ends it touches
+    // nothing a newer connection owns (the shared BLE transport, the step).
+    final inFlight = _reconnectConnectInFlight;
+    _reconnectConnectInFlight = null;
+    if (inFlight != null) {
+      _connectGeneration++;
+      inFlight.abandonedAtGeneration = _connectGeneration;
+      _bleTransportConnecting = false;
+      // The reconnect's prep already disposed the connection from before the
+      // drop, so one here is the stale attempt's own. Dispose it now, not at
+      // the end of the cleanup below: that is several awaits away (queue
+      // flush, session release), and until then a failing workflow would
+      // still disconnect the shared transport, dropping a connect the user
+      // starts meanwhile, and its frames would go out on that new link.
+      final stale = _meshCoreConnection;
+      if (stale != null) {
+        debugLog('[CONN] Disposing the abandoned reconnect\'s connection');
+        _meshCoreConnection = null;
+        stale.dispose();
+      }
+    }
 
     // Alert if auto-ping was running before disconnect. Dated to the BLE drop,
     // not to now: this runs off the 30 second timeout, which does not tick
     // while the OS has the process frozen.
     final droppedAt = _reconnectStartedAt ?? DateTime.now();
-    if (_autoPingWasEnabled) {
+    if (alert && _autoPingWasEnabled) {
       _playDisconnectAlert(droppedAt);
     }
 
@@ -6432,6 +8151,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectAttempt = 0;
     _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
+    _reconnectFlapGuard.reset();
 
     // Reset antenna and power settings so user must choose again on next connect
     _antennaRestoredFromDevice = false;
@@ -6447,6 +8167,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Do full disconnect cleanup (releases API session, etc.)
     _fullDisconnectCleanup(
         releaseExtras: releaseExtras, flushQueue: flushQueue);
+
+    // After the cleanup's synchronous start has marked the step disconnected,
+    // so the drop this causes on a half-open link reads as already handled.
+    // The cleanup leaves a BLE link up (it only disposes other transports),
+    // and the stale connect would otherwise finish onto it or keep it open.
+    if (inFlight != null &&
+        _rememberedDevice?.transportType == TransportType.ble) {
+      debugLog('[CONN] Cancelling the in-flight reconnect connect');
+      unawaited(_bluetoothService.cancelConnect().catchError((Object e) {
+        debugWarn('[CONN] Cancelling the in-flight reconnect failed: $e');
+      }));
+    }
     notifyListeners();
   }
 
@@ -6466,236 +8198,308 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _abandonAutoReconnect(releaseExtras: info.extras, flushQueue: false);
   }
 
-  /// Disconnect from current device
+  /// Disconnect from current device.
+  ///
+  /// [flushQueue] uploads what is still queued before the session is
+  /// released: the user's own Disconnect and Close App set it. Teardowns the
+  /// server or a block forced (session error, maintenance, airborne) leave it
+  /// off, so their queue is dropped as before.
   Future<void> disconnect({
     bool closeApp = true,
     Map<String, dynamic>? releaseExtras,
+    bool flushQueue = false,
   }) async {
-    _finishLiveActivitySession();
-    _invalidateLiveSessionRecovery();
-    // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
-    _userRequestedDisconnect = true;
-
-    // Immediate UI feedback
-    _connectionStep = ConnectionStep.disconnecting;
-    notifyListeners();
-
-    // Release the sign gate before any teardown write (advert-name restore,
-    // path-hash restore, flood scope, channel deletion) is parked behind it.
-    // Ahead of the recovery wait below, not after it: the wait can take
-    // seconds, and a live sign holding the gate for all of them is exactly
-    // what aborting first is meant to prevent.
-    _meshCoreConnection?.abortPendingSign();
-    _meshCoreConnection?.abortPendingAdmin();
-    // awaitSessionRecoveryBounded swallows its own timeout but rethrows
-    // anything else, and a recovery that throws must never abandon the
-    // teardown with the radio still up: the user asked to disconnect.
     try {
-      await _waitForLiveSessionRecovery();
-    } catch (e) {
-      debugWarn('[SESSION] recovery wait failed, continuing disconnect: $e');
-    }
+      _finishLiveActivitySession();
+      _invalidateLiveSessionRecovery();
+      // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
+      _userRequestedDisconnect = true;
 
-    await closeRepeaterAdminSession();
+      // Immediate UI feedback
+      _connectionStep = ConnectionStep.disconnecting;
+      notifyListeners();
 
-    // Cancel idle disconnect timer
-    _cancelIdleDisconnectTimer();
-
-    // Cancel any active auto-reconnect
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
-    _reconnectTimeoutTimer?.cancel();
-    _reconnectTimeoutTimer = null;
-    _cancelPendingAutoPingRestore();
-    _isAutoReconnecting = false;
-    _reconnectAttempt = 0;
-    _reconnectStartedAt = null;
-    _autoPingWasEnabled = false;
-
-    // Cancel any active zone grace period
-    _cancelZoneGraceTimers();
-    _isInZoneGracePeriod = false;
-    _zoneGraceSecondsRemaining = 0;
-    _autoPingWasEnabledBeforeGrace = false;
-
-    // Disable heartbeat immediately on disconnect
-    _apiService.disableHeartbeat();
-
-    // Stop zone refresh timer
-    _stopZoneRefreshTimer();
-
-    // Stop auto-ping if running (before releasing session)
-    if (_autoPingEnabled) {
-      await _pingService?.forceDisableAutoPing();
-      _autoPingEnabled = false;
-      _resetIdleAutoStop();
-    }
-
-    // End noise floor session on disconnect
-    await _endNoiseFloorSession();
-
-    // Stop background service
-    await BackgroundServiceManager.stopService();
-
-    // Stop all countdown timers
-    _cooldownTimer.stop();
-    _autoPingTimer.stop();
-    _rxWindowTimer.stop();
-
-    // Stop RX wardriving if active (flushes batches to queue)
-    _rxLogger?.stopWardriving(trigger: 'disconnect');
-
-    // Save offline pings before clearing queue (no-op if not in offline mode or no pings)
-    await _saveOfflineSession();
-
-    // ALWAYS START FRESH - clear any queued data on disconnect
-    // Pings without a valid session cannot be uploaded later
-    await _apiQueueService.clearOnDisconnect();
-
-    // Release API session (best effort - always cleanup locally)
-    if (_devicePublicKey != null && _apiService.hasSession) {
-      debugLog('[APP] Releasing API session');
+      // Release the sign gate before any teardown write (advert-name restore,
+      // path-hash restore, flood scope, channel deletion) is parked behind it.
+      // Ahead of the recovery wait below, not after it: the wait can take
+      // seconds, and a live sign holding the gate for all of them is exactly
+      // what aborting first is meant to prevent.
+      _meshCoreConnection?.abortPendingSign();
+      _meshCoreConnection?.abortPendingAdmin();
+      _scopeLifecycle.onEvent(ScopeStopEvent.userDisconnect);
+      // awaitSessionRecoveryBounded swallows its own timeout but rethrows
+      // anything else, and a recovery that throws must never abandon the
+      // teardown with the radio still up: the user asked to disconnect.
       try {
-        await _apiService.requestAuth(
-          reason: 'disconnect',
-          publicKey: _devicePublicKey!,
-          extras: releaseExtras,
-        );
-        debugLog('[APP] API session released successfully');
+        await _waitForLiveSessionRecovery();
       } catch (e) {
-        debugError('[APP] Failed to release API session: $e');
-        // Continue with disconnect anyway
+        debugWarn('[SESSION] recovery wait failed, continuing disconnect: $e');
       }
-    }
 
-    // Restore original device name if anonymous mode renamed it (BLE must still be connected)
-    if (_isAnonymousRenamed && _originalDeviceName != null) {
+      await closeRepeaterAdminSession();
+
+      // Cancel idle disconnect timer
+      _cancelIdleDisconnectTimer();
+
+      // Cancel any active auto-reconnect
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectTimeoutTimer?.cancel();
+      _reconnectTimeoutTimer = null;
+      _cancelPendingAutoPingRestore();
+      _isAutoReconnecting = false;
+      // An attempt still in flight may close what it connects, but not a
+      // connection the user starts after this (that bumps the generation).
+      _reconnectConnectInFlight?.abandonedAtGeneration ??= _connectGeneration;
+      _reconnectAttempt = 0;
+      _reconnectStartedAt = null;
+      _autoPingWasEnabled = false;
+      _reconnectFlapGuard.reset();
+
+      // Cancel any active zone grace period
+      _cancelZoneGraceTimers();
+      _isInZoneGracePeriod = false;
+      _zoneGraceSecondsRemaining = 0;
+      _autoPingWasEnabledBeforeGrace = false;
+
+      // Disable heartbeat immediately on disconnect
+      _apiService.disableHeartbeat();
+
+      // Stop zone refresh timer
+      _stopZoneRefreshTimer();
+
+      // Stop auto-ping if running (before releasing session)
+      if (_autoPingEnabled) {
+        await _pingService?.forceDisableAutoPing();
+        _autoPingEnabled = false;
+        _resetIdleAutoStop();
+      }
+
+      // End noise floor session on disconnect
+      await _endNoiseFloorSession();
+
+      // Stop iOS's per-mode service. Android's session service stops once the
+      // session is over (below), after the upload and the session release, so
+      // the process is not frozen halfway through them.
+      if (!BackgroundServiceManager.followsConnection) {
+        await BackgroundServiceManager.stopService();
+      }
+
+      // Stop all countdown timers
+      _cooldownTimer.stop();
+      _autoPingTimer.stop();
+      _rxWindowTimer.stop();
+
+      // Stop RX wardriving if active (flushes batches to queue). Awaited so the
+      // batches are queued before the upload below; a failed flush must not
+      // abandon the teardown.
       try {
-        await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
-        debugLog(
-            '[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
-        if (_devicePublicKey != null) {
-          _clearPersistedRealName(_devicePublicKey!);
+        await _rxLogger?.stopWardriving(trigger: 'disconnect');
+      } catch (e) {
+        debugError('[RX LOG] Final RX flush on disconnect failed: $e');
+      }
+
+      // Save offline pings before clearing queue (no-op if not in offline mode or no pings)
+      await _saveOfflineSession();
+
+      // Send what is still queued while the session is valid. The last TX
+      // waits 5 s for its upload and an RX batch up to 15 s, so a Disconnect
+      // tap inside that window used to drop them. Bounded so the tap stays
+      // quick on a bad network.
+      if (flushQueue && _apiService.hasSession && !_preferences.offlineMode) {
+        debugLog('[APP] Uploading queued pings before session release');
+        final uploaded = await uploadQueueBounded(() async {
+          await _apiQueueService.waitForUploadToFinish(
+              limit: disconnectQueueUploadTimeout);
+          // A batch carries at most 50 items, and a queue that grew out of
+          // coverage needs several. Stop once a round leaves nothing or moves
+          // nothing (items still waiting out a retry).
+          var left = -1;
+          for (var round = 0; round < 5; round++) {
+            await _apiQueueService.forceUploadWithHoldWait();
+            final now = _apiQueueService.queueSize;
+            if (now == 0 || now == left) break;
+            left = now;
+          }
+        });
+        if (!uploaded) {
+          debugWarn('[APP] Queued pings not all uploaded before release');
         }
-      } catch (e) {
-        debugError('[CONN] Anonymous mode: failed to restore name: $e');
-        logError(
-            'Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
-            severity: ErrorSeverity.warning,
-            autoSwitch: false);
       }
-      _isAnonymousRenamed = false;
-      _originalDeviceName = null;
-    }
 
-    // Restore original path hash mode before disconnect (while BLE still connected)
-    await _restorePathHashMode();
+      // ALWAYS START FRESH - clear any queued data on disconnect
+      // Pings without a valid session cannot be uploaded later
+      await _apiQueueService.clearOnDisconnect();
 
-    // Clear flood scope before disconnect (safety — BLE disconnect resets radio state anyway)
-    try {
-      await _meshCoreConnection?.clearFloodScope();
-    } catch (e) {
-      debugLog('[CONN] Failed to clear flood scope: $e');
-    }
+      // Release API session (best effort - always cleanup locally)
+      if (_devicePublicKey != null && _apiService.hasSession) {
+        debugLog('[APP] Releasing API session');
+        try {
+          await _apiService.requestAuth(
+            reason: 'disconnect',
+            publicKey: _devicePublicKey!,
+            extras: releaseExtras,
+          );
+          debugLog('[APP] API session released successfully');
+        } catch (e) {
+          debugError('[APP] Failed to release API session: $e');
+          // Continue with disconnect anyway
+        }
+      }
 
-    // Delete wardriving channel FIRST, while BLE connection is still active
-    // This prevents "GATT Server is disconnected" errors
-    if (_preferences.deleteChannelOnDisconnect) {
-      await _meshCoreConnection?.deleteWardrivingChannelEarly();
-    } else {
-      debugLog('[CHANNEL] Skipping channel deletion (user preference)');
-    }
+      // Restore original device name if anonymous mode renamed it (BLE must still be connected)
+      if (_isAnonymousRenamed && _originalDeviceName != null) {
+        try {
+          await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
+          debugLog(
+              '[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
+          if (_devicePublicKey != null) {
+            _clearPersistedRealName(_devicePublicKey!);
+          }
+        } catch (e) {
+          debugError('[CONN] Anonymous mode: failed to restore name: $e');
+          logError(
+              'Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
+              severity: ErrorSeverity.warning,
+              autoSwitch: false);
+        }
+        _isAnonymousRenamed = false;
+        _originalDeviceName = null;
+      }
 
-    // Cleanup unified RX handler and TX tracker
-    _logRxDataSubscription?.cancel();
-    _logRxDataSubscription = null;
-    _unifiedRxHandler?.dispose();
-    _unifiedRxHandler = null;
-    _txTracker = null; // TxTracker is disposed by UnifiedRxHandler
-    _rxLogger = null; // RxLogger is disposed by UnifiedRxHandler
+      // Restore original path hash mode before disconnect (while BLE still connected)
+      await _restorePathHashMode();
 
-    await _meshCoreConnection?.disconnect();
+      // Clear flood scope before disconnect (safety — BLE disconnect resets radio state anyway)
+      try {
+        await _meshCoreConnection?.clearFloodScope();
+      } catch (e) {
+        debugLog('[CONN] Failed to clear flood scope: $e');
+      }
 
-    // Cancel stream subscriptions
-    await _noiseFloorSubscription?.cancel();
-    _noiseFloorSubscription = null;
-    await _batterySubscription?.cancel();
-    _batterySubscription = null;
+      // Delete wardriving channel FIRST, while BLE connection is still active
+      // This prevents "GATT Server is disconnected" errors
+      if (_preferences.deleteChannelOnDisconnect) {
+        await _meshCoreConnection?.deleteWardrivingChannelEarly();
+      } else {
+        debugLog('[CHANNEL] Skipping channel deletion (user preference)');
+      }
 
-    // Clean up non-BLE transport (TCP/USB instances are owned by us, not shared)
-    _transportConnectionSubscription?.cancel();
-    _transportConnectionSubscription = null;
-    if (_activeTransport != null && _activeTransport != _bluetoothService) {
-      _activeTransport!.dispose();
-    }
-    _activeTransport = null;
+      // Cleanup unified RX handler and TX tracker
+      _logRxDataSubscription?.cancel();
+      _logRxDataSubscription = null;
+      _unifiedRxHandler?.dispose();
+      _unifiedRxHandler = null;
+      _txTracker = null; // TxTracker is disposed by UnifiedRxHandler
+      _rxLogger = null; // RxLogger is disposed by UnifiedRxHandler
 
-    // Restore transport tab selection so connection screen shows the right tab
-    if (_rememberedDevice != null) {
-      _selectedTransport = _rememberedDevice!.transportType;
-    }
+      await _meshCoreConnection?.disconnect();
 
-    _meshCoreConnection?.dispose();
-    _meshCoreConnection = null;
-    _pingService?.dispose();
-    _pingService = null;
+      // Cancel stream subscriptions
+      await _noiseFloorSubscription?.cancel();
+      _noiseFloorSubscription = null;
+      await _batterySubscription?.cancel();
+      _batterySubscription = null;
 
-    _connectionStep = ConnectionStep.disconnected;
-    _deviceModel = null;
-    _manufacturerString = null;
-    _firmwareVersionString = null;
-    _devicePublicKey = null;
-    _offlineContactUri = null;
-    _displayDeviceName = null;
-    _antennaRestoredFromDevice = false;
-    _powerRestoredFromDevice = false;
-    _preferences = _preferences.copyWith(
-        externalAntenna: false, externalAntennaSet: false);
-    _savePreferences();
-    _currentNoiseFloor = null;
-    _currentBatteryPercent = null;
-    _authType = null;
-    _originalPathHashMode = null;
-    _userChangedPathMode = false;
-    _hopBytes = 1;
-    _traceHopBytes = 1;
+      // Clean up non-BLE transport (TCP/USB instances are owned by us, not shared)
+      _transportConnectionSubscription?.cancel();
+      _transportConnectionSubscription = null;
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
 
-    // Clear regional channels (keeps only Public) and scope
-    ChannelService.clearRegionalChannels();
-    _regionalChannels = [];
-    _scope = null;
+      // Restore transport tab selection so connection screen shows the right tab
+      if (_rememberedDevice != null) {
+        _selectedTransport = _rememberedDevice!.transportType;
+      }
 
-    // Clear user-original preference tracking
-    _userOriginalAutoPingInterval = null;
-    _userOriginalHybridMode = null;
-    _userOriginalDiscDrop = null;
-    _userOriginalFloodTraffic = null;
-    _syncRecentCoverage(sessionEnded: true);
+      _meshCoreConnection?.dispose();
+      _meshCoreConnection = null;
+      _pingService?.dispose();
+      _pingService = null;
 
-    // Clear zone transfer state
-    _sessionZoneCode = null;
-    _isZoneTransferInProgress = false;
-    _zoneTransferFrom = null;
-    _zoneTransferTo = null;
+      _connectionStep = ConnectionStep.disconnected;
+      _deviceModel = null;
+      _manufacturerString = null;
+      _firmwareVersionString = null;
+      _devicePublicKey = null;
+      _offlineContactUri = null;
+      _displayDeviceName = null;
+      _antennaRestoredFromDevice = false;
+      _powerRestoredFromDevice = false;
+      _preferences = _preferences.copyWith(
+          externalAntenna: false, externalAntennaSet: false);
+      _savePreferences();
+      _currentNoiseFloor = null;
+      _currentBatteryPercent = null;
+      _authType = null;
+      _originalPathHashMode = null;
+      _userChangedPathMode = false;
+      _hopBytes = 1;
+      _traceHopBytes = 1;
 
-    // Clear discovered devices so user must scan fresh
-    _discoveredDevices = [];
+      // Clear regional channels (keeps only Public) and scope
+      ChannelService.clearRegionalChannels();
+      _regionalChannels = [];
+      _scope = null;
 
-    // Reset user-requested flag
-    _userRequestedDisconnect = false;
+      // Clear user-original preference tracking
+      _userOriginalAutoPingInterval = null;
+      _userOriginalHybridMode = null;
+      _userOriginalDiscDrop = null;
+      _userOriginalFloodTraffic = null;
+      _syncRecentCoverage(sessionEnded: true);
 
-    notifyListeners();
+      // Clear zone transfer state
+      _sessionZoneCode = null;
+      _sessionGroupCode = null;
+      _isZoneTransferInProgress = false;
+      _zoneTransferFrom = null;
+      _zoneTransferTo = null;
 
-    // Auto-exit app if preference is enabled (Android only). The airborne
-    // block passes closeApp: false so its explanation stays on screen.
-    if (closeApp &&
-        _preferences.closeAppAfterDisconnect &&
-        Platform.isAndroid) {
-      debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
-      // Small delay to ensure cleanup completes
-      Future.delayed(const Duration(milliseconds: 500), () {
-        SystemNavigator.pop();
-      });
+      // Clear discovered devices so user must scan fresh
+      _discoveredDevices = [];
+
+      // Reset user-requested flag
+      _userRequestedDisconnect = false;
+
+      notifyListeners();
+
+      // Auto-exit app if preference is enabled (Android only). The airborne
+      // block passes closeApp: false so its explanation stays on screen.
+      if (closeApp &&
+          _preferences.closeAppAfterDisconnect &&
+          Platform.isAndroid) {
+        debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
+        // Small delay to ensure cleanup completes. Same stop as exitApp(), for
+        // a session service still running with no radio session.
+        Future.delayed(const Duration(milliseconds: 500), () async {
+          await BackgroundServiceManager.stopLiveService(
+              'close after disconnect');
+          SystemNavigator.pop();
+        });
+      }
+    } finally {
+      // Android's session service stops once the session is over, after the
+      // upload and the session release above. In a finally, so a throw
+      // part-way cannot leave it running. That throw leaves the step at
+      // disconnecting, which still reads as a live session, so the guard only
+      // asks whether another session (a reconnect, a connect re-run) has
+      // taken over. Not awaited: the stop is sent at once.
+      if (BackgroundServiceManager.followsConnection &&
+          shouldStopServiceAtCleanupEnd(
+            followsConnection: BackgroundServiceManager.followsConnection,
+            sessionActive: radioSessionActive(
+              step: _connectionStep == ConnectionStep.disconnecting
+                  ? ConnectionStep.disconnected
+                  : _connectionStep,
+              autoReconnecting: _isAutoReconnecting,
+              connectRerunPending: _connectRerunPending,
+            ),
+          )) {
+        unawaited(BackgroundServiceManager.stopService());
+      }
     }
   }
 
@@ -6796,7 +8600,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Returns true if session is valid, false if expired (triggers disconnect)
   Future<SessionRecoveryResult> _recoverExpiredLiveSession() {
     final inFlight = _liveSessionRecoveryInFlight;
-    if (inFlight != null) return inFlight;
+    switch (resolveSessionRecoveryJoin(
+      groupHandoffOwnsSlot: _groupHandoffOwnsRecoverySlot,
+      recoveryInFlight: inFlight != null,
+    )) {
+      case SessionRecoveryJoin.supersededByHandoff:
+        // The handoff's own drain is one of the lanes that can ask here, and
+        // the in-flight future is the handoff: joining it would deadlock
+        // both. Every lane reads superseded as "ended quietly" (the upload
+        // comes back held with no retry spent), and the handoff mints the
+        // replacement session itself.
+        debugLog('[SESSION] session_expired during a group handoff: the '
+            'handoff mints the replacement');
+        return Future.value(SessionRecoveryResult.superseded);
+      case SessionRecoveryJoin.joinInFlight:
+        return inFlight!;
+      case SessionRecoveryJoin.startNew:
+        break;
+    }
 
     final generation = _sessionRecoveryGeneration;
     late final Future<SessionRecoveryResult> recovery;
@@ -6863,104 +8684,138 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return SessionRecoveryResult.superseded;
       }
 
-      final deviceName = _isAnonymousRenamed
-          ? 'Anonymous'
-          : (connection.selfInfo?.name ??
-              connectedDeviceName?.replaceFirst('MeshCore-', ''));
-      if (deviceName == null || deviceName.isEmpty) {
-        debugWarn(
-            '[SESSION] Refusing expired-session recovery without a device name');
-        return SessionRecoveryResult.failed;
-      }
-
-      final position = _currentPosition!;
-      final model = connection.deviceModel?.manufacturer ??
-          connection.deviceInfo?.manufacturer ??
-          'Unknown';
-      debugLog(
-          '[SESSION] Re-authenticating live companion after session expiry');
-      Map<String, dynamic>? result;
-      try {
-        result = await _apiService.requestAuth(
-          reason: 'connect',
-          publicKey: publicKey,
-          who: deviceName,
-          appVersion: _appVersion,
-          power: _preferences.powerLevel,
-          iataCode: zoneCode ?? _preferences.iataCode,
-          model: model,
-          radioFreq: connection.selfInfo?.radioConfigApi,
-          lat: position.latitude,
-          lon: position.longitude,
-          accuracyMeters: position.accuracy,
-          shouldStoreSession: () =>
-              _ownsSessionRecovery(generation, connection, publicKey),
-        );
-      } catch (e) {
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          debugLog('[SESSION] Stale re-authentication failure ignored');
-          return SessionRecoveryResult.superseded;
-        }
-        debugError('[SESSION] Live re-authentication failed: $e');
-        return SessionRecoveryResult.failed;
-      }
-      final replacementSessionId = result?['session_id'] as String?;
-      if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-        // Superseded: a disconnect or a reconnect took over and is blocked on
-        // this recovery settling. The release is a second /auth POST that can
-        // sit for 30 s, and nothing here depends on its answer, so it is fired
-        // and left to log its own failure.
-        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-        return SessionRecoveryResult.superseded;
-      }
-      if (result == null || result['success'] != true) {
-        debugWarn('[SESSION] Live re-authentication was not accepted');
-        return SessionRecoveryResult.failed;
-      }
-      if (replacementSessionId == null ||
-          _apiService.sessionId != replacementSessionId) {
-        // The session was minted but not stored, which only happens when
-        // ownership went away during the POST. Same superseded case, same
-        // unawaited release.
-        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-        return SessionRecoveryResult.superseded;
-      }
-
-      try {
-        if (result['type'] is String) _authType = result['type'] as String;
-        _syncZoneCapacityFromAuth(result);
-        final applied = await _applyRecoveredSessionConfiguration(
-          connection,
-          () => _ownsSessionRecovery(generation, connection, publicKey),
-        );
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-          return SessionRecoveryResult.superseded;
-        }
-        if (!applied) {
-          await _releaseRecoveredSession(publicKey, replacementSessionId);
-          if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-            return SessionRecoveryResult.superseded;
-          }
-          return SessionRecoveryResult.failed;
-        }
-      } catch (e) {
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
-          return SessionRecoveryResult.superseded;
-        }
-        debugError('[SESSION] Failed to apply replacement session: $e');
-        await _releaseRecoveredSession(publicKey, replacementSessionId);
-        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          return SessionRecoveryResult.superseded;
-        }
-        return SessionRecoveryResult.failed;
-      }
-      notifyListeners();
-      return SessionRecoveryResult.recovered;
+      final result = await _mintAndApplyReplacementSession(
+        connection: connection,
+        publicKey: publicKey,
+        // The zone the session belongs to, not the zone the phone is in: a
+        // recovery that ran while a handoff was deferred behind it would
+        // otherwise mint in the new member with _sessionZoneCode still on the
+        // old one, and the next tick's handoff would release that fresh
+        // session and mint again.
+        iataCode: _sessionZoneCode ?? zoneCode ?? _preferences.iataCode,
+        owns: () => _ownsSessionRecovery(generation, connection, publicKey),
+        tag: '[SESSION]',
+        what: 'expired-session recovery',
+      );
+      if (result == SessionRecoveryResult.recovered) notifyListeners();
+      return result;
     } finally {
       pingService.setSessionRecoveryInProgress(false);
     }
+  }
+
+  /// Mints a replacement session for the live companion in [iataCode] and
+  /// applies its answer (channels, validator, flood scope, zone policies,
+  /// path hash mode): the back half shared by an expired-session recovery
+  /// and a group handoff. [owns] is re-read after every await; once it reads
+  /// false the caller's successor owns the cleanup, and any session minted
+  /// here is released without being awaited (that release is a second /auth
+  /// POST that can sit for 30 s, and the successor is blocked on this
+  /// settling). `failed` never leaves a minted session behind. [tag] and
+  /// [what] name the caller in the logs. [fix] is the position to send; when
+  /// null it is picked here.
+  Future<SessionRecoveryResult> _mintAndApplyReplacementSession({
+    required MeshCoreConnection connection,
+    required String publicKey,
+    required String? iataCode,
+    required bool Function() owns,
+    required String tag,
+    required String what,
+    Position? fix,
+  }) async {
+    final deviceName = _isAnonymousRenamed
+        ? 'Anonymous'
+        : (connection.selfInfo?.name ??
+            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    if (deviceName == null || deviceName.isEmpty) {
+      debugWarn('$tag Refusing $what without a device name');
+      return SessionRecoveryResult.failed;
+    }
+    // The fix the connect /auth picks ([fix] when the caller picked it
+    // already): a coarse current fix sent as-is is refused gps_inaccurate,
+    // and a refused recovery ends the drive.
+    final position = fix ?? await _pickAuthFix();
+    if (!owns()) return SessionRecoveryResult.superseded;
+    if (position == null) {
+      debugWarn('$tag Refusing $what without a position');
+      return SessionRecoveryResult.failed;
+    }
+
+    final model = connection.deviceModel?.manufacturer ??
+        connection.deviceInfo?.manufacturer ??
+        'Unknown';
+    debugLog('$tag Re-authenticating live companion for $what');
+    Map<String, dynamic>? result;
+    try {
+      result = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: publicKey,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: iataCode,
+        model: model,
+        radioFreq: connection.selfInfo?.radioConfigApi,
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyMeters: position.accuracy,
+        shouldStoreSession: owns,
+      );
+    } catch (e) {
+      if (!owns()) {
+        debugLog('$tag Stale re-authentication failure ignored');
+        return SessionRecoveryResult.superseded;
+      }
+      debugError('$tag Live re-authentication failed: $e');
+      return SessionRecoveryResult.failed;
+    }
+    final replacementSessionId = result?['session_id'] as String?;
+    if (!owns()) {
+      unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+      return SessionRecoveryResult.superseded;
+    }
+    if (result == null || result['success'] != true) {
+      debugWarn('$tag Live re-authentication was not accepted: '
+          '${result?['reason'] ?? 'no answer'}');
+      return SessionRecoveryResult.failed;
+    }
+    if (replacementSessionId == null ||
+        _apiService.sessionId != replacementSessionId) {
+      // Ownership held through the POST (checked just above), so a success
+      // answer with no session id, or one the store did not take, is a
+      // malformed answer rather than a lost race: a failure, with any id the
+      // server did mint released. The lost-ownership case stays superseded.
+      debugWarn('$tag Re-authentication answered success without a usable '
+          'session id');
+      unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+      return SessionRecoveryResult.failed;
+    }
+
+    try {
+      if (result['type'] is String) _authType = result['type'] as String;
+      _syncZoneCapacityFromAuth(result);
+      final applied =
+          await _applyRecoveredSessionConfiguration(connection, owns);
+      if (!owns()) {
+        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+        return SessionRecoveryResult.superseded;
+      }
+      if (!applied) {
+        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        if (!owns()) return SessionRecoveryResult.superseded;
+        return SessionRecoveryResult.failed;
+      }
+    } catch (e) {
+      if (!owns()) {
+        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
+        return SessionRecoveryResult.superseded;
+      }
+      debugError('$tag Failed to apply replacement session: $e');
+      await _releaseRecoveredSession(publicKey, replacementSessionId);
+      if (!owns()) return SessionRecoveryResult.superseded;
+      return SessionRecoveryResult.failed;
+    }
+    return SessionRecoveryResult.recovered;
   }
 
   Future<void> _releaseRecoveredSession(
@@ -7065,8 +8920,322 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
+  /// Runs a hidden handoff through the same single slot a session-expiry
+  /// recovery uses, so disconnect, auto-reconnect, Offline Mode and dispose
+  /// already supersede it and wait for it (bounded), and a session_expired
+  /// arriving meanwhile joins it instead of starting a second swap.
+  Future<void> _startGroupHandoff(
+      String newZoneCode, String newZoneName) async {
+    final generation = _sessionRecoveryGeneration;
+    // Set before the handoff starts (its first statements run synchronously)
+    // and cleared with the slot, so no session_expired can join it.
+    _groupHandoffOwnsRecoverySlot = true;
+    late final Future<SessionRecoveryResult> handoff;
+    handoff = _handOffWithinGroup(generation, newZoneCode).whenComplete(() {
+      _groupHandoffOwnsRecoverySlot = false;
+      if (identical(_liveSessionRecoveryInFlight, handoff)) {
+        _liveSessionRecoveryInFlight = null;
+      }
+    });
+    _liveSessionRecoveryInFlight = handoff;
+    SessionRecoveryResult result;
+    try {
+      result = await handoff;
+    } catch (e) {
+      // Nothing awaits this method (the status handler fires it and moves
+      // on), so a throw here would be an unhandled error. The TX hold is
+      // released by the handoff's own finally; treat it as a failure.
+      debugError('[ZONE] Group handoff threw: $e');
+      result = SessionRecoveryResult.failed;
+    }
+    if (_isDisposed) return;
+    if (result == SessionRecoveryResult.recovered) {
+      await _remapAutoModeAfterHandoff(newZoneCode);
+      return;
+    }
+    // A failed handoff has released the old session, and the app must not
+    // stay connected without one: re-mint in the zone the phone is in NOW
+    // (a later tick may have moved it to a third member, or back into the
+    // old one; the visible transfer just auths in its target), or, with no
+    // zone to re-join, end the session the way a failed visible transfer
+    // does.
+    final fallbackZone = zoneCode;
+    switch (groupHandoffFollowUp(
+      failed: result == SessionRecoveryResult.failed,
+      connected: isConnected,
+      offlineMode: _preferences.offlineMode,
+      inZoneGracePeriod: _isInZoneGracePeriod,
+      zoneCode: fallbackZone,
+    )) {
+      case GroupHandoffFollowUp.transfer:
+        final fallbackName = _currentZone?['name'] as String? ?? 'Unknown';
+        debugWarn('[ZONE] Group handoff failed, falling back to a full '
+            'zone transfer to $fallbackZone');
+        await _handleZoneTransfer(fallbackZone!, fallbackName);
+      case GroupHandoffFollowUp.disconnect:
+        debugError('[ZONE] Group handoff failed with no zone to re-join: '
+            'ending the session');
+        logError('Zone transfer failed: no zone to re-join',
+            severity: ErrorSeverity.error);
+        await disconnect();
+      case GroupHandoffFollowUp.none:
+        break;
+    }
+  }
+
+  /// A hidden handoff that lands in a member with no TX capacity cannot
+  /// leave Active or Hybrid transmitting into refusals. This is the one case
+  /// a handoff changes what is on screen: the mode is switched the way the
+  /// visible transfer's restore resolves it (`_resolveAutoModeForZone`,
+  /// Passive when the member allows RX), with a line in the error log that
+  /// says why. Runs once the handoff has settled, so the TX hold is released
+  /// and the recovery slot is free for the session check a start makes.
+  Future<void> _remapAutoModeAfterHandoff(String newZoneCode) async {
+    if (_apiService.txAllowed || !_autoPingEnabled || _pingService == null) {
+      return;
+    }
+    final current = _autoMode;
+    if (current != AutoMode.active && current != AutoMode.hybrid) return;
+    // A stop the user already asked for outranks the remap (the external
+    // lanes' stillStopping rule): the switch below goes through the mode
+    // start, which force-disables the running mode and drops a parked
+    // disable, so the Stop would be lost and a fresh discovery would go out.
+    // Nothing is awaited between here and the switch, so one read suffices.
+    if (isPendingDisable) {
+      debugLog('[ZONE] $newZoneCode is at TX capacity, but a stop is '
+          'pending: leaving the mode to it');
+      return;
+    }
+    final resolved = _resolveAutoModeForZone(current);
+    if (resolved == current) {
+      debugWarn('[ZONE] $newZoneCode allows neither TX nor RX; '
+          '${current.name} mode left running');
+      return;
+    }
+    final resolvedName =
+        '${resolved.name[0].toUpperCase()}${resolved.name.substring(1)}';
+    debugLog('[ZONE] $newZoneCode is at TX capacity: switching '
+        '${current.name} mode to ${resolved.name}');
+    logError(
+        'TX stopped: $newZoneCode, the region you drove into, is at Active '
+        'Wardrive capacity. Switched to $resolvedName mode.',
+        severity: ErrorSeverity.warning,
+        autoSwitch: false);
+    // The switch goes through the ordinary mode start, which the shared
+    // cooldown would refuse; the visible transfer's restore clears it the
+    // same way.
+    _cooldownTimer.stop();
+    _pingService!.clearCooldown();
+    final switched = await toggleAutoPing(resolved);
+    if (!switched) {
+      debugWarn('[ZONE] Mode switch to ${resolved.name} was refused');
+    }
+  }
+
+  /// Moves a live session to another member of its own region group without
+  /// the user seeing it: hold new TX, let an on-air TX queue its old wire
+  /// tag, upload everything queued under the old session, release it, open
+  /// a session in [newZoneCode], and apply that answer the way a session
+  /// recovery does. Auto-ping keeps its schedule; a send that comes due
+  /// meanwhile bows out and re-arms (the recovery hold).
+  ///
+  /// `failed` means the caller should fall back to the visible transfer.
+  /// `superseded` means something else (disconnect, reconnect, Offline Mode,
+  /// zone grace, dispose) took over and owns the cleanup.
+  Future<SessionRecoveryResult> _handOffWithinGroup(
+      int generation, String newZoneCode) async {
+    final connection = _meshCoreConnection;
+    final publicKey = _devicePublicKey;
+    final pingService = _pingService;
+    final oldZone = _sessionZoneCode;
+    if (connection == null ||
+        publicKey == null ||
+        pingService == null ||
+        _currentPosition == null ||
+        _isInZoneGracePeriod ||
+        !_ownsSessionRecovery(generation, connection, publicKey)) {
+      debugWarn('[ZONE] Refusing group handoff outside a live session');
+      return SessionRecoveryResult.superseded;
+    }
+    // Zone grace keeps the session, clears the queue and disables the
+    // heartbeat without bumping the recovery generation, and its re-entry
+    // runs the visible transfer, so a handoff still running then belongs
+    // to it.
+    bool owns() =>
+        _ownsSessionRecovery(generation, connection, publicKey) &&
+        !_isInZoneGracePeriod;
+    // Every exit past the keepPolicy release that does not end with a stored
+    // session forgets the kept zone policy, as a plain release would have:
+    // every superseding owner gates its own release on hasSession, so nothing
+    // else would. A successor that already minted its own session keeps it,
+    // and one still minting overwrites every field.
+    SessionRecoveryResult withoutSession(SessionRecoveryResult result) {
+      if (!_apiService.hasSession) _apiService.clearSession();
+      return result;
+    }
+
+    debugLog('[ZONE] Group handoff: $oldZone -> $newZoneCode '
+        '(group $_sessionGroupCode)');
+    // A scope runner holding the radio lease stops before the session
+    // changes, as it does for the visible transfer.
+    _scopeLifecycle.onEvent(ScopeStopEvent.zoneTransfer);
+    pingService.setSessionRecoveryInProgress(true);
+    // The queue's own timers must not start a batch under the session this
+    // is about to release: a batch that lands after the server closed it
+    // answers bad_session, which ends the connection. Explicit drains below
+    // still run. Resumed in the finally on every path.
+    _apiQueueService.pauseScheduledUploads();
+    try {
+      // A TX already sent carries the old wire tag until its listening
+      // window queues it. Nothing below may run before it reaches the queue.
+      await pingService.waitForTxWindow();
+      if (!owns()) return SessionRecoveryResult.superseded;
+
+      // Everything queued so far belongs to the old session: TX items carry
+      // its wire tags, which the server only accepts under that session.
+      // Each round first waits for an upload already on the wire, since the
+      // queue silently skips a second one. If the old session has lapsed the
+      // drain comes back held (its session_expired is answered superseded,
+      // see _recoverExpiredLiveSession), nothing shrinks, and the loop moves
+      // on to release and mint, which is right for a lapsed session.
+      await _rxLogger?.flushAllBatches(trigger: 'zone_handoff');
+      if (!owns()) return SessionRecoveryResult.superseded;
+      for (var round = 0;
+          round < 5 && _apiQueueService.queueSize > 0;
+          round++) {
+        await _apiQueueService.waitForUploadToFinish();
+        if (!owns()) return SessionRecoveryResult.superseded;
+        final before = _apiQueueService.queueSize;
+        try {
+          await _apiQueueService.forceUploadWithHoldWait();
+        } catch (e) {
+          debugError('[ZONE] Group handoff drain failed: $e');
+          break;
+        }
+        if (!owns()) return SessionRecoveryResult.superseded;
+        if (_apiQueueService.queueSize >= before) break;
+      }
+      debugLog('[ZONE] Group handoff drained, '
+          '${_apiQueueService.queueSize} item(s) left');
+      // Nothing of ours is on the wire past this point: the timers are held
+      // and the drain was awaited. A batch another lane put out is waited
+      // for (bounded) so it is answered before the session closes.
+      if (!await _apiQueueService.waitForUploadToFinish()) {
+        debugWarn('[ZONE] Group handoff releasing with an upload still on '
+            'the wire');
+      }
+      if (!owns()) return SessionRecoveryResult.superseded;
+
+      // Picked before the release: a coarse fix can wait a few seconds for a
+      // better one, and that wait must not sit in the gap with no session.
+      final authFix = await _pickAuthFix();
+      if (!owns()) return SessionRecoveryResult.superseded;
+
+      if (_apiService.hasSession) {
+        // keepPolicy: the UI reads txAllowed, the channels and the enforce
+        // flags on every notify, and a plain release zeroes them for the two
+        // round trips until the mint stores its answer (the Active button
+        // vanished and the status bar read "at capacity"). The mint
+        // overwrites every kept field; a handoff that ends without a session
+        // clears them in full below. requestAuth never throws (a failed POST
+        // answers null), so the answer is checked rather than caught.
+        final released = await _apiService.requestAuth(
+          reason: 'disconnect',
+          publicKey: publicKey,
+          extras: const {'disconnect_cause': 'zone_transfer'},
+          keepPolicy: true,
+        );
+        if (released == null || released['success'] != true) {
+          debugWarn('[ZONE] Group handoff release not confirmed: '
+              '${released?['reason'] ?? 'no answer'}');
+        }
+        if (!owns()) return withoutSession(SessionRecoveryResult.superseded);
+      }
+      // The release cleared the held session id, so the connect below has
+      // no previous id to compare and never fires onSessionIdChanged. Run
+      // the session-replaced work here instead: the tagged TX the drain left
+      // behind only re-derive under the session just released, and the
+      // deferred squares reported under it are owed again under the new one.
+      await _onSessionReplaced();
+      if (!owns()) return withoutSession(SessionRecoveryResult.superseded);
+
+      final minted = await _mintAndApplyReplacementSession(
+        connection: connection,
+        publicKey: publicKey,
+        iataCode: newZoneCode,
+        owns: owns,
+        tag: '[ZONE]',
+        what: 'group handoff',
+        fix: authFix,
+      );
+      if (minted != SessionRecoveryResult.recovered) return withoutSession(minted);
+
+      // Only now does the session belong to the new member: a failure above
+      // leaves the old code in place, which is what lets the caller fall
+      // back to the visible transfer.
+      _sessionZoneCode = newZoneCode;
+      _sessionGroupCode = zoneGroupCode;
+      // The release cancelled the keepalive timers with the old session and
+      // a connect auth never schedules one itself, so re-arm the lane the way
+      // the visible transfer does; it schedules from the new expires_at.
+      _apiService.enableHeartbeat(
+        gpsProvider: () {
+          final pos = _gpsService.lastPosition;
+          if (pos == null) return null;
+          return (lat: pos.latitude, lon: pos.longitude);
+        },
+      );
+      // The scope stop above ended the periodic repeater refresh while the
+      // mode kept running. The new auth usually re-arms it through the gate
+      // change; this covers the case where the gate never flipped.
+      if (_isPassiveOrHybridModeRunning &&
+          !_scopeLifecycle.repeaterRefreshTimerRunning) {
+        _startScopeRepeaterRefreshForRunningMode();
+      }
+      debugLog('[ZONE] Group handoff complete: $oldZone -> $newZoneCode');
+      notifyListeners();
+      return SessionRecoveryResult.recovered;
+    } finally {
+      _apiQueueService.resumeScheduledUploads();
+      pingService.setSessionRecoveryInProgress(false);
+    }
+  }
+
+  /// Everything a new session id makes stale. One definition, two callers:
+  /// `onSessionIdChanged` (a connect auth that replaced a held id) and the
+  /// group handoff, whose keepPolicy release nulls the id first so that hook
+  /// never fires for it. A wire tag only re-derives under the session that
+  /// minted it, so the tagged TX still queued are dropped rather than
+  /// uploaded as claims the server would skip while reporting success; and
+  /// the server credits one deferred square per session id, so a square
+  /// reported under the old session is owed again under the new one.
+  Future<void> _onSessionReplaced() async {
+    await _apiQueueService.dropStaleTaggedItems();
+    _recentCoverage.clearDeferred();
+  }
+
   Future<bool> _checkSessionBeforeAction() async {
     _lastSessionCheckFailureReason = null;
+    // A group handoff has released the old session and not yet stored the
+    // new one for two round trips, and checkSessionValid answers no_session
+    // in that gap: a tap, a Start or a Siri/watch Start landing there was
+    // refused with "session has ended" for a session that was only moving.
+    // Wait for the handoff (bounded, as every other waiter on that slot is)
+    // and check the session it minted. The handoff never reaches this
+    // method while it holds the slot (its remap runs after the slot is
+    // cleared), so the wait cannot be on itself.
+    if (sessionCheckWaitsForHandoff(
+      groupHandoffOwnsSlot: _groupHandoffOwnsRecoverySlot,
+      recoveryInFlight: _liveSessionRecoveryInFlight != null,
+    )) {
+      debugLog('[SESSION] Session check waiting for the group handoff');
+      try {
+        await _waitForLiveSessionRecovery();
+      } catch (e) {
+        debugWarn('[SESSION] Handoff failed while the session check waited '
+            'for it, checking anyway: $e');
+      }
+    }
     final pos = _gpsService.lastPosition;
     final result = await _apiService.checkSessionValid(
       lat: pos?.latitude,
@@ -7185,6 +9354,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
           message: 'Something went wrong talking to the radio.');
     }
+    final lapsed = await _repeaterAdminSessionCheck('claim');
+    if (lapsed != null) return lapsed;
     final result = await _repeaterAdminApi.claim(session.target.hexId, proof);
     if (result.ok) {
       debugLog('[RADMIN] Claimed ${session.target.shortId}: '
@@ -7202,6 +9373,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return const RepeaterAdminResult.failed(
           RepeaterAdminFailureKind.noSession);
     }
+    final lapsed = await _repeaterAdminSessionCheck('unclaim');
+    if (lapsed != null) return lapsed;
     final result = await RepeaterClaimUnclaim(
       request: _repeaterAdminApi.unclaim,
       companionPublicKey: () => _devicePublicKey,
@@ -7239,6 +9412,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
           message: 'Something went wrong talking to the radio.');
     }
+    final lapsed = await _repeaterAdminSessionCheck('neighbours');
+    if (lapsed != null) return lapsed;
     final result =
         await _repeaterAdminApi.neighbours(session.target.hexId, table);
     if (result.ok) {
@@ -7246,6 +9421,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           'resolved=${result.resolved} unresolved=${result.unresolved}');
     }
     return result;
+  }
+
+  /// The /repeater door reports an expired session but never recovers it,
+  /// and an idle app's keepalive stops once the session lapses. So run the
+  /// same session check a Start or manual ping runs first
+  /// ([ApiService.checkSessionValid]), which recovers a lapsed session and
+  /// restarts its keepalive. Callers have already refused Offline Mode.
+  /// Returns null when the request may go ahead.
+  Future<RepeaterAdminResult?> _repeaterAdminSessionCheck(String action) async {
+    final pos = _gpsService.lastPosition;
+    final check = await _apiService.checkSessionValid(
+      lat: pos?.latitude,
+      lon: pos?.longitude,
+    );
+    if (check.isValid) return null;
+    debugWarn('[RADMIN] Session check failed before $action '
+        '(${check.reason}), not sending');
+    return RepeaterAdminResult.failed(check.reason == 'no_response'
+        ? RepeaterAdminFailureKind.network
+        : RepeaterAdminFailureKind.sessionExpired);
   }
 
   Future<String?> readRepeaterPassword(String hex) =>
@@ -7454,6 +9649,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Before the first await: GPS ticks overlap and disconnect() is not
     // re-entrant. Cleared in finally because disconnect() can throw mid-way.
     _airborneEndInFlight = true;
+    _scopeLifecycle.onEvent(ScopeStopEvent.airborne);
     try {
       final info = _airborneReleaseInfo();
       debugError('[GPS] Airborne detected (${info.detail}), ending session');
@@ -7497,6 +9693,79 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
+  /// Precise Location block at the front door. True when the connect must not
+  /// start. See `lib/services/precise_location_gate.dart`.
+  ///
+  /// Asks for precise location at most once per tap (iOS temporary full
+  /// accuracy, or the Android fine re-request through
+  /// [preciseLocationUpgradeRequester]) and only while the app is on screen.
+  /// A refusal raises [preciseLocationPromptDue] for the explanation dialog
+  /// and sets no connectionError, like the airborne block. Auto-reconnect
+  /// skips this: [_attemptReconnect] re-reads the accuracy itself, without a
+  /// prompt. Starts no GPS; an Android upgrade only restarts a stream that is
+  /// already running, so its fixes come in precise.
+  Future<bool> _refuseConnectIfImprecise(String entry) async {
+    if (_isAutoReconnecting) return false;
+    if (_preciseLocationCheckInFlight) {
+      debugLog('[CONN] Precise location check already in progress, '
+          'ignoring duplicate tap');
+      return true;
+    }
+    _preciseLocationCheckInFlight = true;
+    _connectRefusedForPreciseLocation = false;
+    var upgradeRequested = false;
+    try {
+      final upgrade = preciseLocationUpgradeRequester;
+      final allowed = await _preciseLocationGate.allowsConnect(
+        platform: PreciseLocationGate.currentPlatform,
+        simulatorEnabled: _gpsService.isSimulatorEnabled,
+        canPrompt: WidgetsBinding.instance.lifecycleState ==
+            AppLifecycleState.resumed,
+        requestFineLocation: upgrade == null
+            ? null
+            : () {
+                upgradeRequested = true;
+                return upgrade();
+              },
+        entry: entry,
+      );
+      if (_isDisposed) return true;
+      if (!allowed) {
+        _connectRefusedForPreciseLocation = true;
+        _preciseLocationPromptDue = true;
+        notifyListeners();
+        return true;
+      }
+      if (upgradeRequested && _gpsService.isWatching) {
+        debugLog('[GPS] Fine location granted, restarting the running '
+            'stream for precise fixes');
+        await restartGpsAfterPermission(keepTracking: true);
+      }
+      if (_isConnecting) {
+        debugLog('[APP] Connection started during the precise location '
+            'check, ignoring this tap');
+        return true;
+      }
+      return false;
+    } finally {
+      _preciseLocationCheckInFlight = false;
+    }
+  }
+
+  /// Ends an auto-reconnect whose location accuracy dropped to approximate
+  /// while the radio was away. Same shape as the airborne abandon.
+  void _abandonAutoReconnectForImpreciseLocation() {
+    debugError('[GPS] Location accuracy is reduced, abandoning '
+        'auto-reconnect');
+    if (!_autoPingWasEnabled) {
+      _playDisconnectAlert(_reconnectStartedAt ?? DateTime.now());
+    }
+    logError('Session ended: Precise Location is off, so your position is '
+        'too rough to map coverage.');
+    _preciseLocationPromptDue = true;
+    _abandonAutoReconnect();
+  }
+
   /// The finishing half of an auto-mode stop, with the radio still connected.
   ///
   /// Shared by the three paths that end a mode: the inline teardown in
@@ -7524,11 +9793,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop RX wardriving (flushes batches).
     _rxLogger?.stopWardriving(trigger: rxTrigger);
 
-    await BackgroundServiceManager.stopService();
+    // iOS's service runs per mode. Android's runs for the whole connection,
+    // and the next notify turns its notification back to Connected.
+    if (!BackgroundServiceManager.followsConnection) {
+      await BackgroundServiceManager.stopService();
+    }
 
     // Stop the countdowns, or "Next ping in Xs" keeps running after the stop.
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
+
+    // The mode is ending: the periodic scope-discovery repeater refresh
+    // (Passive or Hybrid only) has nothing left to run for.
+    _scopeLifecycle.stopRepeaterRefreshTimer();
 
     if (_preferences.offlineMode && !_modeSwitchOwnsOfflineSave) {
       await _saveOfflineSession();
@@ -7671,12 +9948,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // Stop TX echo tracking to prevent late timer callbacks
           _pingService!.stopEchoTracking();
           _rxLogger?.stopWardriving(trigger: 'mode_switch');
-          await BackgroundServiceManager.stopService();
+          // iOS only: Android's session service stays up across the switch.
+          if (!BackgroundServiceManager.followsConnection) {
+            await BackgroundServiceManager.stopService();
+          }
           // Stop countdown timers when switching modes
           _autoPingTimer.stop();
           _rxWindowTimer.stop();
           // Clear top-heard overlay on mode switch
           _clearOverlayState();
+          // Stop the scope-discovery periodic repeater refresh (Passive or
+          // Hybrid may not be the mode ending here); restarted below if the
+          // new mode is Passive or Hybrid.
+          _scopeLifecycle.stopRepeaterRefreshTimer();
           // Save offline session if offline mode is enabled
           if (_preferences.offlineMode) {
             await _saveOfflineSession();
@@ -7726,6 +10010,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _autoPingEnabled = true;
         _idleAutoStopReference = DateTime.now();
         _startLiveActivitySession(startedAt: sessionStartedAt);
+        if (isPassive || isHybrid) {
+          _startScopeRepeaterRefreshForRunningMode();
+        }
 
         // Start noise floor session for graph tracking. The label is the
         // enum's own name (active/passive/hybrid/targeted).
@@ -7747,17 +10034,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[HEARTBEAT] Enabled for ${mode.name} Mode');
         }
 
-        // Start background service for continuous operation
+        // Start iOS's per-mode service for continuous operation. Android's
+        // session service is already up for the connection (only
+        // _syncConnectionService starts it), so it only takes the mode's
+        // notification and wake lock.
         final n = androidNotificationContent(
           mode: mode,
           txCount: _pingStats.txCount,
           rxCount: _pingStats.rxCount,
           queueSize: _queueSize,
         );
-        await BackgroundServiceManager.startService(
-          title: n.title,
-          body: n.body,
-        );
+        if (BackgroundServiceManager.followsConnection) {
+          await BackgroundServiceManager.updateNotification(
+            title: n.title,
+            body: n.body,
+            keepAwake: _keepServiceAwake,
+          );
+        } else {
+          await BackgroundServiceManager.startService(
+            title: n.title,
+            body: n.body,
+            keepAwake: _keepServiceAwake,
+          );
+        }
       } finally {
         _startingDeferredHistory.clear();
         // Clear starting state on every path (session/cooldown/blocked early
@@ -7785,6 +10084,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxPings.clear();
     _discLogEntries.clear();
     _traceLogEntries.clear();
+    _scopeLog.clear();
     _deferredPingMarkers.clear();
     _lastDeferredMarkerLat = null;
     _lastDeferredMarkerLon = null;
@@ -7800,12 +10100,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxLogEntries.clear();
     _discLogEntries.clear();
     _traceLogEntries.clear();
+    _scopeLog.clear();
     _deferredPingMarkers.clear();
     _lastDeferredMarkerLat = null;
     _lastDeferredMarkerLon = null;
     _siriObservationRevision++;
     _errorLogEntries.clear();
+    _errorsSeen = _errorsLogged;
     _clearOverlayState();
+    _notifyMapNow();
+  }
+
+  /// Withdraw a discovery log entry whose request never went on the air
+  /// (the write failed after the entry was published).
+  void _removeDiscLogEntry(DiscLogEntry entry) {
+    final before = _discLogEntries.length;
+    _discLogEntries.removeWhere((e) => identical(e, entry));
+    if (_discLogEntries.length == before) return;
+    _siriObservationRevision++;
+    debugLog('[APP] Discovery log entry withdrawn: request was not sent');
     _notifyMapNow();
   }
 
@@ -7836,6 +10149,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _notifyMapNow();
   }
 
+  /// Add a scope request log entry (from a Passive/Hybrid Mode sweep).
+  /// Nothing here is on the map (Critical Rule 9), so this stays a plain
+  /// notify, never `_notifyMapNow`.
+  void _addScopeLogEntry(ScopeLogEntry entry) {
+    _scopeLog.add(entry);
+    debugLog('[SCOPES] Log entry added: outcome=${entry.outcome.name}');
+    // The status bar's Scopes chip: one per repeater that answered.
+    if (entry.outcome == ScopeLogOutcome.answered ||
+        entry.outcome == ScopeLogOutcome.withheldHourlyCap) {
+      _pingService?.recordScopeAnswer();
+    }
+    notifyListeners();
+  }
+
   /// Log a user-facing error message
   /// Set [autoSwitch] to false to log without navigating to error log tab
   void logError(String message,
@@ -7848,6 +10175,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_errorLogEntries.length > _maxErrorEntries) {
       _errorLogEntries.removeAt(0);
     }
+    _errorsLogged++;
+    // Already looking at the Errors tab: it is seen as it arrives.
+    if (_errorLogOnScreen) _errorsSeen = _errorsLogged;
     if (autoSwitch) {
       _requestErrorLogSwitch = true; // Auto-switch to error log
     }
@@ -7917,7 +10247,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _nearestZone = null;
       _lastZoneCheckPosition = null;
       _regionBorders = [];
-      _bordersLoadedForZone = null;
+      _borderLoader.forget();
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
     } else {
       // Stop auto-save timer when leaving offline mode
@@ -7937,6 +10267,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Switch from online to offline mode while connected
   Future<({bool success, String? error})> _switchToOfflineMode() async {
     debugLog('[APP] Hot-switching to offline mode while connected');
+    // Before the first await: the gate still reads open until Offline Mode
+    // is set at the end, so no new scope runner may start in between.
+    _scopeLifecycle.beginModeSwitch(ScopeStopEvent.offlineSwitch);
+    try {
+      return await _switchToOfflineModeSteps();
+    } finally {
+      _scopeLifecycle.endModeSwitch();
+    }
+  }
+
+  Future<({bool success, String? error})> _switchToOfflineModeSteps() async {
     _invalidateLiveSessionRecovery();
     await _waitForLiveSessionRecovery();
     _isSwitchingMode = true;
@@ -7991,7 +10332,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _nearestZone = null;
       _lastZoneCheckPosition = null;
       _regionBorders = [];
-      _bordersLoadedForZone = null;
+      _borderLoader.forget();
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
 
       // Smart Pinging has no server to ask in Offline Mode.
@@ -8012,21 +10353,62 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Switch from offline to online mode while connected
   Future<({bool success, String? error})> _switchToOnlineMode() async {
     debugLog('[APP] Hot-switching to online mode while connected');
+    // No scope runner starts while the switch runs; the new session's gate
+    // decides once it is over.
+    _scopeLifecycle.beginModeSwitch(ScopeStopEvent.onlineSwitch);
+    try {
+      return await _switchToOnlineModeSteps();
+    } finally {
+      _scopeLifecycle.endModeSwitch();
+    }
+  }
+
+  /// Asks the server whether this spot is in a zone without touching any
+  /// state, so a Go Online the zone check would refuse is refused before it
+  /// stops wardriving. Null means go ahead; otherwise the error to show. Only
+  /// a definite refusal blocks: an in-zone answer still goes through the full
+  /// zone check and auth below.
+  Future<String?> _goOnlineZonePreflight() async {
+    final position = await _pickAuthFix();
+    if (position == null) return null;
+    final result = await _apiService.checkZoneStatus(
+      lat: position.latitude,
+      lon: position.longitude,
+      accuracyMeters: position.accuracy,
+      appVersion: _appVersion,
+      radioFreq: liveRadioConfig ?? _lastRadioConfig,
+    );
+    if (result == null) {
+      debugError('[APP] Cannot switch to online mode: zone check got no '
+          'answer');
+      return _getErrorMessage('network_error', null);
+    }
+    if (result['success'] != true) {
+      final reason = result['reason'] as String?;
+      debugError('[APP] Cannot switch to online mode: zone check refused '
+          '($reason)');
+      return _getErrorMessage(reason, result['message'] as String?);
+    }
+    if (result['in_zone'] == false) {
+      debugError('[APP] Cannot switch to online mode: not in a zone');
+      return goOnlineOutsideZoneMessage(
+          result['nearest_zone'] as Map<String, dynamic>?,
+          isImperial: _preferences.isImperial);
+    }
+    return null;
+  }
+
+  Future<({bool success, String? error})> _switchToOnlineModeSteps() async {
     _isSwitchingMode = true;
     _modeSwitchError = null;
     var switchSucceeded = false;
     notifyListeners();
 
     try {
-      // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
-      await _stopAutoPingGracefully();
-
-      // 2. Save accumulated offline pings as session file. The only save on
-      //    this path: the stop above holds its own back so the file is written
-      //    once, here, after everything it flushed has landed in the queue.
-      await _saveOfflineSession();
-
-      // 4. Request new auth session
+      // Every check that can refuse the switch runs before anything stops.
+      // A refusal used to land after wardriving had stopped and the offline
+      // session had been closed, so each failed tap ended the drive and split
+      // it into another file.
       // Use "Anonymous" if renamed, otherwise real name
       final deviceName = _isAnonymousRenamed
           ? 'Anonymous'
@@ -8053,6 +10435,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       }
 
+      final zoneRefusal = await _goOnlineZonePreflight();
+      if (zoneRefusal != null) {
+        _modeSwitchError = zoneRefusal;
+        return (success: false, error: _modeSwitchError);
+      }
+
+      // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
+      await _stopAutoPingGracefully();
+
+      // 2. Save accumulated offline pings as session file. The only save on
+      //    this path: the stop above holds its own back so the file is written
+      //    once, here, after everything it flushed has landed in the queue.
+      await _saveOfflineSession();
+
       // Clear offline mode before zone check so checkZoneStatus() doesn't skip the API call
       _preferences = _preferences.copyWith(offlineMode: false);
       _apiQueueService.offlineMode = false;
@@ -8062,8 +10458,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       if (zoneCode == null) {
         debugError('[APP] Cannot switch to online mode: not in a zone');
-        _modeSwitchError =
-            'Could not determine your zone. Check GPS and internet connection.';
+        _modeSwitchError = _inZone == false
+            ? goOnlineOutsideZoneMessage(_nearestZone,
+                isImperial: _preferences.isImperial)
+            : 'Could not determine your zone. Check GPS and internet connection.';
         return (success: false, error: _modeSwitchError);
       }
 
@@ -8077,6 +10475,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _meshCoreConnection?.deviceInfo?.manufacturer ??
           'Unknown';
 
+      // The connect /auth's fix choice: the raw current fix is refused
+      // gps_inaccurate when it is coarse, and by now wardriving has stopped.
+      final authFix = await _pickAuthFix() ?? _currentPosition!;
+
       var result = await _apiService.requestAuth(
         reason: 'connect',
         publicKey: _devicePublicKey!,
@@ -8086,9 +10488,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         iataCode: zoneCode ?? _preferences.iataCode,
         model: modelString,
         radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-        lat: _currentPosition!.latitude,
-        lon: _currentPosition!.longitude,
-        accuracyMeters: _currentPosition!.accuracy,
+        lat: authFix.latitude,
+        lon: authFix.longitude,
+        accuracyMeters: authFix.accuracy,
       );
 
       // Check for maintenance mode
@@ -8159,9 +10561,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           iataCode: zoneCode ?? _preferences.iataCode,
           model: modelString,
           radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
-          lat: _currentPosition!.latitude,
-          lon: _currentPosition!.longitude,
-          accuracyMeters: _currentPosition!.accuracy,
+          lat: authFix.latitude,
+          lon: authFix.longitude,
+          accuracyMeters: authFix.accuracy,
         );
 
         if (registerResult == null) {
@@ -8194,6 +10596,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 5. Auth successful - update state
       switchSucceeded = true;
+      // Offline Mode is off for good now (the finally only rolls back a
+      // failed switch), so its auto-save stops here.
+      _stopOfflineAutoSaveTimer();
 
       // 6. Update regional channels from auth response
       final channels = result['channels'];
@@ -8207,6 +10612,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Track session zone for zone-to-zone transfer detection
       _sessionZoneCode = zoneCode;
+      _sessionGroupCode = zoneGroupCode;
 
       // Smart Pinging follows the new session and zone.
       _syncRecentCoverage();
@@ -8307,7 +10713,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get _offlineDeviceName => _isAnonymousRenamed
       ? 'Anonymous'
       : (_meshCoreConnection?.selfInfo?.name ??
-          connectedDeviceName?.replaceFirst('MeshCore-', ''));
+          connectedDeviceName?.replaceFirst('MeshCore-', '') ??
+          // A reconnect that gave up has already dropped the connection.
+          _displayDeviceName);
 
   /// Save accumulated offline pings to a session file
   Future<void> _saveOfflineSession() async {
@@ -8333,7 +10741,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       devicePublicKey: _devicePublicKey,
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
-      radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
+      // The remembered config covers a reconnect that gave up, which has
+      // already dropped the connection.
+      radioConfig: liveRadioConfig ?? _lastRadioConfig,
       deviceModel: _meshCoreConnection?.deviceModel?.manufacturer ??
           _meshCoreConnection?.deviceInfo?.manufacturer ??
           _manufacturerString,
@@ -8342,7 +10752,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     _offlineSessionService.finalizeCurrentSession();
     debugLog('[APP] Saved offline session with ${pings.length} pings');
-    _stopOfflineAutoSaveTimer();
+    // The auto-save keeps running: Offline Mode is still on, and the next
+    // connect or mode start in this stint needs it. It stops when Offline
+    // Mode is turned off.
     notifyListeners();
   }
 
@@ -8397,9 +10809,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     try {
-      final pings = (sessionData['pings'] as List<dynamic>)
-          .map((p) => Map<String, dynamic>.from(p as Map))
-          .toList();
+      final pings = withoutUnlabelledAltitude(
+          (sessionData['pings'] as List<dynamic>)
+              .map((p) => Map<String, dynamic>.from(p as Map))
+              .toList());
 
       if (pings.isEmpty) {
         debugLog('[APP] Session has no pings: $filename');
@@ -8616,11 +11029,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // lands the session is valid for the rest.
     await Future.delayed(const Duration(seconds: 2));
 
-    // 4. Upload pings in batches of 50, retrying session/transient errors.
-    const batchSize = 50;
-    var uploadedCount = 0;
-    final totalBatches = (pings.length + batchSize - 1) ~/ batchSize;
-
     // Accumulate the server's per-region placement summary across all batches so the uploaded
     // session can show where its pings landed (e.g. "DSA 88 · EMA 157 · too far 3"). Offline
     // uploads route each ping to its own region server-side; these come back per batch.
@@ -8649,58 +11057,87 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     const firstBatchBackoff = [2, 3, 4, 5, 6, 8, 10];
     const laterBatchBackoff = [2, 4];
 
-    for (var i = 0; i < pings.length; i += batchSize) {
-      final batchNum = (i ~/ batchSize) + 1;
-      onProgress?.call('Batch $batchNum/$totalBatches');
+    // 4. Strip SCOPES rows the upload auth cannot accept (ruling 6: the
+    //    door only closes when the key itself is absent, never on
+    //    `scope_discovery: false`, since the server accepts a verified
+    //    answer whatever the flag says), move every remaining SCOPES row
+    //    after every other row (DISC before SCOPES: the server records a
+    //    chunk's DISC-heard keys before it checks any SCOPES in it, but
+    //    refuses a SCOPES whose DISC only arrives in a LATER chunk), persist
+    //    that order BEFORE the first chunk is built, then upload in chunks
+    //    of 50, stopping at the first that does not succeed. Persisting
+    //    before chunking (not after, and not only when something was
+    //    stripped) is the point of `runOfflineChunkedUpload`: the
+    //    partial-upload cleanup below removes a PREFIX of the STORED rows
+    //    by uploaded count, so that prefix only lines up with what was
+    //    actually sent when the file already holds the same order that was
+    //    chunked.
+    final chunkedResult = await runOfflineChunkedUpload(
+      pings,
+      scopeDiscoveryOffered: effectiveAuth.containsKey('scope_discovery'),
+      batchSize: 50,
+      persistRows: (orderedRows) =>
+          _offlineSessionService.replacePings(filename, orderedRows),
+      uploadChunk: (chunk, chunkNumber, totalChunks) async {
+        onProgress?.call('Batch $chunkNumber/$totalChunks');
 
-      final batch = pings.skip(i).take(batchSize).toList();
-      final backoff = i == 0 ? firstBatchBackoff : laterBatchBackoff;
-
-      var result = await _apiService.uploadBatchWithSessionId(
-          batch, offlineSessionId,
-          onResponse: accumulatePlacement);
-
-      // Retry only session-propagation / transient errors. nonRetryable
-      // (data/zone/key) errors are NOT retried — we stop and preserve instead.
-      for (var retry = 0;
-          retry < backoff.length &&
-              (result == UploadResult.sessionError ||
-                  result == UploadResult.retryable);
-          retry++) {
-        final delay = backoff[retry];
-        final kind =
-            result == UploadResult.sessionError ? 'session' : 'transient';
-        debugLog(
-            '[OFFLINE] Batch $batchNum $kind error, retry ${retry + 1}/${backoff.length} after ${delay}s');
-        onProgress?.call('Batch $batchNum/$totalBatches (retry ${retry + 1})');
-        await Future.delayed(Duration(seconds: delay));
-        result = await _apiService.uploadBatchWithSessionId(
-            batch, offlineSessionId,
+        final backoff =
+            chunkNumber == 1 ? firstBatchBackoff : laterBatchBackoff;
+        var result = await _apiService.uploadBatchWithSessionId(
+            chunk, offlineSessionId,
             onResponse: accumulatePlacement);
-      }
 
-      if (result == UploadResult.success) {
-        uploadedCount += batch.length;
-        debugLog('[OFFLINE] Uploaded batch $batchNum: ${batch.length} pings');
-        _forwardOfflineBatchToCustomApi(
-          batch,
-          batchNum: batchNum,
-          publicKey: uploadPublicKey,
-          auth: effectiveAuth,
-        );
-        continue;
-      }
+        // Retry only session-propagation / transient errors. nonRetryable
+        // (data/zone/key) errors are NOT retried: we stop and preserve instead.
+        for (var retry = 0;
+            retry < backoff.length &&
+                (result == UploadResult.sessionError ||
+                    result == UploadResult.retryable);
+            retry++) {
+          final delay = backoff[retry];
+          final kind =
+              result == UploadResult.sessionError ? 'session' : 'transient';
+          debugLog(
+              '[OFFLINE] Batch $chunkNumber $kind error, retry ${retry + 1}/${backoff.length} after ${delay}s');
+          onProgress
+              ?.call('Batch $chunkNumber/$totalChunks (retry ${retry + 1})');
+          await Future.delayed(Duration(seconds: delay));
+          result = await _apiService.uploadBatchWithSessionId(
+              chunk, offlineSessionId,
+              onResponse: accumulatePlacement);
+        }
 
-      // Any non-success after retries: STOP and preserve the remaining pings.
-      // We never discard un-uploaded data — it stays in the file for a later retry.
-      final stopReason = result == UploadResult.sessionError
-          ? 'session error'
-          : result == UploadResult.nonRetryable
-              ? 'data/zone error'
-              : 'network error';
-      debugWarn(
-          '[OFFLINE] Batch $batchNum stopped ($stopReason) — preserving remaining pings');
-      break;
+        if (result == UploadResult.success) {
+          debugLog(
+              '[OFFLINE] Uploaded batch $chunkNumber: ${chunk.length} pings');
+          return true;
+        }
+
+        // Any non-success after retries: STOP and preserve the remaining pings.
+        // We never discard un-uploaded data, it stays in the file for a later retry.
+        final stopReason = result == UploadResult.sessionError
+            ? 'session error'
+            : result == UploadResult.nonRetryable
+                ? 'data/zone error'
+                : 'network error';
+        debugWarn(
+            '[OFFLINE] Batch $chunkNumber stopped ($stopReason), preserving remaining pings');
+        return false;
+      },
+      forwardChunk: (chunk, chunkNumber) => _forwardOfflineBatchToCustomApi(
+        chunk,
+        batchNum: chunkNumber,
+        publicKey: uploadPublicKey,
+        auth: effectiveAuth!,
+      ),
+    );
+
+    final orderedPings = chunkedResult.orderedRows;
+    final uploadedCount = chunkedResult.uploadedCount;
+    if (chunkedResult.removedScopesCount > 0) {
+      debugLog(
+          '[OFFLINE] Stripped ${chunkedResult.removedScopesCount} SCOPES '
+          'item(s): the upload auth did not offer scope discovery');
     }
 
     // Delay after posting before disconnect
@@ -8717,7 +11154,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // 6. Clean up session based on results — prune ONLY successfully-uploaded
     //    pings; everything not uploaded is preserved in the file for a later retry.
-    final remainingPings = pings.length - uploadedCount;
+    final remainingPings = orderedPings.length - uploadedCount;
 
     if (remainingPings <= 0) {
       await _offlineSessionService.markAsUploaded(
@@ -8796,6 +11233,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         'externalAntenna=${preferences.externalAntenna}, autoPowerSet=${preferences.autoPowerSet}');
 
     _preferences = preferences;
+    _scopeLifecycle.onGateChanged(_scopeGateInputs,
+        passiveOrHybridRunning: _isPassiveOrHybridModeRunning,
+        startRepeaterRefresh: _startScopeRepeaterRefreshForRunningMode);
 
     // Update user-original baseline when user changes zone-overridable settings
     if (_userOriginalAutoPingInterval != null) {
@@ -8925,13 +11365,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// forever, and the release call can fail, leaving hasApiSession stale.
   void _syncRecentCoverage({bool sessionEnded = false}) {
     _recentCoverage.configure(
-      zone: zoneCode,
+      // The region's site, or the group's: the same tiles the overlay paints.
+      zone: coverageHostCode,
       gridSize: _preferences.coverageGridSize,
       days: smartPingDays,
       radioKey: radioFilterKey,
+      floodOnly: smartPingFloodOnly,
+      // A group handoff has no session for its two round trips; the lookup
+      // keeps its tiles, marks and banked ping through that gap.
       enabled: !sessionEnded &&
           smartPingEnabled &&
-          hasApiSession &&
+          (hasApiSession || _groupHandoffOwnsRecoverySlot) &&
           !_preferences.offlineMode,
     );
     final p = _currentPosition;
@@ -9000,6 +11444,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _preferences = _preferences.copyWith(coverageOverlayOpacity: clamped);
     debugLog(
         '[MAP] Coverage overlay opacity set to ${clamped.toStringAsFixed(2)}');
+    notifyListeners();
+    _savePreferences();
+  }
+
+  /// Show or hide the dashed lines from a selected repeater to the coverage
+  /// squares that heard it, and persist. Like the opacity above this must NOT
+  /// bump mapRevision: nothing in MapWidget.build() reads it. MapWidget redraws
+  /// or clears the lines of the selected repeater from its direct provider
+  /// listener (`_onRepeaterCoverageLinesNotify`), so the change shows straight
+  /// away, even while the Settings tab is in front of the map.
+  void setShowRepeaterCoverageLines(bool value) {
+    _preferences = _preferences.copyWith(showRepeaterCoverageLines: value);
+    debugLog('[MAP] Repeater coverage lines set to $value');
     notifyListeners();
     _savePreferences();
   }
@@ -9217,7 +11674,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'bad_session':
         return 'Invalid session. Please reconnect.';
       case 'outofdate':
-        return 'App version outdated. Please update to the latest version.';
+        return 'This version of the app is out of date, update the MeshMapper '
+            'app on your phone to keep wardriving.';
       case 'session_invalid':
         return 'Session is invalid. Please reconnect.';
       case 'session_revoked':
@@ -9244,6 +11702,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// This may trigger auto-disconnect
   Future<void> handleSessionError(String? reason, String? message,
       {String? subReason}) async {
+    // A teardown is already running. Its last upload can be answered with a
+    // session error, and acting on that answer would start a second
+    // disconnect inside the first and pop the error tab over it.
+    if (_userRequestedDisconnect &&
+        _connectionStep == ConnectionStep.disconnecting) {
+      debugLog('[SESSION] $reason during disconnect, already tearing down');
+      return;
+    }
+
     final userMessage = _getErrorMessage(reason, message, subReason: subReason);
     final isStationaryRevoke =
         reason == 'session_revoked' && subReason == 'stationary';
@@ -9421,6 +11888,39 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _maintenanceCheckTimer = null;
   }
 
+  /// How long the connect /auth waits for a fix the server will accept.
+  static const Duration _authFixWait = Duration(seconds: 4);
+
+  /// The fix the connect /auth sends. The current one when it is accurate
+  /// enough (50 m), else the newest accurate fix from the last 60 s, else
+  /// the first accurate one within [_authFixWait]. Falls back to the current
+  /// fix, so the server answers exactly as it did before this check existed.
+  Future<Position?> _pickAuthFix() async {
+    final current = _currentPosition;
+    if (current != null && GpsService.isAccurateForZoneCheck(current)) {
+      return current;
+    }
+    final currentText = current == null
+        ? 'no fix'
+        : '${current.accuracy.toStringAsFixed(0)}m fix';
+    final recent = _gpsService.bestRecentZoneCheckFix();
+    if (recent != null) {
+      debugLog('[GPS] [AUTH] Current $currentText too coarse, using a recent '
+          '${recent.accuracy.toStringAsFixed(1)}m fix');
+      return recent;
+    }
+    debugLog('[GPS] [AUTH] Current $currentText too coarse, waiting up to '
+        '${_authFixWait.inSeconds}s for a more accurate one');
+    final waited = await _gpsService.waitForZoneCheckFix(_authFixWait);
+    if (waited != null) {
+      debugLog('[GPS] [AUTH] Got a ${waited.accuracy.toStringAsFixed(1)}m fix');
+      return waited;
+    }
+    debugWarn('[GPS] [AUTH] No accurate fix within '
+        '${_authFixWait.inSeconds}s, sending the current $currentText');
+    return current;
+  }
+
   // ============================================
   // GPS Validation
   // ============================================
@@ -9511,6 +12011,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Single timer: ticks every 1s, retries at 0
     _zoneCheckCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      // Held while GPS is off in the background with no radio: the retry
+      // would read location. The countdown picks up where it was once the app
+      // is back on screen and GPS runs again.
+      if (_gpsStoppedByPolicy) return;
       _zoneCheckRetryCountdown--;
       notifyListeners();
       if (_zoneCheckRetryCountdown <= 0) {
@@ -9533,7 +12037,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneCheckError = null;
     _zoneCheckErrorReason = null;
     _zoneCheckRetryCountdown = 0;
+    _zoneCheckNetworkFailures = 0;
     // Don't notifyListeners here — caller will do it or checkZoneStatus will
+  }
+
+  /// A zone check was held back because no fix is accurate enough yet.
+  /// Before the first zone result this shows the existing Weak GPS Signal
+  /// state and arms its 10 s retry (whose fresh read is what finds a better
+  /// fix on a phone standing still). Once a zone result is known it stays,
+  /// and nothing is surfaced. Re-arming is skipped while that wait is
+  /// already counting down, so a stream of coarse fixes cannot reset it.
+  void _noteZoneCheckWaitingForGps(Position position) {
+    if (_inZone != null) return;
+    // A no-answer retry keeps its backed-off slot: replacing it with this
+    // 10 s wait made a coarse fix cut the backoff short.
+    if (_zoneCheckCountdownTimer != null &&
+        (_zoneCheckErrorReason == 'gps_inaccurate' ||
+            _zoneCheckErrorReason == 'network')) {
+      return;
+    }
+    final accuracy = position.accuracy.toStringAsFixed(0);
+    final max = GpsService.maxAccuracyMetersForZoneCheck.toStringAsFixed(0);
+    debugLog('[GPS] Waiting for a more accurate fix before the zone check '
+        '(${accuracy}m, max ${max}m)');
+    unawaited(_refreshLocationAccuracyReduced());
+    _scheduleZoneCheckRetry(
+      seconds: 10,
+      error: 'GPS accuracy is ${accuracy}m (max ${max}m). '
+          'Waiting for a more accurate fix.',
+      reason: 'gps_inaccurate',
+    );
   }
 
   /// Check zone status via API
@@ -9569,15 +12102,51 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // or overwritten by _scheduleZoneCheckRetry on failure.
 
     try {
+      // Never send a fix the server will refuse for accuracy. Use the current
+      // fix when it is good enough, else the newest good one from the last
+      // 60 s, else one fresh hardware read (the stream is quiet while the
+      // phone stands still, which is how a retry finds a better fix).
+      final current = _currentPosition!;
+      var position = GpsService.isAccurateForZoneCheck(current)
+          ? current
+          : _gpsService.bestRecentZoneCheckFix();
+      if (position == null) {
+        if (_gpsStoppedByPolicy) {
+          // GPS is off in the background with no radio, and a fresh read
+          // would use location anyway. Once GPS runs again, its restart and
+          // its fixes recheck the zone.
+          debugLog('[GPS] Zone check skipped: GPS is off in the background');
+          return;
+        }
+        final fresh = await _gpsService.getFreshPosition();
+        if (fresh != null && GpsService.isAccurateForZoneCheck(fresh)) {
+          position = fresh;
+        }
+      }
+      if (position == null) {
+        debugLog('[GPS] Zone check held: fix accuracy '
+            '${current.accuracy.toStringAsFixed(0)}m (max '
+            '${GpsService.maxAccuracyMetersForZoneCheck.toStringAsFixed(0)}m), '
+            'waiting for a more accurate fix');
+        _noteZoneCheckWaitingForGps(current);
+        return;
+      }
+      if (!identical(position, current)) {
+        debugLog('[GPS] Zone check using a recent accurate fix '
+            '(${position.accuracy.toStringAsFixed(1)}m) instead of the current '
+            '${current.accuracy.toStringAsFixed(0)}m one');
+      }
+
       debugLog(
-          '[GEOFENCE] Making API call to check zone at ${_currentPosition!.latitude.toStringAsFixed(5)}, '
-          '${_currentPosition!.longitude.toStringAsFixed(5)} (accuracy: ${_currentPosition!.accuracy.toStringAsFixed(1)}m)');
+          '[GEOFENCE] Making API call to check zone at ${position.latitude.toStringAsFixed(5)}, '
+          '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
 
       final result = await _apiService.checkZoneStatus(
-        lat: _currentPosition!.latitude,
-        lon: _currentPosition!.longitude,
-        accuracyMeters: _currentPosition!.accuracy,
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyMeters: position.accuracy,
         appVersion: _appVersion,
+        radioFreq: liveRadioConfig ?? _lastRadioConfig,
       );
 
       debugLog(
@@ -9586,10 +12155,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (result == null) {
         // Update position even on failure to prevent zone check flooding
         // (without this, every GPS update re-triggers a zone check while driving)
-        _lastZoneCheckPosition = _currentPosition;
-        debugError('[GEOFENCE] Zone status check failed: no response from API');
+        _lastZoneCheckPosition = position;
+        final retrySeconds =
+            zoneCheckNetworkRetrySeconds(++_zoneCheckNetworkFailures);
+        debugError('[GEOFENCE] Zone status check failed: no response from API '
+            '(retry in ${retrySeconds}s)');
         _scheduleZoneCheckRetry(
-          seconds: 5,
+          seconds: retrySeconds,
           error: 'Verify your internet connection',
           reason: 'network',
         );
@@ -9617,7 +12189,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Clear maintenance if normal response
       _clearMaintenanceMode();
 
-      _lastZoneCheckPosition = _currentPosition;
+      _lastZoneCheckPosition = position;
 
       final success = result['success'] == true;
       if (!success) {
@@ -9627,7 +12199,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugError(
             '[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
 
-        if (reason == 'gps_inaccurate') {
+        if (reason == 'gps_inaccurate' && _inZone != null) {
+          // A zone result is already known and stands. A refused weak fix
+          // says nothing about the zone, so it must not replace that result
+          // with "GPS Unavailable"; the next accurate fix rechecks.
+          debugWarn('[GEOFENCE] gps_inaccurate on a recheck, keeping the '
+              'last zone result (inZone=$_inZone)');
+        } else if (reason == 'gps_inaccurate') {
           logError('Weak GPS Signal\n$message', autoSwitch: false);
           // Schedule a retry so we don't depend solely on the GPS stream firing
           // again — on first launch the stream may stall on a low-accuracy fix
@@ -9669,22 +12247,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final newZoneCode = newZone?['code'] as String? ?? '';
         final newZoneName = newZone?['name'] ?? 'Unknown';
 
-        // Detect zone-to-zone transition during active session
+        // Detect zone-to-zone transition during active session. A move to
+        // another member of the session's own region group is handed off
+        // without the user seeing it; anything else is the visible transfer.
+        final move = classifyZoneMove(
+          sessionZone: _sessionZoneCode,
+          sessionGroup: _sessionGroupCode,
+          newZone: newZoneCode,
+          newGroup: parseZoneGroup(newZone)?.code,
+        );
         if (isConnected &&
             !_preferences.offlineMode &&
-            _sessionZoneCode != null &&
-            newZoneCode.isNotEmpty &&
-            newZoneCode != _sessionZoneCode &&
+            move != ZoneMove.none &&
             !_isInZoneGracePeriod &&
             !_isZoneTransferInProgress) {
+          final previousGroup = zoneGroupCode;
           _currentZone = newZone;
+          _noteZoneGroupChange(previousGroup);
+          _invalidateRepeatersForContext();
           _nearestZone = null;
           _syncRecentCoverage();
+          if (move == ZoneMove.hiddenHandoff) {
+            // A later tick while the handoff runs still reads the old
+            // session zone, so it lands here again and must not start a
+            // second swap; the running one owns the move.
+            if (_liveSessionRecoveryInFlight != null) {
+              debugLog('[ZONE] Group handoff deferred: a session swap is '
+                  'already running');
+              return;
+            }
+            unawaited(_startGroupHandoff(newZoneCode, newZoneName));
+            return;
+          }
           await _handleZoneTransfer(newZoneCode, newZoneName);
           return;
         }
 
+        final previousGroup = zoneGroupCode;
         _currentZone = newZone;
+        _noteZoneGroupChange(previousGroup);
+        _invalidateRepeatersForContext();
         _nearestZone = null;
         // The lookup is keyed on the zone, so re-sync whenever it moves.
         _syncRecentCoverage();
@@ -9703,11 +12305,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (newZoneCode.isNotEmpty) {
           _fetchRepeatersForZone(
               newZoneCode); // fire-and-forget — don't block zone check
-          _fetchBorderPolygons(newZoneCode); // fire-and-forget
+          _fetchBorderPolygons(newZoneCode,
+              fix: position); // fire-and-forget
         }
       } else {
         _regionBorders = [];
-        _bordersLoadedForZone = null;
+        _borderLoader.forget();
         _currentZone = null;
         _syncRecentCoverage();
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
@@ -9718,11 +12321,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[GEOFENCE] Outside zone. Nearest: $nearestName (${distanceKm}km away)');
 
         // Clear repeaters when exiting zone
-        _repeaters = [];
-        _repeaterConflictHexIds = const {};
-        _siriRepeaterCatalogRevision++;
-        _repeatersLoaded = false;
-        _repeatersLoadedForIata = null;
+        _invalidateRepeatersForContext();
       }
     } catch (e) {
       debugError('[GEOFENCE] Zone status check error: $e');
@@ -9753,6 +12352,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog(
           '[CAPACITY] Updated slots_max from auth: ${authResult['slots_max']}');
     }
+    // /auth resolves flood for the live radio preset, so it outranks a
+    // /status answer that may have used a stale cached preset.
+    if (authResult.containsKey('flood_disabled')) {
+      _currentZone!['flood_disabled'] = authResult['flood_disabled'] == true;
+      debugLog('[CAPACITY] Updated flood_disabled from auth: '
+          '${authResult['flood_disabled']}');
+    }
 
     // Sync at_capacity with tx_allowed
     final authTxAllowed = authResult['tx_allowed'] == true;
@@ -9766,8 +12372,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // If auth says TX allowed and we have slot data but server didn't provide updated count,
-    // decrement by 1 (we just took a slot)
-    if (authTxAllowed && !authResult.containsKey('slots_available')) {
+    // decrement by 1 (we just took a slot). A reused session took none.
+    if (authTookNewSlot(authResult)) {
       final available = _currentZone!['slots_available'] as int?;
       if (available != null && available > 0) {
         _currentZone!['slots_available'] = available - 1;
@@ -9838,6 +12444,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _autoPingEnabled = false;
       _resetIdleAutoStop();
       await _pingService?.forceDisableAutoPing();
+      // This disables the mode without going through the normal stop
+      // (_finishAutoPingStop), so the periodic scope-discovery repeater
+      // refresh timer needs its own stop here too.
+      _scopeLifecycle.stopRepeaterRefreshTimer();
       debugLog('[ZONE GRACE] Auto-ping paused');
     }
 
@@ -9853,8 +12463,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Cancel idle disconnect timer
     _cancelIdleDisconnectTimer();
 
-    // Stop background service
-    await BackgroundServiceManager.stopService();
+    // Stop iOS's per-mode service. Android's session service stays up: the
+    // radio is still connected, and its notification reads Outside zone.
+    if (!BackgroundServiceManager.followsConnection) {
+      await BackgroundServiceManager.stopService();
+    }
 
     // Clear API queue — items have gap-GPS coords that would be rejected again
     await _apiQueueService.clearOnDisconnect();
@@ -10060,6 +12673,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     final oldZoneCode = _sessionZoneCode ?? 'unknown';
     _isZoneTransferInProgress = true;
+    _scopeLifecycle.onEvent(ScopeStopEvent.zoneTransfer);
     _zoneTransferFrom = oldZoneCode;
     _zoneTransferTo = newZoneCode;
     _invalidateLiveSessionRecovery();
@@ -10106,6 +12720,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           await _apiService.requestAuth(
             reason: 'disconnect',
             publicKey: _devicePublicKey!,
+            extras: const {'disconnect_cause': 'zone_transfer'},
           );
           debugLog('[ZONE] Old session released');
         } catch (e) {
@@ -10235,6 +12850,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 11. Auth succeeded — update session zone code
       _sessionZoneCode = newZoneCode;
+      _sessionGroupCode = zoneGroupCode;
       debugLog('[ZONE] Auth succeeded for zone $newZoneCode');
 
       if (result['type'] != null) {
@@ -10346,13 +12962,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // 17. Fetch repeaters for the new zone
-      _repeatersLoaded = false;
-      _repeatersLoadedForIata = null;
+      _invalidateRepeatersForContext();
       await _fetchRepeatersForZone(newZoneCode);
 
-      // Fetch updated boundary polygons for the new zone
-      _bordersLoadedForZone = null;
-      _regionBorders = [];
+      // Boundary polygons for the new zone. A context or hash the loader
+      // already holds keeps its borders (or comes from the cache); anything
+      // else clears them just before the request.
       _fetchBorderPolygons(newZoneCode); // fire-and-forget
 
       // 18. Re-enable heartbeat
@@ -10418,101 +13033,366 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await disconnect();
   }
 
-  /// Fetch repeaters for a zone (called when zone is discovered)
-  /// Only fetches once per IATA code to avoid redundant network requests
-  Future<void> _fetchRepeatersForZone(String iata) async {
-    // Skip if already loaded for this IATA
-    if (_repeatersLoaded && _repeatersLoadedForIata == iata) {
-      debugLog('[MAP] Repeaters already loaded for zone: $iata');
+  /// Ruling 10: the connect-time, mode-start and periodic repeater refresh
+  /// for scope discovery. A list that lands after the context (the zone, or
+  /// its group) or the radio preset moved is dropped. Only one refresh runs
+  /// at a time; a call while one is already in flight is a no-op.
+  ///
+  /// The fetch goes to the member's site ([iata]); the list is keyed on
+  /// [_repeaterContextKey], so a move between members of one group neither
+  /// discards an in-flight answer nor reads as a new zone for the map.
+  Future<void> _refreshRepeatersForScopes(String iata) async {
+    final key = _repeaterContextKey;
+    if (key == null) return;
+    if (_scopeRepeaterRefreshInFlight) {
+      debugLog('[SCOPES] Repeater list refresh for zone $iata skipped: '
+          'one is already in flight');
       return;
     }
+    _scopeRepeaterRefreshInFlight = true;
+    try {
+      debugLog('[SCOPES] Refreshing the repeater list for zone $iata');
+      final preset = radioFilterKey;
+      final fetched = await _scopeLifecycle.resultIfStillCurrent(
+        fetch: _apiService.fetchRepeaters(iata),
+        zone: key,
+        preset: preset,
+        currentZone: () => _repeaterContextKey,
+        currentPreset: () => radioFilterKey,
+      );
+      if (_isDisposed) return;
+      final refreshedState = _repeaterListState.afterFetch(
+        fetched: fetched,
+        requestedZone: key,
+        requestedPreset: preset,
+        currentZone: _repeaterContextKey,
+        currentPreset: radioFilterKey,
+        now: DateTime.now(),
+      );
+      if (identical(refreshedState, _repeaterListState)) return;
+      final refreshed = refreshedState.repeaters;
+      // Wanted for its scope stamps: when nothing the map draws moved, the
+      // map is not rebuilt for it (Rule 9).
+      final mapChanged = !_repeatersLoaded ||
+          _repeatersLoadedForIata != key ||
+          scopeRefreshChangesMap(_repeaters, refreshed);
+      _repeaterListState = refreshedState;
+      _repeaterConflictHexIds = rcConflictHexIds(_repeaters);
+      _siriRepeaterCatalogRevision++;
+      debugLog('[SCOPES] Repeater list refreshed (${_repeaters.length}'
+          '${mapChanged ? '' : ', nothing on the map changed'})');
+      if (mapChanged) {
+        _notifyMapNow();
+      } else {
+        notifyListeners();
+      }
+    } finally {
+      _scopeRepeaterRefreshInFlight = false;
+    }
+  }
+
+  /// Passive or Hybrid mode just started: refreshes the repeater list at
+  /// once when it is already older than [scopeListRefreshOnStartAge]
+  /// (rather than waiting for the connect-time refresh or the first
+  /// periodic tick to catch it), then arms the periodic refresh
+  /// ([scopeListRefreshPeriod]) for as long as the mode keeps running.
+  /// Both are gated on [scopeDiscoveryActive] (gate open, not offline,
+  /// firmware at or above the floor), so a user without scope discovery
+  /// sees no change in traffic. The timer itself is stopped wherever the
+  /// mode stops or the connection goes (`toggleAutoPing`'s mode switch,
+  /// `_finishAutoPingStop`, and every `ScopeLifecycle` stop event).
+  void _startScopeRepeaterRefreshForRunningMode() {
+    final plan = scopeModeStartRefreshPlan(
+        active: scopeDiscoveryActive,
+        zone: zoneCode,
+        loadedAt: _repeatersLoadedAt,
+        now: DateTime.now());
+    if (!plan.armTimer) return;
+    if (plan.refreshNow) {
+      debugLog('[SCOPES] Repeater list refresh on mode start (older than '
+          '${scopeListRefreshOnStartAge.inMinutes}m)');
+      unawaited(_refreshRepeatersForScopes(zoneCode!));
+    }
+    _scopeLifecycle.startRepeaterRefreshTimer(scopeListRefreshPeriod, () {
+      if (!scopePeriodicRefreshShouldRun(
+          active: scopeDiscoveryActive,
+          passiveOrHybridRunning: _isPassiveOrHybridModeRunning,
+          zone: zoneCode)) {
+        return;
+      }
+      debugLog('[SCOPES] Periodic repeater list refresh '
+          '(${scopeListRefreshPeriod.inMinutes}m)');
+      unawaited(_refreshRepeatersForScopes(zoneCode!));
+    });
+  }
+
+  /// Whether Passive or Hybrid is the mode currently running: the two modes
+  /// the scope-discovery repeater refresh (mode-start check, periodic
+  /// timer, gate-reopen re-arm) exists for.
+  bool get _isPassiveOrHybridModeRunning =>
+      _autoPingEnabled &&
+      (_autoMode == AutoMode.passive || _autoMode == AutoMode.hybrid);
+
+  /// Builds one sweep's scope runner, or null when scope discovery is not
+  /// active. Handed to PingService as its factory.
+  ScopeRunner? _buildScopeRunner(
+      {required DateTime hardStop, required ScopeCancelToken cancel}) {
+    final connection = _meshCoreConnection;
+    return _scopeLifecycle.buildRunner(
+      gate: _scopeGateInputs,
+      connection: connection,
+      deviceKey: _devicePublicKey ?? _apiService.sessionId,
+      create: (deviceKey, pendingRestores, knownNonContacts) => ScopeRunner(
+        radio: MeshCoreScopeRadio(connection!),
+        cancel: cancel,
+        hardStop: hardStop,
+        refreshDays: () => scopeRefreshDays,
+        deviceKey: () =>
+            _devicePublicKey ?? _apiService.sessionId ?? deviceKey,
+        sessionId: () => _apiService.sessionId,
+        queueGeneration: () => _apiQueueService.generation,
+        serverInfo: _scopeServerInfoFor,
+        cache: _scopeQueryCache,
+        budget: _scopeHourlyBudget,
+        enqueue: (answer, ctx) => _apiQueueService.enqueueScopes(
+          publicKeyHex: answer.keyHex,
+          scopes: answer.scopes,
+          lat: answer.lat,
+          lon: answer.lon,
+          timestamp: answer.timestampSec,
+          expectedGeneration: ctx.queueGeneration,
+          radioFreq: liveRadioConfig,
+        ),
+        onCacheStamped: () => unawaited(_scopeCacheWriter.schedule()),
+        nowSec: () => DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        currentPosition: () {
+          final p = _currentPosition;
+          return p == null ? null : (lat: p.latitude, lon: p.longitude);
+        },
+        stillWanted: _scopeStillWanted,
+        onActiveChanged: _scopeLifecycle.setRequestActive,
+        onLogged: _addScopeLogEntry,
+        pendingRestores: pendingRestores,
+        knownNonContacts: knownNonContacts,
+        cannotAskNonContacts: () => connection.scopeCannotAskNonContacts,
+      ),
+    );
+  }
+
+  /// Mode on, gate active, not airborne, not mid mode switch, zone transfer
+  /// or reconnect.
+  bool _scopeStillWanted() {
+    final ping = _pingService;
+    return ping != null &&
+        isConnected &&
+        ping.autoPingEnabled &&
+        (ping.isPassiveMode || ping.isHybridMode) &&
+        scopeDiscoveryActive &&
+        !_gpsService.isAirborne &&
+        !_scopeLifecycle.modeSwitching &&
+        !_isZoneTransferInProgress &&
+        !_isAutoReconnecting;
+  }
+
+  ({bool onList, int? checkedAt}) _scopeServerInfoFor(String keyHex) {
+    if (!identical(_scopeServerInfoSource, _repeaters)) {
+      _scopeServerInfo = scopeServerInfoMap(_repeaters);
+      _scopeServerInfoSource = _repeaters;
+    }
+    return scopeServerInfoFor(_scopeServerInfo, keyHex);
+  }
+
+  Future<void> _loadScopeDiscoveryState() async {
+    final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    Map<String, dynamic>? cacheJson;
+    Map<String, dynamic>? budgetJson;
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box != null) {
+      try {
+        cacheJson = decodeScopeJsonMap(box.get(_scopeQueryCacheKey));
+        budgetJson = decodeScopeJsonMap(box.get(_scopeHourBudgetKey));
+      } catch (e) {
+        debugError('[SCOPES] Failed to load scope state: $e');
+      }
+    }
+    _scopeQueryCache = ScopeQueryCache.fromJson(cacheJson)
+      ..prune(nowSec: nowSec, refreshDays: scopeRefreshDays);
+    _scopeHourlyBudget = ScopeHourlyBudget.fromJson(budgetJson,
+        save: _saveScopeHourBudget, nowSec: nowSec);
+  }
+
+  /// The budget's writer. Throws on failure, so the reservation reads as
+  /// not saved and its answer is dropped.
+  Future<void> _saveScopeHourBudget(Map<String, dynamic> json) async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) throw StateError('preferences box unavailable');
+    await box.put(_scopeHourBudgetKey, jsonEncode(json));
+    await box.flush();
+  }
+
+  Future<void> _saveScopeQueryCache() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) throw StateError('preferences box unavailable');
+    await box.put(_scopeQueryCacheKey, jsonEncode(_scopeQueryCache.toJson()));
+    await box.flush();
+  }
+
+  /// Drop a list as soon as its context (the region, or its group) or preset
+  /// ceases to be valid. Same-context failures leave the existing list
+  /// untouched.
+  void _invalidateRepeatersForContext() {
+    final retained =
+        _repeaterListState.forContext(_repeaterContextKey, radioFilterKey);
+    if (identical(retained, _repeaterListState)) return;
+    _repeaterListState = retained;
+    _repeaterConflictHexIds = const {};
+    _siriRepeaterCatalogRevision++;
+    _notifyMapNow();
+  }
+
+  /// Fetch repeaters when a zone is discovered, including before connection.
+  ///
+  /// The fetch goes to the member's site ([iata], which already answers for
+  /// the whole group); the list is keyed on [_repeaterContextKey], so a move
+  /// between members of one group finds the list already loaded.
+  Future<void> _fetchRepeatersForZone(String iata) async {
+    if (_isDisposed || zoneCode != iata) return;
+    final key = _repeaterContextKey;
+    if (key == null) return;
+    _invalidateRepeatersForContext();
+    if (_repeatersLoaded && _repeatersLoadedForIata == key) return;
+    final preset = radioFilterKey;
+    final request = (key, preset);
+    if (!_repeaterLoadsInFlight.add(request)) return;
 
     debugLog('[MAP] Fetching repeaters for zone: $iata');
     try {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
-      if (fetchedRepeaters.isNotEmpty) {
-        _repeaters = rcComputeExclusions(fetchedRepeaters);
+      if (_isDisposed) return;
+      final refreshed = _repeaterListState.afterFetch(
+        fetched: fetchedRepeaters,
+        requestedZone: key,
+        requestedPreset: preset,
+        currentZone: _repeaterContextKey,
+        currentPreset: radioFilterKey,
+        now: DateTime.now(),
+      );
+      if (!identical(refreshed, _repeaterListState)) {
+        _repeaterListState = refreshed;
         _repeaterConflictHexIds = rcConflictHexIds(_repeaters);
         _siriRepeaterCatalogRevision++;
-        _repeatersLoaded = true;
-        _repeatersLoadedForIata = iata;
         debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
         _notifyMapNow();
-      } else {
-        debugWarn(
-            '[MAP] No repeaters returned for zone $iata — will retry on next zone check');
+      } else if (fetchedRepeaters.isEmpty) {
+        debugWarn('[MAP] No repeaters returned for zone $iata; '
+            'will retry on next zone check');
       }
     } catch (e) {
       debugError('[MAP] Failed to fetch repeaters: $e');
+    } finally {
+      _repeaterLoadsInFlight.remove(request);
     }
   }
 
   /// Fetch regional boundary polygons for the current zone.
-  /// Called after a successful zone check; idempotent per IATA so the
-  /// /border endpoint is only hit once per zone transition.
-  Future<void> _fetchBorderPolygons(String iata) async {
-    if (_bordersLoadedForZone == iata) return;
-    if (_bordersFetchInProgress) return;
-    if (_currentPosition == null) return;
+  /// Called after every successful zone check; [BorderLoader] decides
+  /// whether `/border` is actually asked (once per context and
+  /// `border_hash`, never two at a time, backing off after a failure). The
+  /// context is the zone or its group (see [_repeaterContextKey]); `/border`
+  /// already returns every member of a group, so a move between members
+  /// keeps the polygons.
+  ///
+  /// `/border` is sent [fix], the fix `/status` placed the phone with
+  /// (default [_lastZoneCheckPosition]), never the live one, which may have
+  /// moved on; an answer that does not fit the zone is discarded anyway.
+  Future<void> _fetchBorderPolygons(String iata, {Position? fix}) async {
+    final key = _repeaterContextKey;
+    final position = fix ?? _lastZoneCheckPosition ?? _currentPosition;
+    final zone = zoneCode;
+    if (key == null || position == null || zone == null) return;
+    final members = zoneGroup?.members;
+    final hash = _currentZone?['border_hash'];
 
-    _bordersFetchInProgress = true;
-    try {
-      final result = await _apiService.fetchBorderPolygons(
-        lat: _currentPosition!.latitude,
-        lon: _currentPosition!.longitude,
-        appVersion: _appVersion,
-      );
-      if (result != null && result.isNotEmpty) {
-        _regionBorders = result;
-        _bordersLoadedForZone = iata;
-        debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
+    var asked = false;
+    final result = await _borderLoader.ensure(
+      contextKey: key,
+      borderHash: hash is String && hash.isNotEmpty ? hash : null,
+      onStale: () {
+        if (_regionBorders.isEmpty) return;
+        _regionBorders = [];
         notifyListeners();
-      } else {
-        debugWarn(
-            '[BORDER] No polygons returned for zone $iata — will retry on next zone check');
+      },
+      accept: (polygons) =>
+          bordersFitZone(polygons, zoneCode: zone, groupMembers: members),
+      fetch: () {
+        asked = true;
+        return _apiService.fetchBorderPolygons(
+          lat: position.latitude,
+          lon: position.longitude,
+          appVersion: _appVersion,
+        );
+      },
+    );
+    if (_isDisposed) return;
+    if (_repeaterContextKey != key) {
+      if (result == null && !asked) return;
+      // The zone moved on while this ran. Whatever is shown belongs to the
+      // old context, so clear it and load the new one now rather than on
+      // the next zone tick.
+      _borderLoader.forget();
+      if (_regionBorders.isNotEmpty) {
+        _regionBorders = [];
+        notifyListeners();
       }
-    } finally {
-      _bordersFetchInProgress = false;
+      final next = zoneCode;
+      if (next != null && _inZone == true) unawaited(_fetchBorderPolygons(next));
+      return;
     }
+    if (result == null) return;
+    _regionBorders = result;
+    debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
+    notifyListeners();
   }
 
   // ============================================
   // Debug File Logging (Mobile Only)
   // ============================================
 
-  /// Initialize debug file logging, respecting persisted user preference.
-  /// Enabled by default on all builds. If the user previously disabled it,
-  /// that preference is restored.
+  /// Reconcile debug file logging with the persisted user preference.
+  /// Enabled by default on all builds. `main.dart` already read the
+  /// preference and opened (or did not open) the file, so in the normal case
+  /// nothing changes here; the two branches only matter when the two reads
+  /// disagreed (a transient Hive timeout in main). The flag mirrors what the
+  /// logger is really doing, never the preference alone, so the switch can
+  /// not read OFF while a file keeps growing.
   Future<void> _initDebugLogs() async {
     if (kIsWeb) return; // File logging not available on web
 
     try {
       final box = await _openBoxSafely(_preferencesBoxName);
-      if (box == null) {
-        // Can't read preference — keep default (enabled, already started in main.dart)
-        _debugLogsEnabled = true;
-        await _refreshDebugLogFiles();
-        return;
-      }
-
-      final userDisabled = box.get('debug_logs_enabled') == false;
-
-      if (userDisabled) {
-        debugLog('[INIT] Debug logs disabled by user preference, turning off');
+      final wanted =
+          DebugFileLogger.wantsFileLogging(box?.get('debug_logs_enabled'));
+      if (wanted && !DebugFileLogger.isEnabled) {
+        await DebugFileLogger.enable();
+      } else if (!wanted && DebugFileLogger.isEnabled) {
+        debugLog('[INIT] File logging stopped: preference is off');
         await DebugFileLogger.disable();
-        _debugLogsEnabled = false;
-        DebugLogger.setEnabled(false);
-      } else {
-        debugLog('[INIT] Debug logging enabled (${AppConstants.appVersion})');
-        // DebugFileLogger already enabled in main.dart
-        _debugLogsEnabled = true;
-        await _refreshDebugLogFiles();
       }
     } catch (e) {
       debugError('[INIT] Failed to init debug logs: $e');
-      // Fallback: keep enabled (already started in main.dart)
-      _debugLogsEnabled = true;
     }
+    _debugLogsEnabled = DebugFileLogger.isEnabled;
+    DebugLogger.setEnabled(_debugLogsEnabled);
+    if (_debugLogsEnabled) {
+      debugLog('[INIT] Debug logging enabled (${AppConstants.appVersion})');
+    }
+    final stubs = await DebugFileLogger.deleteStartupStubs();
+    if (stubs > 0) {
+      debugLog('[INIT] Deleted $stubs startup stub log file(s)');
+    }
+    // Files from earlier sessions are listed whether or not logging is on,
+    // so they can still be viewed, uploaded and deleted.
+    await _refreshDebugLogFiles();
   }
 
   /// Enable debug file logging
@@ -10571,6 +13451,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// List the debug log files without touching the live log.
+  ///
+  /// The upload sheet and the feedback dialog list from this; the one
+  /// rotation an upload needs happens at submit, in
+  /// [prepareDebugLogsForUpload], never on opening a sheet.
+  Future<List<File>> listDebugLogFiles() async {
+    await _refreshDebugLogFiles();
+    return _debugLogFiles;
+  }
+
   /// Prepare debug logs for upload by rotating the current log file
   ///
   /// This ensures the files being uploaded are complete and not actively being written to.
@@ -10616,12 +13506,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Share a debug log file
   ///
   /// Uses the native share sheet to allow users to share logs via email, messaging, etc.
-  Future<void> shareDebugLog(File file) async {
+  /// [sharePositionOrigin] is the tapped button's global rect, which iPad needs
+  /// (see [shareOfflineSession]).
+  Future<void> shareDebugLog(File file, {Rect? sharePositionOrigin}) async {
     try {
       final result = await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
           subject: 'MeshMapper Debug Log',
+          sharePositionOrigin: sharePositionOrigin,
         ),
       );
       debugLog('[DEBUG] Shared log: ${file.path}, status: ${result.status}');
@@ -10634,12 +13527,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// to Files, Drive, email, …) — the mobile equivalent of the web JSON
   /// download. Mirrors [shareDebugLog]; writes the same pretty JSON the web
   /// path produces. Throws on failure so the caller can surface an error.
-  Future<void> shareOfflineSession(String filename) async {
+  ///
+  /// [sharePositionOrigin] is the global rect of the tapped button. iPad
+  /// anchors the share popover there, and share_plus refuses to open the
+  /// sheet on iPad without one.
+  Future<void> shareOfflineSession(String filename,
+      {Rect? sharePositionOrigin}) async {
     final data = _offlineSessionService.getSessionData(filename);
     if (data == null) {
       throw Exception('Session "$filename" not found');
     }
-    final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+    final jsonString = offlineSessionJson(data);
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/$filename');
     await file.writeAsString(jsonString);
@@ -10647,9 +13545,59 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ShareParams(
         files: [XFile(file.path)],
         subject: 'MeshMapper Offline Session',
+        sharePositionOrigin: sharePositionOrigin,
       ),
     );
     debugLog('[OFFLINE] Shared session: $filename, status: ${result.status}');
+  }
+
+  bool _isExportingOfflineSessions = false;
+
+  /// True while Export all is writing its files or its share sheet is open.
+  bool get isExportingOfflineSessions => _isExportingOfflineSessions;
+
+  /// Export every stored offline session in one share sheet (#560): one file
+  /// per session, the same name and JSON as [shareOfflineSession].
+  ///
+  /// Only reads the sessions. Nothing is deleted or marked uploaded, whatever
+  /// the share sheet's outcome. A dismissed sheet is not an error. Throws on
+  /// failure so the caller can surface it; does nothing when there are no
+  /// sessions or an export is already running.
+  /// [sharePositionOrigin] is the tapped button's global rect (iPad anchor).
+  Future<void> shareAllOfflineSessions({Rect? sharePositionOrigin}) async {
+    if (_isExportingOfflineSessions) return;
+    // Snapshot: an auto-save during the export must not change what is sent.
+    final sessions = List<OfflineSession>.of(_offlineSessionService.sessions);
+    if (sessions.isEmpty) return;
+    _isExportingOfflineSessions = true;
+    notifyListeners();
+    try {
+      debugLog('[OFFLINE] Exporting all ${sessions.length} sessions');
+      // Its own folder, emptied first: the last export's copies are gone by
+      // now, and a single session share in the temp root is not overwritten.
+      // Not deleted after the share, which can return before the receiving
+      // app has read the files.
+      final temp = await getTemporaryDirectory();
+      final dir = Directory('${temp.path}/offline_export');
+      if (await dir.exists()) await dir.delete(recursive: true);
+      await dir.create(recursive: true);
+      final files = await writeOfflineSessionExports(sessions, dir);
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: files.map((f) => XFile(f.path)).toList(),
+          subject: 'MeshMapper Offline Sessions',
+          sharePositionOrigin: sharePositionOrigin,
+        ),
+      );
+      debugLog(
+          '[OFFLINE] Shared all ${files.length} sessions, status: ${result.status}');
+    } catch (e) {
+      debugError('[OFFLINE] Failed to export all sessions: $e');
+      rethrow;
+    } finally {
+      _isExportingOfflineSessions = false;
+      notifyListeners();
+    }
   }
 
   /// View a debug log file in-app
@@ -10829,6 +13777,59 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _carpeaterReentryPromptDue = false;
   bool get carpeaterReentryPromptDue => _carpeaterReentryPromptDue;
 
+  /// Runs the Precise Location check at Connect.
+  final PreciseLocationGate _preciseLocationGate = PreciseLocationGate();
+
+  /// Location is granted but only approximate, as last read while a zone
+  /// check was held for a coarse fix. The zone check screen then says
+  /// Precise Location is off instead of blaming the GPS signal.
+  bool _locationAccuracyReduced = false;
+  bool get locationAccuracyReduced => _locationAccuracyReduced;
+
+  Future<void> _refreshLocationAccuracyReduced() async {
+    final reduced = await _preciseLocationGate.isApproximateOnly(
+      platform: PreciseLocationGate.currentPlatform,
+      simulatorEnabled: _gpsService.isSimulatorEnabled,
+    );
+    if (_isDisposed || reduced == _locationAccuracyReduced) return;
+    _locationAccuracyReduced = reduced;
+    debugLog('[GPS] Location accuracy is '
+        '${reduced ? 'approximate only' : 'no longer approximate'}');
+    notifyListeners();
+  }
+
+  /// Back from the settings with Precise Location turned on: restart a
+  /// running stream so its fixes come in precise, as the connect check does.
+  Future<void> _recheckLocationAccuracyAfterResume() async {
+    if (!_locationAccuracyReduced) return;
+    await _refreshLocationAccuracyReduced();
+    if (_isDisposed || _locationAccuracyReduced) return;
+    if (_gpsService.isWatching) {
+      await restartGpsAfterPermission(keepTracking: true);
+    }
+  }
+  bool _preciseLocationCheckInFlight = false;
+
+  /// Set when the last connect tap was refused for approximate location.
+  /// Read by the Siri connect answer; reset at the next check.
+  bool _connectRefusedForPreciseLocation = false;
+  bool _preciseLocationPromptDue = false;
+
+  /// True when a connect was refused (or an auto-reconnect ended) for
+  /// approximate location. MainScaffold shows "Precise Location needed".
+  bool get preciseLocationPromptDue => _preciseLocationPromptDue;
+
+  void acknowledgePreciseLocationPrompt() {
+    _preciseLocationPromptDue = false;
+  }
+
+  /// Android: shows the location disclosure and re-requests fine location,
+  /// which Android 12+ answers with its "precise" upgrade dialog when only
+  /// approximate is granted. Registered by MainScaffold, which owns the
+  /// disclosure; null while no screen can show it. Returns true when the
+  /// system request was made.
+  Future<bool> Function()? preciseLocationUpgradeRequester;
+
   void acknowledgeCarpeaterReentryPrompt() {
     _carpeaterReentryPromptDue = false;
   }
@@ -11001,6 +14002,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final json = box.get('preferences');
       _onboardingGuideProgress =
           OnboardingGuideProgress.fromStored(box.get(_onboardingGuideVersionKey));
+      _mapViewState = MapViewState.fromStored(box.get(_mapViewStateKey));
+      debugLog('[MAP] Loaded map view: $_mapViewState');
       if (json != null) {
         // The pre-share 6-hex prefix is wiped, not migrated: the filter needs
         // the full key now, and the user is asked for it after the next
@@ -11042,7 +14045,71 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Failed to load preferences: $e');
     }
     _preferencesLoaded = true;
-    notifyListeners();
+    // A map revision bump, not a plain notify: the map sits behind the
+    // mapRevision Selector and applies its saved toggles and the remembered
+    // map view on its next build.
+    _notifyMapNow();
+  }
+
+  // ============================================
+  // Map view (zoom, folded panels) persistence
+  // ============================================
+
+  static const String _mapViewStateKey = 'map_view_state';
+  MapViewState _mapViewState = const MapViewState();
+
+  /// Writes wait until the map has been still for this long, so a pinch (and
+  /// the auto-follow camera's idles) ends in one write.
+  final Debouncer _mapViewStateSaver =
+      Debouncer(const Duration(milliseconds: 1500));
+
+  /// Fold or unfold the control panel (both orientations).
+  void setMapControlsMinimized(bool value) =>
+      _updateMapViewState(_mapViewState.copyWith(controlsMinimized: value));
+
+  /// Landscape: show or close the control panel.
+  void setMapControlPanelShown(bool value) =>
+      _updateMapViewState(_mapViewState.copyWith(controlPanelShown: value));
+
+  /// Landscape: open or close the map's control column.
+  void setLandscapeMapControlsExpanded(bool value) => _updateMapViewState(
+      _mapViewState.copyWith(landscapeMapControlsExpanded: value));
+
+  /// Portrait: open or close the map's control column. No notify: only the
+  /// map reads it, and it rebuilds itself on the tap.
+  void setMapControlsColumnExpanded(bool value) => _updateMapViewState(
+      _mapViewState.copyWith(mapControlsExpanded: value),
+      notify: false);
+
+  /// Remember the zoom the camera settled at. Called by the map on camera
+  /// idle outside transient views; repeats at the same zoom are dropped.
+  void rememberMapZoom(double zoom) {
+    if (!MapViewState.zoomWorthSaving(_mapViewState.zoom, zoom)) return;
+    final clamped = MapViewState.clampZoom(zoom);
+    if (clamped == null) return;
+    _updateMapViewState(_mapViewState.copyWith(zoom: clamped), notify: false);
+  }
+
+  void _updateMapViewState(MapViewState next, {bool notify = true}) {
+    if (next == _mapViewState) return;
+    _mapViewState = next;
+    if (notify) notifyListeners();
+    // Before the stored value has been read, a write would replace it with
+    // the defaults; the change still applies in memory.
+    if (!_preferencesLoaded) return;
+    _mapViewStateSaver.schedule(() => unawaited(_saveMapViewState()));
+  }
+
+  Future<void> _saveMapViewState() async {
+    if (_isDisposed) return;
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put(_mapViewStateKey, _mapViewState.toStorage());
+      debugLog('[MAP] Saved map view: $_mapViewState');
+    } catch (e) {
+      debugError('[MAP] Failed to save map view: $e');
+    }
   }
 
   Future<bool> completeOnboardingGuide() async {
@@ -11077,6 +14144,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     _syncCarpeaterFilter();
+  }
+
+  Future<void> _loadRepeaterNicknames() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      _repeaterNicknames =
+          RepeaterNicknames.sanitize(box.get(_repeaterNicknamesKey));
+      debugLog('[APP] Loaded ${_repeaterNicknames.length} repeater nicknames');
+    } catch (e) {
+      debugError('[APP] Failed to load repeater nicknames: $e');
+      _repeaterNicknames = const {};
+    }
+  }
+
+  Future<void> _saveRepeaterNicknames() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) {
+      debugError('[APP] Repeater nicknames not saved: preferences unavailable');
+      return;
+    }
+    try {
+      await box.put(
+        _repeaterNicknamesKey,
+        RepeaterNicknames.toStorage(_repeaterNicknames),
+      );
+      await box.flush();
+    } catch (e) {
+      debugError('[APP] Failed to save repeater nicknames: $e');
+    }
   }
 
   Future<void> _loadLastRadioConfig() async {
@@ -11571,7 +14668,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // The radio signs the RAW 32 bytes, never their hex text.
       signature = await connection.sign(nonceBytes);
     } on SignException catch (e) {
-      if (e.code == 'unsupported') {
+      final action = signFailureAction(e.code);
+      if (action == SignFailureAction.backoff) {
+        // Scope discovery held the radio for the whole wait. That says
+        // nothing about the firmware, so no strike: retry on the ladder.
+        debugLog('[ACCOUNT] Radio busy with scope discovery for '
+            '${_pkPrefix(pubkey)}, backing off');
+        return _recordLinkFailure(pubkey, 'sign_busy');
+      }
+      if (action == SignFailureAction.strike) {
         // Two strikes before this is written down. A stats/battery ERR that
         // was already in flight when the sign started is misattributed as
         // 'unsupported' (see the ERR branch in connection.dart) — one stray
@@ -11591,7 +14696,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         debugWarn('[ACCOUNT] Sign failed (${e.code}) — staying silent');
       }
-      return const PortalLinkOutcome(PortalLinkStatus.failed);
+      return PortalLinkOutcome(PortalLinkStatus.failed,
+          radioCouldNotSign: signFailureNeedsRadioReboot(e.code));
     } catch (e) {
       debugWarn('[ACCOUNT] Sign failed (${e.runtimeType}) — staying silent');
       return const PortalLinkOutcome(PortalLinkStatus.failed);
@@ -11849,16 +14955,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Exit the app completely (Android only)
   /// Uses SystemNavigator.pop() which is the recommended way to exit on Android
   Future<void> exitApp() async {
+    // The upload before the release can take a few seconds, and a second tap
+    // in that window saw isConnected false and closed the app before the
+    // session was released and the radio's name and channel restored.
+    if (_exitInProgress) {
+      debugLog('[APP] Exit already in progress');
+      return;
+    }
+    _exitInProgress = true;
     debugLog('[APP] Exit app requested');
 
-    // Disconnect first if connected
-    if (isConnected) {
-      await disconnect();
-    }
+    try {
+      // Disconnect first if connected. closeApp: false because the exit below
+      // already stops the service and closes the app.
+      if (isConnected) {
+        await disconnect(closeApp: false, flushQueue: true);
+      }
 
-    // Exit the app (Android only - iOS doesn't allow programmatic app exit)
-    if (Platform.isAndroid) {
-      SystemNavigator.pop();
+      // disconnect() stops Android's session service when the session ends.
+      // This stop also covers one still running with no radio session, and
+      // does not wait for MainActivity's own stop when it is destroyed
+      // (Android only, a no-op elsewhere).
+      await BackgroundServiceManager.stopLiveService('exit app');
+
+      // Exit the app (Android only - iOS doesn't allow programmatic app exit)
+      if (Platform.isAndroid) {
+        SystemNavigator.pop();
+      }
+    } finally {
+      _exitInProgress = false;
     }
   }
 
@@ -11927,8 +15052,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     try {
-      _storedNoiseFloorSessions = _noiseFloorSessionBox!.values.toList()
-        ..sort((a, b) => b.startTime.compareTo(a.startTime)); // Newest first
+      // Newest first. A session the app was killed during is closed here.
+      _storedNoiseFloorSessions =
+          await loadStoredNoiseFloorSessions(_noiseFloorSessionBox!);
       debugLog(
           '[GRAPH] Loaded ${_storedNoiseFloorSessions.length} stored noise floor sessions');
     } catch (e) {
@@ -11953,8 +15079,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       markers: List.of(_startingDeferredHistory),
     );
     _startingDeferredHistory.clear();
+    _noiseFloorCheckpointTimer?.cancel();
+    _noiseFloorCheckpointTimer = Timer.periodic(
+        _noiseFloorCheckpointInterval,
+        (_) => unawaited(_checkpointNoiseFloorSession('periodic')));
     debugLog('[GRAPH] Started $mode noise floor session');
     notifyListeners();
+  }
+
+  /// Writes the running session to Hive (see [NoiseFloorCheckpoint]). A
+  /// launch closes a checkpoint the app never ended.
+  Future<void> _checkpointNoiseFloorSession(String why) async {
+    final session = _currentNoiseFloorSession;
+    if (session == null) return;
+    try {
+      if (await _noiseFloorCheckpoint.write(_noiseFloorSessionBox, session)) {
+        debugLog('[GRAPH] Checkpointed session ($why): '
+            '${session.samples.length} samples, '
+            '${session.markers.length} markers');
+      }
+    } catch (e) {
+      debugError('[GRAPH] Failed to checkpoint noise floor session: $e');
+    }
   }
 
   /// Record a noise floor sample to the current session
@@ -12003,28 +15149,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _endNoiseFloorSession() async {
     if (_currentNoiseFloorSession == null) return;
 
+    _noiseFloorCheckpointTimer?.cancel();
+    _noiseFloorCheckpointTimer = null;
     _currentNoiseFloorSession!.endTime = DateTime.now();
     debugLog(
         '[GRAPH] Ended session: ${_currentNoiseFloorSession!.durationDisplay}, '
         '${_currentNoiseFloorSession!.samples.length} samples, '
         '${_currentNoiseFloorSession!.markers.length} markers');
 
-    // Save to Hive
+    // Save to Hive (over its checkpoint, if any) and keep the last 10
     try {
-      await _noiseFloorSessionBox?.put(
-        _currentNoiseFloorSession!.id,
-        _currentNoiseFloorSession!,
-      );
-
-      // Update stored list
-      _storedNoiseFloorSessions.insert(0, _currentNoiseFloorSession!);
-
-      // Keep only last 10 sessions
-      while (_storedNoiseFloorSessions.length > 10) {
-        final oldest = _storedNoiseFloorSessions.removeLast();
-        await _noiseFloorSessionBox?.delete(oldest.id);
-        debugLog('[GRAPH] Deleted oldest session: ${oldest.id}');
-      }
+      await saveEndedNoiseFloorSession(_noiseFloorSessionBox,
+          _storedNoiseFloorSessions, _currentNoiseFloorSession!);
     } catch (e) {
       debugError('[GRAPH] Failed to save noise floor session: $e');
     }
@@ -12109,6 +15245,56 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Debug-only store capture mode: waits up to 10 s for the repeater list so
+  /// the sample drive hears real repeaters, then loads it. Never awaited by
+  /// init.
+  Future<void> _seedStoreCapture() async {
+    for (var waited = 0;
+        _repeaters.isEmpty && waited < 20 && !_isDisposed;
+        waited++) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    if (_isDisposed) return;
+    final now = DateTime.now();
+    applyStoreCaptureSample(buildStoreCaptureSample(
+      newest: DateTime(now.year, now.month, now.day, 9, 40),
+      repeaters:
+          _repeaters.map((r) => (id: r.id, lat: r.lat, lon: r.lon)).toList(),
+    ));
+    debugLog('[CAPTURE] seeded ${_txPings.length} TX, ${_rxPings.length} RX, '
+        'repeaters=${_repeaters.length}');
+  }
+
+  /// Debug-only store capture mode: puts the sample drive into the in-memory
+  /// lists the Map, Log and History screens read. Writes no Hive box and no
+  /// preference, and leaves [connectedDeviceName] alone.
+  void applyStoreCaptureSample(StoreCaptureSample s) {
+    _txPings
+      ..clear()
+      ..addAll(s.txPings);
+    _rxPings
+      ..clear()
+      ..addAll(s.rxPings);
+    _txLogEntries
+      ..clear()
+      ..addAll(s.txLog);
+    _rxLogEntries
+      ..clear()
+      ..addAll(s.rxLog);
+    _discLogEntries
+      ..clear()
+      ..addAll(s.disc);
+    _traceLogEntries
+      ..clear()
+      ..addAll(s.trace);
+    _storedNoiseFloorSessions.insertAll(0, s.sessions);
+    _pingStats = s.stats;
+    _currentNoiseFloor = s.noiseFloor;
+    _currentBatteryPercent = s.batteryPercent;
+    _storeCaptureRadioName = storeCaptureRadioName;
+    _notifyMapNow();
+  }
+
   /// Bump the map revision but coalesce notifications to ~4/sec. Use for
   /// high-frequency map-relevant changes (passive RX pins, echo bursts) so a
   /// dense mesh cannot force the map to rebuild 10-20x/sec. The pin data is
@@ -12134,12 +15320,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void notifyListeners() {
     if (_isDisposed) return;
     super.notifyListeners();
+    _syncGpsWithPolicy('state change');
+    _syncConnectionService();
     _scheduleLiveActivitySync();
   }
 
   @override
   void dispose() {
     _isDisposed = true;
+    _mapViewStateSaver.cancel();
+    _scopeLifecycle.onEvent(ScopeStopEvent.dispose);
     _invalidateLiveSessionRecovery();
     // No notify in dispose: the session just has to let the radio go.
     _repeaterAdminSession?.close();
@@ -12167,6 +15357,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _restoreAutoPingTimer?.cancel();
     _idleDisconnectTimer?.cancel();
     _offlineAutoSaveTimer?.cancel();
+    _noiseFloorCheckpointTimer?.cancel();
     _zoneRefreshTimer?.cancel();
     _cancelZoneGraceTimers();
     _vectorFreshTimer?.cancel();

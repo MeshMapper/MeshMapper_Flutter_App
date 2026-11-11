@@ -152,6 +152,18 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     companion: companion,
                     isConnected: companion.pubkey == connectedPubkey,
                   ),
+              // Linked points follow the region leaderboard, which can lag up
+              // to 24 hours, so a fresh link looks empty for a while.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Text(
+                  'Points from a newly linked radio move onto your account '
+                  'the next time the leaderboard updates, which can take up '
+                  'to 24 hours.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ),
               if (appState.hasPortalLinkResets)
                 ListTile(
                   leading: const Icon(Icons.replay),
@@ -234,8 +246,13 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
     if (!context.mounted) return;
     switch (outcome.status) {
       case PortalLinkStatus.linked:
-        AppToast.success(context,
-            'Linked to ${outcome.accountName ?? 'your MeshMapper account'}');
+        AppToast.success(
+          context,
+          'Linked to ${outcome.accountName ?? 'your MeshMapper account'}. '
+          'Its points move over at the next leaderboard update, within 24 '
+          'hours.',
+          duration: const Duration(seconds: 6),
+        );
       case PortalLinkStatus.adoptionRequired:
         AppToast.warning(
           context,
@@ -256,6 +273,15 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         if (wait != null) {
           AppToast.warning(
               context, 'Too many attempts. Try again in ${_waitLabel(wait)}.');
+        } else if (outcome.radioCouldNotSign) {
+          // Waiting never helps here: some fork firmware can only sign
+          // again after a reboot.
+          AppToast.error(
+            context,
+            'Your radio could not sign the link request. Reboot the radio '
+            'and try again.',
+            duration: const Duration(seconds: 6),
+          );
         } else {
           AppToast.error(context, 'Could not link right now. Try again later');
         }
@@ -273,7 +299,12 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
     final ok = await appState.unlinkCurrentDevice();
     if (!context.mounted) return;
     if (ok) {
-      AppToast.success(context, 'Device unlinked');
+      AppToast.success(
+        context,
+        'Device unlinked. Its points leave your account the next time the '
+        'leaderboard updates, which can take up to 24 hours.',
+        duration: const Duration(seconds: 6),
+      );
     } else {
       AppToast.error(context, 'Could not unlink right now');
     }

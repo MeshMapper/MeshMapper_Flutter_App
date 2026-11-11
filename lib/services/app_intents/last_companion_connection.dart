@@ -69,3 +69,28 @@ ExternalCommandAdmission resolveLastCompanionConnection({
     disposition: ExternalCommandDisposition.admitted,
   );
 }
+
+/// Longest the connect intent waits for the dial to finish before answering.
+///
+/// A reachable radio connects in 4 to 7 seconds (measured on device), so this
+/// covers the ordinary case with room to spare. An unreachable one would run
+/// three 15 second BLE attempts, far past iOS's 30 second limit on the intent,
+/// so past this point the intent answers "connecting" and the dial carries on.
+const Duration lastCompanionQuickAnswer = Duration(seconds: 12);
+
+/// Kept clear of the intent's own deadline so the answer reaches native code
+/// before it stops waiting.
+const Duration lastCompanionAnswerMargin = Duration(seconds: 3);
+
+/// How long to wait for the reconnect before answering that it is underway.
+///
+/// [lastCompanionQuickAnswer], shortened when the intent's deadline is closer
+/// than that plus [lastCompanionAnswerMargin] (a cold launch spends part of the
+/// budget before the command arrives). Never negative.
+Duration lastCompanionAnswerWindow(DateTime? expiresAt, {DateTime? now}) {
+  if (expiresAt == null) return lastCompanionQuickAnswer;
+  final left = expiresAt.difference(now ?? DateTime.now()) -
+      lastCompanionAnswerMargin;
+  if (left <= Duration.zero) return Duration.zero;
+  return left < lastCompanionQuickAnswer ? left : lastCompanionQuickAnswer;
+}

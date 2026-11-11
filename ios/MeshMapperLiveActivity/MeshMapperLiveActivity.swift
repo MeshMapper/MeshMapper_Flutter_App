@@ -211,6 +211,12 @@ private struct MeshMapperSmallActivityContent: View {
         .padding(.vertical, isWide ? 6 : 4)
       }
     }
+    // Opaque on purpose rather than left to `activityBackgroundTint`. When the
+    // CarPlay dashboard re-lays the card at a new canvas size it can leave the
+    // previous frame underneath, and it showed through the transparent rows as
+    // a doubled "Nothing heard" (one copy per width tier). The band was always
+    // opaque and never ghosted.
+    .background(MeshMapperPalette.background)
     .foregroundStyle(.white)
   }
 

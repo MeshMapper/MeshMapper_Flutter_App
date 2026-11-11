@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
@@ -20,11 +22,36 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _showControlPanel = true;
-  bool _isControlsMinimized = false;
+  // The panel fold state lives in AppStateProvider.mapViewState so it survives
+  // a relaunch; these getters read it live (build watches the provider).
+  AppStateProvider get _appState => context.read<AppStateProvider>();
+
+  /// Landscape: the control panel is shown (closed = a small Controls button).
+  bool get _showControlPanel => _appState.mapViewState.controlPanelShown;
+  set _showControlPanel(bool value) => _appState.setMapControlPanelShown(value);
+
+  // Store capture mode (debug builds) starts with the controls out of the way
+  // and keeps its fold state local, so a capture run never rewrites the
+  // user's saved layout.
+  bool? _storeCaptureControlsMinimized =
+      kDebugMode && StoreCaptureConfig.active != null ? true : null;
+
+  bool get _isControlsMinimized =>
+      _storeCaptureControlsMinimized ??
+      _appState.mapViewState.controlsMinimized;
+  set _isControlsMinimized(bool value) {
+    if (_storeCaptureControlsMinimized != null) {
+      _storeCaptureControlsMinimized = value;
+    } else {
+      _appState.setMapControlsMinimized(value);
+    }
+  }
 
   /// Landscape mode: map controls expanded state (mutually exclusive with control panel)
-  bool _mapControlsExpanded = false;
+  bool get _mapControlsExpanded =>
+      _appState.mapViewState.landscapeMapControlsExpanded;
+  set _mapControlsExpanded(bool value) =>
+      _appState.setLandscapeMapControlsExpanded(value);
 
   /// Landscape side panel width (220px gives more room for controls)
   static const double _landscapePanelWidth = 220.0;
@@ -182,12 +209,10 @@ class _HomeScreenState extends State<HomeScreen> {
           style: TextStyle(fontSize: 18),
         ),
         Text(
-          appState.connectedDeviceName != null
-              ? _buildSubtitle(appState)
-              : 'Disconnected',
+          appState.headerRadioName ?? 'Disconnected',
           style: TextStyle(
             fontSize: 12,
-            color: appState.connectedDeviceName != null
+            color: appState.headerRadioName != null
                 ? Theme.of(context).colorScheme.onSurfaceVariant
                 : Colors.grey,
           ),
@@ -370,7 +395,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (appState.inZone == true && appState.zoneCode != null) {
           if (!appState.isConnected) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'You\'re in an authorized zone. Connect to a device to start wardriving.',
               Icons.flight,
               Colors.grey
@@ -381,7 +406,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // deliberate regional setting (blue).
           if (appState.floodDisabled) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'Your regional admin has turned off flood traffic here, so Active and Hybrid modes are unavailable. The zone is not full. Passive and Trace modes still work.',
               Icons.flight,
               Colors.blue
@@ -389,14 +414,14 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           if (!appState.txAllowed) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive mode works.',
               Icons.flight,
               Colors.red
             );
           }
           return (
-            '${appState.zoneName ?? appState.zoneCode} Zone',
+            '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
             'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
             Icons.flight,
             Colors.green
@@ -615,11 +640,11 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           // Device name
           Text(
-            appState.displayDeviceName ?? 'Disconnected',
+            appState.headerRadioName ?? 'Disconnected',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,
-              color: appState.connectedDeviceName != null
+              color: appState.headerRadioName != null
                   ? Colors.white
                   : Colors.grey.shade400,
             ),
@@ -854,7 +879,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ? Colors.green
                         : Colors.red)
                 : Colors.grey;
-            text = appState.zoneCode!;
+            text = appState.shortZoneCode!;
           } else if (appState.inZone == false) {
             icon = Icons.flight;
             color = Colors.orange;
@@ -1284,13 +1309,13 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const Divider(height: 24),
 
-              // External Antenna
+              // Antenna
               _buildHelpItem(
                 icon: Icons.settings_input_antenna,
                 color: Colors.orange,
-                title: 'External Antenna',
+                title: 'Antenna',
                 description:
-                    'Enable if using an external antenna (ex: mag mount on roof of car). We store this along with pings as external antennas can make a big difference in reception.',
+                    'Choose External when the antenna isn\'t enclosed by metal or anything that blocks radio, for example a roof mount, a handheld, or the radio in your pocket while walking. Choose Internal when it\'s inside a car cabin, a metal box or another enclosure. We store this with every ping because it makes a big difference to reception.',
               ),
 
               // Send Ping button
@@ -1387,12 +1412,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
-  }
-
-  /// Build subtitle with device name only
-  /// Uses displayDeviceName which prefers SelfInfo name over BLE advertisement name
-  String _buildSubtitle(AppStateProvider appState) {
-    return appState.displayDeviceName ?? 'Unknown';
   }
 
   /// Build compact stat indicator for app bar

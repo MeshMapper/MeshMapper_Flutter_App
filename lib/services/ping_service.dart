@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:geolocator/geolocator.dart';
 
 import '../models/connection_state.dart';
@@ -13,11 +15,14 @@ import 'countdown_timer_service.dart';
 import 'gps_service.dart';
 import 'meshcore/connection.dart';
 import 'meshcore/disc_tracker.dart';
+import 'meshcore/protocol_constants.dart' show DiscoveryConstants;
+import 'meshcore/scope_lease.dart' show ScopeCancelToken;
 import 'meshcore/trace_tracker.dart';
 import 'meshcore/tx_tracker.dart';
 import 'meshcore/wire_tag_codec.dart';
 import 'meshcore/unified_rx_handler.dart';
 import 'recent_coverage_service.dart';
+import 'scope_discovery/scope_runner.dart';
 import 'wakelock_service.dart';
 
 /// Ping service for TX/RX ping orchestration
@@ -116,6 +121,16 @@ class PingService {
   bool _pingInProgress = false;
   bool _sessionRecoveryInProgress = false;
 
+  /// Set when an auto TX (an Active tick or Hybrid's TX leg) bowed out at
+  /// the recovery hold. The bow-out re-arms the lane at a full interval so
+  /// it cannot die; when the hold releases, that leg is pulled in to
+  /// [heldTxReleaseDelay] instead, so a TX due during a session swap goes
+  /// out about a second after it rather than an interval later.
+  bool _txHeldByRecovery = false;
+
+  /// How long after the recovery hold releases a TX it held goes out.
+  static const Duration heldTxReleaseDelay = Duration(seconds: 1);
+
   /// Which auto session a send belongs to. Bumped by [forceDisableAutoPing],
   /// the one stop that clears [_pingInProgress] out from under a send that is
   /// still suspended on its fresh fix. Each lane captures it before that fetch
@@ -125,6 +140,12 @@ class PingService {
   /// transfer can re-auth and restart inside the old fetch, and a send that
   /// only re-read the mode then went out alongside the new session's own.
   int _sendEpoch = 0;
+
+  /// Set by [dispose]. The provider disposes this service on a radio drop
+  /// without a force disable first, so every scheduler and timer callback
+  /// checks it: a send still parked on its fresh fix or BLE write must not
+  /// re-arm a lane on a service nobody owns any more.
+  bool _disposed = false;
 
   // Auto-ping mode
   bool _autoPingEnabled = false;
@@ -166,7 +187,11 @@ class PingService {
   ///
   /// Smart Pinging holds a ping back rather than dropping it. Only one is ever
   /// held: a later deferral overwrites an earlier one, so what goes out is
-  /// whatever was most recently due.
+  /// whatever was most recently due. The one exception is Hybrid, where a
+  /// held TX ping is never replaced by a discovery: a deferred discovery
+  /// leaves it held, and a discovery leg that finds the square not covered
+  /// sends the held TX in its place. A held discovery still goes out if a
+  /// fresh square comes before any TX ping is deferred.
   BankedPingType? _bankedPing;
 
   // Discovery tracking
@@ -178,6 +203,20 @@ class PingService {
   Position?
       _lastDiscoveryPosition; // Track last discovery position for 25m check
 
+  /// The earliest the next discovery can go out, recorded whenever a timer
+  /// that leads to one is armed. A conservative bound for the scope runner's
+  /// hard stop only: it never changes when any timer fires.
+  DateTime? _earliestNextDiscoveryAt;
+
+  /// The live scope runner, if a sweep's runner is still working.
+  ScopeRunner? _currentScopeRunner;
+
+  /// Builds the scope runner for one discovery sweep, or returns null when
+  /// scope discovery is not active. Set by the provider.
+  ScopeRunner? Function(
+      {required DateTime hardStop,
+      required ScopeCancelToken cancel})? scopeRunnerFactory;
+
   // Validation callbacks
   bool Function()? checkExternalAntennaConfigured;
   bool Function()? checkPowerLevelConfigured;
@@ -188,11 +227,18 @@ class PingService {
   /// Callback to get the power level in watts (0.3, 0.6, 1.0, 2.0) from user preferences
   double Function()? getPowerLevel;
 
-  /// Smart Pinging: whether the cell under a fix already has recent coverage.
-  /// Consulted by the auto TX validator and the auto discovery path only.
-  /// Null (or [RecentCoverage.unknown]) never blocks. Wired by the provider
-  /// to [RecentCoverageService.isCovered].
-  RecentCoverage Function(double lat, double lon)? checkRecentCoverage;
+  /// Smart Pinging: whether the cell under a fix already has recent coverage
+  /// for this kind of ping. Consulted by the auto TX validator and the auto
+  /// discovery path only. Null (or [RecentCoverage.unknown]) never blocks.
+  /// Wired by the provider to [RecentCoverageService.isCovered], asked per
+  /// kind: a TX asks with forTx true, a discovery with forTx false.
+  RecentCoverage Function(double lat, double lon, BankedPingType kind)?
+      checkRecentCoverage;
+
+  /// Whether Smart Pinging is on with a known zone. Diagnostics only: an
+  /// inactive lookup answers [RecentCoverage.clear], so the send log needs
+  /// this to say why a ping went out.
+  bool Function()? isRecentCoverageActive;
 
   /// Fired once each time smart pinging holds a ping, with the fix that was
   /// validated and which kind of ping was held. The provider dedupes it on
@@ -235,6 +281,11 @@ class PingService {
   /// Callback for discovery events (Passive Mode)
   /// Fires immediately when disc ping is created (like onTxPing)
   void Function(DiscLogEntry)? onDiscPing;
+
+  /// The entry [onDiscPing] published was never sent: the discovery write
+  /// failed. The listener withdraws it, so a request that never went on the
+  /// air is not drawn as a failed discovery. Nothing was queued for upload.
+  void Function(DiscLogEntry)? onDiscPingAborted;
 
   /// Called in real-time when each node is discovered during tracking window
   /// Parameters: (DiscLogEntry discPing, DiscoveredNodeEntry nodeEntry, bool isNew)
@@ -328,11 +379,41 @@ class PingService {
   /// Get current auto-ping interval in milliseconds
   int get autoPingIntervalMs => _autoPingIntervalMs;
 
+  /// The earliest the next discovery can go out (see the field).
+  @visibleForTesting
+  DateTime? get earliestNextDiscoveryAt => _earliestNextDiscoveryAt;
+
+  /// True while a sweep's scope runner is still working.
+  bool get isScopeRunnerActive => _currentScopeRunner != null;
+
+  /// Stops the live scope runner at once: nothing more goes on the air for
+  /// it and its badge clears. Called by every stop path, and by the
+  /// provider for the paths that end a session without passing through
+  /// here (Offline Mode switch, zone transfer, disconnect).
+  void cancelScopeRunner(String reason) {
+    final runner = _currentScopeRunner;
+    if (runner == null) return;
+    // Cancel while it is still current, so its badge clears.
+    runner.cancel(reason);
+    _currentScopeRunner = null;
+  }
+
   /// Hold new TX attempts while a replacement API session is being installed.
   /// Any TX already on air drains through its normal listening window first.
   void setSessionRecoveryInProgress(bool value) {
     _sessionRecoveryInProgress = value;
     debugLog('[SESSION] TX ${value ? 'held for session recovery' : 'released after session recovery'}');
+    if (value) return;
+    final held = _txHeldByRecovery;
+    _txHeldByRecovery = false;
+    if (!held) return;
+    // A ping in flight will schedule its own next; the bow-out's full
+    // interval stays as the backstop for anything else.
+    if (!_autoPingEnabled || _passiveModeEnabled || _pingInProgress) return;
+    debugLog('[SESSION] Re-arming the TX held by the recovery in '
+        '${heldTxReleaseDelay.inSeconds}s');
+    _rescheduleAutoLane(
+        delayMs: heldTxReleaseDelay.inMilliseconds, heldTxLeg: true);
   }
 
   /// Wait until a transmitted TX has been queued with its original wire tag.
@@ -398,7 +479,8 @@ class PingService {
     // here and the interval tick already fails open; 'clear' is also the
     // answer once Smart Pinging is off, which is why the provider drops the
     // bank when the lookup goes inactive.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) !=
+    if (checkRecentCoverage?.call(
+            position.latitude, position.longitude, banked) !=
         RecentCoverage.clear) {
       return false;
     }
@@ -544,7 +626,8 @@ class PingService {
     // reads as held, not rate limited, and both Hybrid legs then agree. Banking
     // a too close ping is safe, since the release re-checks the 25 m rule
     // before it ever goes out. Only here (auto): manual pings always send.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+    if (checkRecentCoverage?.call(
+            position.latitude, position.longitude, BankedPingType.tx) ==
         RecentCoverage.covered) {
       return PingValidation.recentlyCovered;
     }
@@ -557,7 +640,7 @@ class PingService {
     // Check cooldown (5 seconds between pings)
     final lastTx = _lastTxTime;
     if (lastTx != null) {
-      final elapsed = DateTime.now().difference(lastTx);
+      final elapsed = clock.now().difference(lastTx);
       if (elapsed < _autoPingCooldown) {
         return PingValidation.cooldownActive;
       }
@@ -678,7 +761,7 @@ class PingService {
     // Check cooldown (5 seconds between pings)
     final lastTx = _lastTxTime;
     if (lastTx != null) {
-      final elapsed = DateTime.now().difference(lastTx);
+      final elapsed = clock.now().difference(lastTx);
       if (elapsed < _autoPingCooldown) {
         return PingValidation.cooldownActive;
       }
@@ -692,7 +775,7 @@ class PingService {
   bool isInCooldown() {
     final lastTx = _lastTxTime;
     if (lastTx == null) return false;
-    final elapsed = DateTime.now().difference(lastTx);
+    final elapsed = clock.now().difference(lastTx);
     return elapsed < _autoPingCooldown;
   }
 
@@ -700,7 +783,7 @@ class PingService {
   int getRemainingCooldownSeconds() {
     final lastTx = _lastTxTime;
     if (lastTx == null) return 0;
-    final elapsed = DateTime.now().difference(lastTx);
+    final elapsed = clock.now().difference(lastTx);
     final remaining = _autoPingCooldown - elapsed;
     return remaining.inSeconds.clamp(0, _autoPingCooldown.inSeconds);
   }
@@ -769,7 +852,10 @@ class PingService {
       // provider only releases the gate in a finally, so a tick that lands
       // during recovery would end the lane for the rest of the session with
       // the mode flags still reading enabled. Manual pings arm nothing.
-      if (!manual) _rescheduleAutoLane();
+      if (!manual) {
+        _txHeldByRecovery = true;
+        _rescheduleAutoLane();
+      }
       return false;
     }
 
@@ -805,6 +891,7 @@ class PingService {
           // while this is still true latches as pending with no window to
           // drain it. This lane is auto-only, so no manual check is needed.
           _pingInProgress = false;
+          _txHeldByRecovery = true;
           _rescheduleAutoLane();
           return false;
         }
@@ -920,6 +1007,10 @@ class PingService {
         _pingInProgress = false;
         return false;
       }
+      if (!manual) {
+        debugLog('[PING] Auto TX passed validation, smart ping: '
+            '${_smartPingVerdict(position, BankedPingType.tx)}');
+      }
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
       // Build the on-air body ONCE (same string is used for TxTracker echo
@@ -968,123 +1059,136 @@ class PingService {
       // Capture noise floor at ping time
       final noiseFloor = _connection.lastNoiseFloor;
 
-      // Create TX ping record FIRST so it's available for echo callbacks
-      final txPing = TxPing(
-        latitude: position.latitude,
-        longitude: position.longitude,
-        power: txPowerDbm,
-        timestamp: DateTime.now(),
-        deviceId: _deviceId,
-        heardRepeaters: [], // Will be populated dynamically as echoes arrive
-      );
+      // Everything below runs in [goingOut], which the connection calls once
+      // the frame is past every write gate (a sign, a scope lease) and just
+      // before the transport write. A TX parked behind a lease for up to 4 s
+      // therefore neither spends its echo window waiting nor records a send
+      // time from before it went out, and tracking is still armed before the
+      // radio can hear an echo.
+      void goingOut() {
+        // A force teardown while the frame waited at a gate: the send still
+        // goes out, but it belongs to no session any more, and the shared
+        // tracker may already be following a newer session's ping.
+        if (epoch != _sendEpoch) return;
 
-      // Store reference for updating with heard repeaters
-      _lastTxPing = txPing;
-      debugLog('[PING] Created TxPing, ready for echo tracking');
-
-      // Notify immediately so TxLogEntry exists BEFORE echoes arrive
-      // This fixes timing issue where echoes arrived before onTxPing was called
-      onTxPing?.call(txPing);
-
-      // Start TX echo tracking BEFORE sending ping (matches web client flow)
-      // Reference: startTxTracking() called before sendChannelTextMessage() in wardrive.js
-      final channelIndex = _connection.wardrivingChannelIndex;
-      final channelHash = _connection.wardrivingChannelHash;
-      final channelKey = _connection.wardrivingChannelKey;
-
-      if (_txTracker != null &&
-          channelIndex != null &&
-          channelHash != null &&
-          channelKey != null) {
-        debugLog('[PING] Starting TX echo tracking for: "$pingMessage"');
-
-        // Wire up real-time echo callback before starting tracking
-        final txTracker = _txTracker;
-        txTracker.onEchoReceived = (repeaterId, snr, rssi, isNew) {
-          debugLog(
-              '[PING] onEchoReceived callback fired: $repeaterId, SNR=$snr, RSSI=$rssi, isNew=$isNew');
-          final txPing = _lastTxPing;
-          if (txPing != null) {
-            final repeater = HeardRepeater(
-              repeaterId: repeaterId,
-              snr: snr,
-              rssi: rssi,
-              seenCount: txTracker.repeaters[repeaterId]?.seenCount ?? 1,
-            );
-
-            if (isNew) {
-              // Add new repeater to the list
-              txPing.heardRepeaters.add(repeater);
-              debugLog(
-                  '[PING] Real-time: Added new repeater $repeaterId (SNR: $snr) - total: ${txPing.heardRepeaters.length}');
-            } else {
-              // Update existing repeater's SNR if better
-              final idx = txPing.heardRepeaters
-                  .indexWhere((r) => r.repeaterId == repeaterId);
-              if (idx >= 0) {
-                txPing.heardRepeaters[idx] = repeater;
-                debugLog(
-                    '[PING] Real-time: Updated repeater $repeaterId (SNR: $snr)');
-              }
-            }
-
-            // Notify for real-time UI updates
-            debugLog(
-                '[PING] Calling onEchoReceived callback (callback=${onEchoReceived != null ? "SET" : "NULL"})');
-            onEchoReceived?.call(txPing, repeater, isNew);
-            debugLog('[PING] onEchoReceived callback completed');
-          } else {
-            debugWarn('[PING] onEchoReceived: _lastTxPing is null!');
-          }
-        };
-
-        txTracker.onMultiHopEchoReceived =
-            (repeaterId, snr, rssi, pathHops, isNew) {
-          debugLog(
-              '[PING] Multi-hop echo: $repeaterId, SNR=$snr, hops=${pathHops.length}, isNew=$isNew');
-          final txPing = _lastTxPing;
-          if (txPing != null) {
-            final repeater = HeardRepeater(
-              repeaterId: repeaterId,
-              snr: snr,
-              rssi: rssi,
-              seenCount:
-                  txTracker.multiHopRepeaters[repeaterId]?.seenCount ?? 1,
-              pathHops: pathHops,
-            );
-
-            if (isNew) {
-              txPing.heardRepeaters.add(repeater);
-            } else {
-              final idx = txPing.heardRepeaters.indexWhere(
-                  (r) => r.repeaterId == repeaterId && r.pathHops != null);
-              if (idx >= 0) {
-                txPing.heardRepeaters[idx] = repeater;
-              }
-            }
-
-            onMultiHopEchoReceived?.call(
-                txPing, repeaterId, snr, rssi, pathHops, isNew);
-          }
-        };
-
-        txTracker.startTracking(
-          payload: pingMessage,
-          channelIdx: channelIndex,
-          channelHash: channelHash,
-          channelKey: channelKey,
-          windowDuration: _rxListeningWindow,
+        // Create TX ping record FIRST so it's available for echo callbacks
+        final txPing = TxPing(
+          latitude: position.latitude,
+          longitude: position.longitude,
+          power: txPowerDbm,
+          timestamp: clock.now(),
+          deviceId: _deviceId,
+          heardRepeaters: [], // Will be populated dynamically as echoes arrive
         );
-      } else {
-        debugWarn(
-            '[PING] TX tracking not available - channel info missing or no tracker');
+
+        // Store reference for updating with heard repeaters
+        _lastTxPing = txPing;
+        debugLog('[PING] Created TxPing, ready for echo tracking');
+
+        // Notify immediately so TxLogEntry exists BEFORE echoes arrive
+        // This fixes timing issue where echoes arrived before onTxPing was called
+        onTxPing?.call(txPing);
+
+        // Start TX echo tracking BEFORE sending ping (matches web client flow)
+        // Reference: startTxTracking() called before sendChannelTextMessage() in wardrive.js
+        final channelIndex = _connection.wardrivingChannelIndex;
+        final channelHash = _connection.wardrivingChannelHash;
+        final channelKey = _connection.wardrivingChannelKey;
+
+        if (_txTracker != null &&
+            channelIndex != null &&
+            channelHash != null &&
+            channelKey != null) {
+          debugLog('[PING] Starting TX echo tracking for: "$pingMessage"');
+
+          // Wire up real-time echo callback before starting tracking
+          final txTracker = _txTracker;
+          txTracker.onEchoReceived = (repeaterId, snr, rssi, isNew) {
+            debugLog(
+                '[PING] onEchoReceived callback fired: $repeaterId, SNR=$snr, RSSI=$rssi, isNew=$isNew');
+            final txPing = _lastTxPing;
+            if (txPing != null) {
+              final repeater = HeardRepeater(
+                repeaterId: repeaterId,
+                snr: snr,
+                rssi: rssi,
+                seenCount: txTracker.repeaters[repeaterId]?.seenCount ?? 1,
+              );
+
+              if (isNew) {
+                // Add new repeater to the list
+                txPing.heardRepeaters.add(repeater);
+                debugLog(
+                    '[PING] Real-time: Added new repeater $repeaterId (SNR: $snr) - total: ${txPing.heardRepeaters.length}');
+              } else {
+                // Update existing repeater's SNR if better
+                final idx = txPing.heardRepeaters
+                    .indexWhere((r) => r.repeaterId == repeaterId);
+                if (idx >= 0) {
+                  txPing.heardRepeaters[idx] = repeater;
+                  debugLog(
+                      '[PING] Real-time: Updated repeater $repeaterId (SNR: $snr)');
+                }
+              }
+
+              // Notify for real-time UI updates
+              debugLog(
+                  '[PING] Calling onEchoReceived callback (callback=${onEchoReceived != null ? "SET" : "NULL"})');
+              onEchoReceived?.call(txPing, repeater, isNew);
+              debugLog('[PING] onEchoReceived callback completed');
+            } else {
+              debugWarn('[PING] onEchoReceived: _lastTxPing is null!');
+            }
+          };
+
+          txTracker.onMultiHopEchoReceived =
+              (repeaterId, snr, rssi, pathHops, isNew) {
+            debugLog(
+                '[PING] Multi-hop echo: $repeaterId, SNR=$snr, hops=${pathHops.length}, isNew=$isNew');
+            final txPing = _lastTxPing;
+            if (txPing != null) {
+              final repeater = HeardRepeater(
+                repeaterId: repeaterId,
+                snr: snr,
+                rssi: rssi,
+                seenCount:
+                    txTracker.multiHopRepeaters[repeaterId]?.seenCount ?? 1,
+                pathHops: pathHops,
+              );
+
+              if (isNew) {
+                txPing.heardRepeaters.add(repeater);
+              } else {
+                final idx = txPing.heardRepeaters.indexWhere(
+                    (r) => r.repeaterId == repeaterId && r.pathHops != null);
+                if (idx >= 0) {
+                  txPing.heardRepeaters[idx] = repeater;
+                }
+              }
+
+              onMultiHopEchoReceived?.call(
+                  txPing, repeaterId, snr, rssi, pathHops, isNew);
+            }
+          };
+
+          txTracker.startTracking(
+            payload: pingMessage,
+            channelIdx: channelIndex,
+            channelHash: channelHash,
+            channelKey: channelKey,
+            windowDuration: _rxListeningWindow,
+          );
+        } else {
+          debugWarn(
+              '[PING] TX tracking not available - channel info missing or no tracker');
+        }
+
+        // Play transmit sound immediately before sending
+        _audioService?.playTransmitSound();
       }
 
-      // Play transmit sound immediately before sending
-      _audioService?.playTransmitSound();
-
-      // Send ping via BLE (pre-composed body — wire tag or legacy coords)
-      await _connection.sendPing(pingMessage);
+      // Send ping via BLE (pre-composed body, wire tag or legacy coords)
+      await _connection.sendPing(pingMessage, onWire: goingOut);
 
       // A force teardown can land while BLE is awaiting its sent confirmation.
       // The radio may have accepted the packet, but this stale send must not
@@ -1100,7 +1204,7 @@ class PingService {
       }
 
       // Mark ping time and position
-      _lastTxTime = DateTime.now();
+      _lastTxTime = clock.now();
       _gpsService.markPingPosition(position);
 
       // Start appropriate cooldown timer
@@ -1227,6 +1331,7 @@ class PingService {
     // Queue TX entry with heard_repeats AFTER RX window ends
     final txTimestamp = _pendingTxTimestamp;
     if (txTimestamp != null) {
+      final fixAltitude = _gpsService.fixAltitudeOf(txPosition);
       _txWindowFinalizing = true;
       try {
         try {
@@ -1240,7 +1345,9 @@ class PingService {
             power: getPowerLevel?.call(),
             pingCounter: _pendingTxPingCounter,
             wireTag: _pendingTxWireTag,
-            altitude: GpsService.altitudeOrNull(txPosition),
+            altitude: fixAltitude.meters,
+            altitudeRef: fixAltitude.wireReference,
+            altitudeAccuracy: fixAltitude.accuracy,
           );
           debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
         } catch (e) {
@@ -1264,7 +1371,9 @@ class PingService {
               externalAntenna: getExternalAntenna?.call() ?? false,
               noiseFloor: _pendingTxNoiseFloor,
               power: getPowerLevel?.call(),
-              altitude: GpsService.altitudeOrNull(txPosition),
+              altitude: fixAltitude.meters,
+              altitudeRef: fixAltitude.wireReference,
+              altitudeAccuracy: fixAltitude.accuracy,
             );
           }
           debugLog(
@@ -1318,19 +1427,37 @@ class PingService {
   /// early with nothing armed ends the lane for the rest of the session while
   /// the mode flags still read enabled. Hybrid or Active is chosen exactly as
   /// the validation skip path chooses it.
-  void _rescheduleAutoLane() {
+  ///
+  /// [delayMs] replaces the interval (the held-TX re-arm). [heldTxLeg] names
+  /// the leg: in Hybrid the TX leg that bowed out is the one that runs, so
+  /// the alternation is unchanged. The flag is forced because the two
+  /// bow-out sites disagree on it: at the gate before the send it still
+  /// reads TX, while after the fresh fix the timer callback has already
+  /// flipped it to discovery when it dispatched the TX.
+  void _rescheduleAutoLane({int? delayMs, bool heldTxLeg = false}) {
     if (!_autoPingEnabled || _passiveModeEnabled) return;
     if (_hybridModeEnabled) {
-      _scheduleNextHybridPing();
+      if (heldTxLeg) _nextPingIsDiscovery = false;
+      _scheduleNextHybridPing(delayMs: delayMs);
     } else {
-      _scheduleNextAutoPing();
+      _scheduleNextAutoPing(delayMs: delayMs);
     }
+  }
+
+  /// Why Smart Pinging let a send through, for the send log: 'inactive'
+  /// (off, or no zone), 'unknown' (no tile loaded here, fails open), 'clear'
+  /// or 'no lookup' (not wired).
+  String _smartPingVerdict(Position position, BankedPingType kind) {
+    final check = checkRecentCoverage;
+    if (check == null) return 'no lookup';
+    if (isRecentCoverageActive?.call() == false) return 'inactive';
+    return check(position.latitude, position.longitude, kind).name;
   }
 
   /// Schedule next auto ping after interval
   /// Reference: scheduleNextAutoPing() in wardrive.js
-  void _scheduleNextAutoPing() {
-    if (!_autoPingEnabled || _passiveModeEnabled) {
+  void _scheduleNextAutoPing({int? delayMs}) {
+    if (_disposed || !_autoPingEnabled || _passiveModeEnabled) {
       debugLog(
           '[ACTIVE MODE] Not scheduling next auto ping - auto mode not running or Passive Mode');
       return;
@@ -1341,12 +1468,12 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
 
-    debugLog(
-        '[ACTIVE MODE] Scheduling next auto ping in ${_autoPingIntervalMs}ms');
+    final waitMs = delayMs ?? _autoPingIntervalMs;
+    debugLog('[ACTIVE MODE] Scheduling next auto ping in ${waitMs}ms');
 
     // Start countdown display (with skip reason if applicable)
     // The AutoPingTimer in countdown_timer_service.dart handles the display
-    onAutoPingScheduled?.call(_autoPingIntervalMs, _skipReason);
+    onAutoPingScheduled?.call(waitMs, _skipReason);
 
     // That callback runs synchronously and can stop auto mode (the idle
     // auto-stop hangs off it), which cancels _autoTimer. Re-check so we don't
@@ -1358,7 +1485,8 @@ class PingService {
     }
 
     // Schedule the next ping
-    _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+    _autoTimer = Timer(Duration(milliseconds: waitMs), () {
+      if (_disposed) return;
       debugLog('[ACTIVE MODE] Auto ping timer fired');
 
       // Guard: connection may have dropped since timer was scheduled
@@ -1474,6 +1602,7 @@ class PingService {
     _autoPingEnabled = true;
     _passiveModeEnabled = passiveMode;
     _hybridModeEnabled = hybridMode;
+    _txHeldByRecovery = false;
     _targetedModeEnabled = targetedMode;
     _nextPingIsDiscovery = true; // Always start hybrid with discovery
 
@@ -1598,6 +1727,9 @@ class PingService {
       debugLog('[PING] Ping in progress, queuing disable for after RX window');
       _pendingDisable = true;
       _armPendingDisableTimeout();
+      // The stop is accepted now, even though the ping drains later: the
+      // scope runner stops with it, before this returns.
+      cancelScopeRunner('stop');
       return true; // Return true to indicate disable was accepted (pending)
     }
 
@@ -1609,6 +1741,8 @@ class PingService {
           '[ACTIVE MODE] Stop blocked by cooldown (${remainingSec}s remaining)');
       return false;
     }
+
+    cancelScopeRunner('stop');
 
     // Clear auto timer
     _autoTimer?.cancel();
@@ -1738,7 +1872,9 @@ class PingService {
     // epoch move when it resumes and bows out without transmitting, leaving
     // the flag to whoever holds it by then.
     _sendEpoch++;
+    cancelScopeRunner('force disable');
     _pingInProgress = false;
+    _txHeldByRecovery = false;
     if (!_txWindowFinalizing) {
       _cancelPendingTxWindow();
       _completeTxWindowGate();
@@ -1758,6 +1894,14 @@ class PingService {
     _stopDiscoveryMode();
     _stopTargetedMode();
     await _wakelockService.disable();
+  }
+
+  /// Count one scope request a repeater answered. The scope runner lives on
+  /// the provider, but the count sits with the other session stats so it
+  /// resets with them.
+  void recordScopeAnswer() {
+    _stats = _stats.copyWith(scopeCount: _stats.scopeCount + 1);
+    onStatsUpdated?.call(_stats);
   }
 
   /// Reset statistics
@@ -1857,6 +2001,9 @@ class PingService {
     // dispose() calls _endWindow() while listening, which does fire.
     _discoveryWindowCountdown.stop();
 
+    cancelScopeRunner('discovery stopped');
+    _earliestNextDiscoveryAt = null;
+
     _discoveryTimer?.cancel();
     _discoveryTimer = null;
     _controlDataSubscription?.cancel();
@@ -1913,6 +2060,8 @@ class PingService {
     // window is running, so the flag alone cannot tell an armed window from an
     // attempt that bowed out. The finally needs that distinction.
     var armedWindow = false;
+    // Set when a held TX ping takes this leg instead (Hybrid).
+    var handToTx = false;
     final epoch = _sendEpoch;
 
     try {
@@ -1998,22 +2147,67 @@ class PingService {
       }
 
       // Smart Pinging: a covered square gets no discovery request either.
-      if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+      if (checkRecentCoverage?.call(position.latitude, position.longitude,
+              BankedPingType.discovery) ==
           RecentCoverage.covered) {
         _skipReason = skipReasonRecentlyCovered;
-        _bankedPing = BankedPingType.discovery;
-        debugLog(
-            '[DISC] Square recently covered, discovery deferred and banked');
+        // A held TX ping keeps the slot (Hybrid): the first ping into a fresh
+        // square should be the one that can come back two-way.
+        if (_bankedPing == BankedPingType.tx) {
+          debugLog('[DISC] Square recently covered, discovery deferred, '
+              'banked TX ping kept');
+        } else {
+          _bankedPing = BankedPingType.discovery;
+          debugLog(
+              '[DISC] Square recently covered, discovery deferred and banked');
+        }
         _pingInProgress = false;
-        onPingDeferred?.call(
-            position.latitude, position.longitude, BankedPingType.discovery);
+        // Names what is actually held, so a square first entered on this leg
+        // while a TX is held reports the TX.
+        onPingDeferred?.call(position.latitude, position.longitude,
+            _bankedPing ?? BankedPingType.discovery);
         _scheduleNextDiscovery();
         return;
       }
 
+      // A square can be clear for discovery while still covered for TX, so
+      // ask about TX separately before deciding what the bank does.
+      final txCovered = checkRecentCoverage?.call(
+              position.latitude, position.longitude, BankedPingType.tx) ==
+          RecentCoverage.covered;
+
+      // A held TX ping is never replaced by a discovery (Hybrid). The release
+      // check could not see this fix: the in-progress latch above refuses it,
+      // getFreshPosition() bypasses the stream, and it only releases on a
+      // definite 'clear' while this lane also proceeds on 'unknown'. So this
+      // leg goes to the TX instead, unless the square is still covered for
+      // TX. The send itself is dispatched from the finally, once the latch is
+      // cleared, since sendTxPing takes it again.
+      if (_hybridModeEnabled &&
+          _bankedPing == BankedPingType.tx &&
+          !txCovered &&
+          _gpsService.canPingAtPosition(position)) {
+        debugLog('[DISC] Banked TX ping takes this leg, discovery not sent');
+        _bankedPing = null;
+        _skipReason = null;
+        _pingInProgress = false;
+        handToTx = true;
+        return;
+      }
+
+      debugLog('[DISC] Discovery passed checks, smart ping: '
+          '${_smartPingVerdict(position, BankedPingType.discovery)}');
+
       // Clear skip reason since we're proceeding
       _skipReason = null;
-      _bankedPing = null;
+      // A held TX in a square still covered for TX keeps waiting for a clear
+      // one: this discovery does not stand in for it.
+      if (_bankedPing == BankedPingType.tx && txCovered) {
+        debugLog(
+            '[DISC] Square covered for TX only, discovery sent, banked TX kept');
+      } else {
+        _bankedPing = null;
+      }
 
       // Signal "Sending..." to UI (the flag itself was latched above)
       onPingProgressChanged?.call();
@@ -2046,12 +2240,17 @@ class PingService {
         // Play transmit sound immediately before sending
         _audioService?.playTransmitSound();
 
-        // Send discovery request and get tag
-        final tag = await _connection.sendDiscoveryRequest();
+        // The previous sweep's scope runner never overlaps this one's
+        // request: it stops right before the write.
+        cancelScopeRunner('next discovery');
 
-        // Start tracking with the tag
+        // Send discovery request and get tag
+        final sent = await _connection.sendDiscoveryRequest();
+
+        // Start tracking with the tag, timing own replies from the send
         _discTracker?.startTracking(
-          tag: tag,
+          tag: sent.tag,
+          sentAt: sent.sentAt,
           windowDuration: _discoveryListeningWindow,
         );
 
@@ -2070,8 +2269,14 @@ class PingService {
         // discovery pings too, not just TX (#501)
         _gpsService.markActivityPosition(position);
       } catch (e) {
-        _pingInProgress = false;
         debugError('[DISC] Failed to send discovery request: $e');
+        if (identical(_lastDiscPing, discPing)) _lastDiscPing = null;
+        onDiscPingAborted?.call(discPing);
+        // Torn down while the write was in flight (a force disable or a
+        // dispose on a radio drop): the lane is gone, so no retry, and the
+        // flag is left alone as on the fresh-fix bow-out (see _sendEpoch).
+        if (_disposed || epoch != _sendEpoch) return;
+        _pingInProgress = false;
         if (_pendingDisable) {
           await _executePendingDisable('discovery send failed');
           return;
@@ -2107,6 +2312,14 @@ class PingService {
       if (!armedWindow && epoch == _sendEpoch) _pingInProgress = false;
       if (!armedWindow && _pendingDisable) {
         await _executePendingDisable('discovery ended without window');
+      } else if (handToTx && epoch == _sendEpoch) {
+        // The timer callback flipped the alternation past this leg when it
+        // dispatched it. The TX runs in its place, so the next leg is a
+        // discovery, as in maybeSendBankedPing(). The TX re-arms the lane
+        // from its own window or skip path.
+        _nextPingIsDiscovery = true;
+        debugLog('[PING] Releasing banked TX ping in place of a discovery');
+        unawaited(_sendAutoPing());
       }
     }
   }
@@ -2130,13 +2343,17 @@ class PingService {
 
     // Use _lastDiscPing which was already created and added to log in _sendDiscoveryRequest
     final discoverySuccess = _lastDiscPing?.discoveredNodes.isNotEmpty ?? false;
+    // The sweep's DISC writes. Nothing waits on them unless a scope runner
+    // starts, which must not ask before they are safely queued.
+    final discWrites = <Future<void>>[];
+    final fixAltitude = _gpsService.fixAltitudeOf(position);
 
     if (discoverySuccess) {
       debugLog('[DISC] Processing ${nodes.length} discovered nodes');
 
       // Queue API payloads for each discovered node (uses nodes for pubkeyFull)
       for (final node in nodes) {
-        _apiQueue.enqueueDisc(
+        discWrites.add(_apiQueue.enqueueDisc(
           latitude: position.latitude,
           longitude: position.longitude,
           repeaterId: node.repeaterId,
@@ -2149,8 +2366,10 @@ class PingService {
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
           power: getPowerLevel?.call(),
-          altitude: GpsService.altitudeOrNull(position),
-        );
+          altitude: fixAltitude.meters,
+          altitudeRef: fixAltitude.wireReference,
+          altitudeAccuracy: fixAltitude.accuracy,
+        ));
       }
 
       // Update stats
@@ -2168,7 +2387,9 @@ class PingService {
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
           power: getPowerLevel?.call(),
-          altitude: GpsService.altitudeOrNull(position),
+          altitude: fixAltitude.meters,
+          altitudeRef: fixAltitude.wireReference,
+          altitudeAccuracy: fixAltitude.accuracy,
         );
         debugLog('[DISC] Discovery drop queued (no response)');
       }
@@ -2188,11 +2409,65 @@ class PingService {
       return;
     }
     _scheduleNextDiscovery();
+    if (discoverySuccess) {
+      _maybeStartScopeRunner(nodes, position, discWrites);
+    }
+  }
+
+  /// Starts this sweep's scope runner alongside the schedule just armed,
+  /// never ahead of it: nothing about the next ping waits on the runner.
+  void _maybeStartScopeRunner(List<DiscoveredNode> nodes, Position position,
+      List<Future<void>> discWrites) {
+    final factory = scopeRunnerFactory;
+    if (factory == null) return;
+    if (_pendingDisable ||
+        !_autoPingEnabled ||
+        (!_passiveModeEnabled && !_hybridModeEnabled)) {
+      return;
+    }
+    final earliest = _earliestNextDiscoveryAt;
+    if (earliest == null) return;
+    // Repeaters only: a room server is never asked.
+    final candidates = <ScopeCandidate>[
+      for (final node in nodes)
+        if (node.nodeType == DiscoveryConstants.nodeTypeRepeater)
+          (
+            keyHex: node.pubkeyFull.toUpperCase(),
+            repeaterId: node.repeaterId,
+            lat: position.latitude,
+            lon: position.longitude,
+            localRssi: node.localRssi,
+            localSnr: node.localSnr,
+            discoveryReplyAfter: node.discoveryReplyAfter,
+          ),
+    ];
+    if (candidates.isEmpty) return;
+
+    cancelScopeRunner('superseded');
+    final cap = clock.now().add(ScopeRunner.maxRunnerLifetime);
+    final hardStop = earliest.isBefore(cap) ? earliest : cap;
+    final ScopeRunner? runner;
+    try {
+      runner = factory(hardStop: hardStop, cancel: ScopeCancelToken());
+    } catch (e) {
+      debugError('[SCOPES] Could not build the scope runner: $e');
+      return;
+    }
+    if (runner == null) return;
+    runner.isCurrent = () => identical(_currentScopeRunner, runner);
+    _currentScopeRunner = runner;
+    final discPersisted = Future.wait(discWrites).then((_) {});
+    unawaited(runner
+        .run(candidates, discPersisted: discPersisted)
+        .whenComplete(() {
+      if (identical(_currentScopeRunner, runner)) _currentScopeRunner = null;
+    }));
   }
 
   /// Schedule next discovery request
   /// Uses fixed 30-second interval (repeaters only respond 4 times per 2 minutes)
   void _scheduleNextDiscovery() {
+    if (_disposed) return;
     // In hybrid mode, route to hybrid scheduler instead
     if (_hybridModeEnabled) {
       _scheduleNextHybridPing();
@@ -2207,10 +2482,11 @@ class PingService {
     _discoveryTimer?.cancel();
     _discoveryTimer = Timer(_discoveryInterval, () {
       debugLog('[DISC] Discovery timer fired');
-      if (_autoPingEnabled && _passiveModeEnabled) {
+      if (!_disposed && _autoPingEnabled && _passiveModeEnabled) {
         _sendDiscoveryRequest();
       }
     });
+    _earliestNextDiscoveryAt = clock.now().add(_discoveryInterval);
 
     // Notify callback for countdown display (30 seconds hardcoded for discovery)
     onAutoPingScheduled?.call(_discoveryInterval.inMilliseconds, _skipReason);
@@ -2221,8 +2497,8 @@ class PingService {
 
   /// Schedule next hybrid ping (alternates discovery ↔ TX)
   /// Uses user-configured interval for both ping types
-  void _scheduleNextHybridPing() {
-    if (!_autoPingEnabled || !_hybridModeEnabled) return;
+  void _scheduleNextHybridPing({int? delayMs}) {
+    if (_disposed || !_autoPingEnabled || !_hybridModeEnabled) return;
 
     _autoTimer?.cancel();
     _autoTimer = null;
@@ -2232,7 +2508,7 @@ class PingService {
     final listenMs = _nextPingIsDiscovery
         ? _discoveryListeningWindow.inMilliseconds
         : _rxListeningWindow.inMilliseconds;
-    final waitMs =
+    final waitMs = delayMs ??
         (_autoPingIntervalMs - listenMs).clamp(1000, _autoPingIntervalMs);
 
     final isNextDisc = _nextPingIsDiscovery;
@@ -2247,8 +2523,17 @@ class PingService {
       return;
     }
 
+    // The earliest the next discovery leg can go out: this wait when it is
+    // the discovery leg, else this wait plus the wait the scheduler arms
+    // before a discovery leg (a skipped TX arms it with no RX window).
+    final discoveryLegWaitMs = (_autoPingIntervalMs -
+            _discoveryListeningWindow.inMilliseconds)
+        .clamp(1000, _autoPingIntervalMs);
+    _earliestNextDiscoveryAt = clock.now().add(Duration(
+        milliseconds: isNextDisc ? waitMs : waitMs + discoveryLegWaitMs));
+
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
-      if (!_autoPingEnabled || !_hybridModeEnabled) return;
+      if (_disposed || !_autoPingEnabled || !_hybridModeEnabled) return;
       if (_connection.currentStep != ConnectionStep.connected) {
         debugLog('[HYBRID] Not connected, ignoring timer');
         return;
@@ -2542,6 +2827,7 @@ class PingService {
           '[TRACE] Trace successful: localSnr=${result.localSnr}, remoteSnr=${result.remoteSnr}');
 
       // Queue to API (only successful traces)
+      final fixAltitude = _gpsService.fixAltitudeOf(position);
       _apiQueue.enqueueTrace(
         latitude: position.latitude,
         longitude: position.longitude,
@@ -2553,7 +2839,9 @@ class PingService {
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
         power: getPowerLevel?.call(),
-        altitude: GpsService.altitudeOrNull(position),
+        altitude: fixAltitude.meters,
+        altitudeRef: fixAltitude.wireReference,
+        altitudeAccuracy: fixAltitude.accuracy,
       );
 
       // Update stats
@@ -2579,7 +2867,7 @@ class PingService {
 
   /// Schedule next targeted ping after interval
   void _scheduleNextTargetedPing() {
-    if (!_autoPingEnabled || !_targetedModeEnabled) {
+    if (_disposed || !_autoPingEnabled || !_targetedModeEnabled) {
       debugLog('[TRACE] Not in targeted mode, not scheduling next trace');
       return;
     }
@@ -2587,6 +2875,7 @@ class PingService {
     _targetedTimer?.cancel();
     _targetedTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[TRACE] Targeted ping timer fired');
+      if (_disposed) return;
       if (_connection.currentStep != ConnectionStep.connected) {
         debugLog('[TRACE] Not connected, ignoring timer');
         return;
@@ -2634,6 +2923,17 @@ class PingService {
 
   /// Dispose of resources
   void dispose() {
+    // A send suspended on its fresh fix or BLE write resumes after this. The
+    // epoch bump makes it bow out, and the cleared modes and [_disposed] stop
+    // any skip or failure path from re-arming a timer (the provider disposes
+    // on a radio drop without a force disable first).
+    _disposed = true;
+    _sendEpoch++;
+    _autoPingEnabled = false;
+    _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
+    _pendingDisable = false;
     if (!_txWindowFinalizing) {
       _cancelPendingTxWindow();
       _completeTxWindowGate();

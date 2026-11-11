@@ -112,124 +112,100 @@ class ChannelService {
     return result;
   }
 
-  /// Create #wardriving channel on the device
-  ///
-  /// Finds first empty channel slot and creates the channel with SHA-256 key
-  ///
-  /// @param connection - Active MeshCore connection
-  /// @returns ChannelInfo for the created channel
-  /// @throws Exception if no empty slots or creation fails
-  static Future<ChannelInfo> createWardrivingChannel(
-      MeshCoreConnection connection) async {
-    debugLog('[CHANNEL] Attempting to create channel: $wardrivingChannelName');
+  /// How long to wait before reading a failed channel slot a second time.
+  static const Duration slotRetryDelay = Duration(milliseconds: 200);
 
-    // Get all channels
-    final channels = await connection.getChannels();
-    debugLog('[CHANNEL] Retrieved ${channels.length} channels');
+  /// Highest slot index the command byte can carry. A radio that answered
+  /// every index without ever saying ERR_CODE_NOT_FOUND would otherwise keep
+  /// the scan going forever.
+  static const int _maxSlotIndex = 255;
 
-    // Find first empty channel slot
-    int? emptyIdx;
-    for (var i = 0; i < channels.length; i++) {
-      if (channels[i].name.isEmpty) {
-        emptyIdx = i;
-        debugLog('[CHANNEL] Found empty channel slot at index: $emptyIdx');
-        break;
-      }
-    }
+  /// Shown when the slot list could not be read in full. Kept clear of the
+  /// words "timeout" and "timed out" so the connection screen shows it as is.
+  static const String incompleteScanMessage =
+      'Could not read the channel list from your radio. Please reconnect.';
 
-    // Throw error if no free slots
-    if (emptyIdx == null) {
-      debugError('[CHANNEL] No empty channel slots available');
-      throw Exception(
-        'No empty channel slots available. Please free a channel slot on your companion first.',
-      );
-    }
-
-    // Derive the channel key from the channel name
-    final channelKey = CryptoService.deriveChannelKey(wardrivingChannelName);
-
-    // Create the channel
-    debugLog(
-        '[CHANNEL] Creating channel $wardrivingChannelName at index $emptyIdx');
-    await connection.setChannel(emptyIdx, wardrivingChannelName, channelKey);
-    debugLog(
-        '[CHANNEL] Channel $wardrivingChannelName created successfully at index $emptyIdx');
-
-    // Return channel info
-    return ChannelInfo(
-      channelIndex: emptyIdx,
-      name: wardrivingChannelName,
-      secret: channelKey,
-    );
-  }
+  /// Shown when the radio answers the channel create with ERR.
+  static const String createFailedMessage =
+      'Your radio could not create the #wardriving channel. Please reconnect.';
 
   /// Ensure #wardriving channel exists (find or create)
   ///
-  /// Optimized to scan channels one-by-one and stop early when found
+  /// Reads the advertised number of slots. MeshCore and ZephCore report the
+  /// same capacity field but return different errors beyond that boundary.
+  /// Without a usable capacity, falls back to ERR_CODE_NOT_FOUND as the end.
+  /// An empty slot is a normal reply with an empty name. Any failure within
+  /// the advertised range is read once more; a second failure fails setup,
+  /// because creating a channel after an incomplete scan could duplicate a
+  /// #wardriving sitting past the failed slot.
+  ///
+  /// A slot holding the #wardriving key under another name counts as the
+  /// existing channel and is used as is (never renamed).
   ///
   /// @param connection - Active MeshCore connection
   /// @returns ChannelInfo for the wardriving channel
   static Future<ChannelInfo> ensureWardrivingChannel(
       MeshCoreConnection connection) async {
     debugLog('[CHANNEL] Looking up channel: $wardrivingChannelName');
+    final wardrivingKey = CryptoService.deriveChannelKey(wardrivingChannelName);
 
-    // Scan ALL channels to find #wardriving or first empty slot
-    // Full scan prevents duplicates from orphaned channels after unexpected disconnects
+    final maxChannels = connection.deviceInfo?.maxChannels;
     int? firstEmptySlot;
     var channelIdx = 0;
-    while (true) {
-      try {
-        // Retry mechanism for first channel (sometimes gets spurious OK responses)
-        ChannelInfo? channel;
-        if (channelIdx == 0) {
-          // First channel might timeout due to spurious OK responses
-          // Retry once if it fails
-          try {
-            channel = await connection.getChannel(channelIdx);
-          } catch (e) {
-            debugLog(
-                '[CHANNEL] First getChannel failed (likely spurious OK), retrying: $e');
-            await Future.delayed(const Duration(milliseconds: 100));
-            channel = await connection.getChannel(channelIdx);
-          }
-        } else {
-          channel = await connection.getChannel(channelIdx);
-        }
-
-        // Found existing #wardriving channel - return immediately!
-        if (channel.name == wardrivingChannelName) {
-          debugLog(
-              '[CHANNEL] Found existing channel at index ${channel.channelIndex} (scanned ${channelIdx + 1} channels)');
-          return channel;
-        }
-
-        // Track first empty slot for creating channel if needed
-        if (channel.name.isEmpty && firstEmptySlot == null) {
-          firstEmptySlot = channelIdx;
-          debugLog('[CHANNEL] Found empty slot at index $firstEmptySlot');
-          // Continue scanning ALL remaining channels to find orphaned #wardriving
-          // This prevents duplicates after unexpected disconnects where channel wasn't deleted
-        }
-
-        channelIdx++;
-      } catch (e) {
-        // Error getting channel (likely reached end)
-        debugLog('[CHANNEL] Scan stopped at channel $channelIdx (error: $e)');
-        break;
+    while (maxChannels == null || channelIdx < maxChannels) {
+      if (channelIdx > _maxSlotIndex) {
+        debugError('[CHANNEL] Radio answered past slot $_maxSlotIndex without '
+            'ending the list, not creating a channel');
+        throw Exception(incompleteScanMessage);
       }
+
+      final ChannelInfo channel;
+      try {
+        final read = await _readSlot(connection, channelIdx,
+            allowEndOfList: maxChannels == null);
+        if (read == null) {
+          // ERR_CODE_NOT_FOUND: the radio's end of list.
+          debugLog('[CHANNEL] End of channel list at index $channelIdx');
+          break;
+        }
+        channel = read;
+      } on _SlotReadFailed {
+        debugError('[CHANNEL] Slot $channelIdx failed twice, channel scan '
+            'incomplete, not creating a channel');
+        throw Exception(incompleteScanMessage);
+      }
+
+      if (channel.name == wardrivingChannelName) {
+        debugLog(
+            '[CHANNEL] Found existing channel at index ${channel.channelIndex} (scanned ${channelIdx + 1} channels)');
+        return channel;
+      }
+
+      if (channel.name.isNotEmpty && _sameKey(channel.secret, wardrivingKey)) {
+        debugLog('[CHANNEL] Slot $channelIdx "${channel.name}" holds the '
+            '$wardrivingChannelName key, using it as the wardriving channel');
+        return channel;
+      }
+
+      if (channel.name.isEmpty && firstEmptySlot == null) {
+        // The reply's own index, never the loop counter: it is the slot the
+        // radio actually described.
+        firstEmptySlot = channel.channelIndex;
+        debugLog('[CHANNEL] Found empty slot at index $firstEmptySlot');
+        // Keep scanning: an orphaned #wardriving left by an unexpected
+        // disconnect may sit further down, and must not be duplicated.
+      }
+
+      channelIdx++;
     }
 
-    // #wardriving not found - create it at first empty slot
+    if (maxChannels != null) {
+      debugLog('[CHANNEL] Read all $maxChannels advertised channel slots');
+    }
+
     if (firstEmptySlot == null) {
-      if (channelIdx == 0) {
-        // Couldn't read any channels — BLE dropped, not a channel issue
-        debugError('[CHANNEL] BLE connection lost during channel scan');
-        throw Exception(
-          'BLE connection lost during channel setup. Please try connecting again.',
-        );
-      }
       debugError(
-          '[CHANNEL] No empty channel slots found in first $channelIdx channels');
+          '[CHANNEL] No empty channel slots found in $channelIdx channels');
       throw Exception(
         'No empty channel slots available. Please free a channel slot on your companion first.',
       );
@@ -237,17 +213,61 @@ class ChannelService {
 
     debugLog(
         '[CHANNEL] #wardriving not found in $channelIdx channels, creating at index $firstEmptySlot');
-    final channelKey = CryptoService.deriveChannelKey(wardrivingChannelName);
-    await connection.setChannel(
-        firstEmptySlot, wardrivingChannelName, channelKey);
+    try {
+      await connection.setChannel(
+          firstEmptySlot, wardrivingChannelName, wardrivingKey);
+    } on CommandErrorException catch (e) {
+      debugError('[CHANNEL] Radio refused to create $wardrivingChannelName '
+          'at index $firstEmptySlot: $e');
+      throw Exception(createFailedMessage);
+    }
     debugLog(
         '[CHANNEL] Channel $wardrivingChannelName created successfully at index $firstEmptySlot');
 
     return ChannelInfo(
       channelIndex: firstEmptySlot,
       name: wardrivingChannelName,
-      secret: channelKey,
+      secret: wardrivingKey,
     );
+  }
+
+  /// Reads one slot, retrying once after [slotRetryDelay].
+  ///
+  /// Without advertised capacity, ERR_CODE_NOT_FOUND ends the list. Within
+  /// advertised capacity it is a failed read, just like any other error.
+  /// Throws [_SlotReadFailed] when both attempts fail.
+  static Future<ChannelInfo?> _readSlot(
+      MeshCoreConnection connection, int channelIdx,
+      {required bool allowEndOfList}) async {
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final channel = await connection.getChannel(channelIdx);
+        if (channel.channelIndex == channelIdx) return channel;
+        debugWarn('[CHANNEL] Slot $channelIdx read answered for slot '
+            '${channel.channelIndex} (attempt $attempt)');
+      } on CommandErrorException catch (e) {
+        if (allowEndOfList && e.isNotFound) return null;
+        debugWarn(
+            '[CHANNEL] Slot $channelIdx read failed (attempt $attempt): $e');
+      } catch (e) {
+        debugWarn(
+            '[CHANNEL] Slot $channelIdx read failed (attempt $attempt): $e');
+      }
+      if (attempt == 1) {
+        debugLog('[CHANNEL] Retrying slot $channelIdx in '
+            '${slotRetryDelay.inMilliseconds} ms');
+        await Future<void>.delayed(slotRetryDelay);
+      }
+    }
+    throw const _SlotReadFailed();
+  }
+
+  static bool _sameKey(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// Delete #wardriving channel on disconnect
@@ -267,6 +287,11 @@ class ChannelService {
       // Don't throw - disconnection should proceed even if channel deletion fails
     }
   }
+}
+
+/// A channel slot that could not be read on either attempt.
+class _SlotReadFailed implements Exception {
+  const _SlotReadFailed();
 }
 
 /// Internal class to store pre-computed channel data

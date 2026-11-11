@@ -48,3 +48,31 @@ LinkFlowDecision decideLinkFlow({
   if (promptedThisAppSession) return LinkFlowDecision.skip;
   return LinkFlowDecision.prompt;
 }
+
+/// What the link flow does with a failed radio sign.
+enum SignFailureAction {
+  /// Count a strike towards "this firmware cannot sign" (two persist it).
+  strike,
+
+  /// A transient failure: back off with the usual retry ladder, no strike.
+  backoff,
+
+  /// Give up quietly for this attempt.
+  silent,
+}
+
+/// Maps a `SignException` code to what the link flow does with it. `busy`
+/// means scope discovery held the radio for the whole wait, which says
+/// nothing about the firmware, so it never counts as an `unsupported` strike.
+SignFailureAction signFailureAction(String code) => switch (code) {
+      'unsupported' => SignFailureAction.strike,
+      'busy' => SignFailureAction.backoff,
+      _ => SignFailureAction.silent,
+    };
+
+/// Whether a failed sign was the radio refusing part way: it took
+/// CMD_SIGN_START, then answered ERR (`err`). On MeshCore-Solo and mishmesh
+/// fork firmware that is a memory fault only a reboot clears, so a manual
+/// link says to reboot instead of "try again later". A stray ERR from another
+/// command can land here too; rebooting does no harm then.
+bool signFailureNeedsRadioReboot(String code) => code == 'err';

@@ -11,6 +11,8 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private var usbService: MeshMapperUsbService? = null
     private var networkService: MeshMapperNetworkService? = null
+    private var altitudeService: MeshMapperAltitudeService? = null
+    private var sessionServiceChannel: SessionServiceChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -20,6 +22,10 @@ class MainActivity : FlutterActivity() {
 
         networkService = MeshMapperNetworkService(applicationContext)
         networkService!!.configureFlutterEngine(flutterEngine)
+        altitudeService = MeshMapperAltitudeService(applicationContext)
+        altitudeService!!.configureFlutterEngine(flutterEngine)
+        sessionServiceChannel = SessionServiceChannel(applicationContext)
+        sessionServiceChannel!!.configureFlutterEngine(flutterEngine)
 
         // MapLibre tile cache management. Mirrors AppDelegate.swift's iOS
         // implementation. Called from Dart's TileCacheService by the Offline
@@ -101,6 +107,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        // Back on the root screen finishes the activity and destroys its
+        // engine without removing the task, so stopWithTask never fires
+        // there. With the engine gone nothing drives the radio session, so
+        // the session service stops with it.
+        if (!isChangingConfigurations) sessionServiceChannel?.stop()
         usbService?.dispose()
         networkService?.dispose()
         super.onDestroy()

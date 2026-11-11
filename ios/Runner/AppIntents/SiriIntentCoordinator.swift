@@ -1,6 +1,7 @@
 import AppIntents
 import Flutter
 import Foundation
+import os
 
 enum SiriBridgeError: LocalizedError {
   case appUnavailable
@@ -90,6 +91,24 @@ struct SiriCommand {
     kind == .connectLastCompanion ? 30 : 10
   }
 
+  /// iOS ends an App Intent on its own 30 seconds after `perform()` starts and
+  /// shows a generic failure ("an unknown error occurred" on iOS 26, a timeout
+  /// on iOS 27), discarding whatever the intent returns after that. Every
+  /// response deadline is capped at this much from the command's creation, so
+  /// our own answer always lands first. Measured on device: `perform()` starts
+  /// about 0.4 s into the run, and iOS cut the run at 30.01 s.
+  static let intentBudget: TimeInterval = 25
+
+  /// The instant the intent stops waiting: `responseTimeout` from now, but
+  /// never past `intentBudget` from creation, since the channel wait before it
+  /// already spent part of iOS's allowance.
+  func responseDeadline(from now: Date = Date()) -> Date {
+    min(
+      now.addingTimeInterval(responseTimeout),
+      issuedAt.addingTimeInterval(Self.intentBudget)
+    )
+  }
+
   func dictionary(expiresAt: Date) -> [String: Any?] {
     [
       "id": id,
@@ -140,6 +159,10 @@ final class SiriIntentCoordinator {
   static let shared = SiriIntentCoordinator()
 
   private var channel: FlutterMethodChannel?
+  private let log = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "MeshMapper",
+    category: "Siri"
+  )
   private init() {}
 
   func attach(channel: FlutterMethodChannel) {
@@ -152,17 +175,28 @@ final class SiriIntentCoordinator {
       try Task.checkCancellation()
       try await Task.sleep(nanoseconds: 100_000_000)
     }
-    guard let channel else { throw SiriBridgeError.appUnavailable }
+    let kind = command.kind.rawValue
+    let shortId = String(command.id.prefix(8))
+    let channelWaitMs = Int(Date().timeIntervalSince(command.issuedAt) * 1_000)
+    guard let channel else {
+      log.error("\(kind, privacy: .public) \(shortId, privacy: .public): channel not ready after \(channelWaitMs)ms")
+      throw SiriBridgeError.appUnavailable
+    }
 
+    let log = self.log
     return try await withCheckedThrowingContinuation { continuation in
       var completed = false
       // Measured from here, not from the command's creation, because the wait
-      // for the channel above can consume most of a cold launch on its own.
-      let responseTimeout = command.responseTimeout
-      let expiresAt = Date().addingTimeInterval(responseTimeout)
+      // for the channel above can consume most of a cold launch on its own,
+      // then capped so it never outlives iOS's own limit on the intent.
+      let sentAt = Date()
+      let expiresAt = command.responseDeadline(from: sentAt)
+      let responseTimeout = max(0, expiresAt.timeIntervalSince(sentAt))
+      log.notice("\(kind, privacy: .public) \(shortId, privacy: .public): sent to Dart after \(channelWaitMs)ms channel wait, waiting \(Int(responseTimeout * 1_000))ms")
       let timeout = DispatchWorkItem {
         guard !completed else { return }
         completed = true
+        log.error("\(kind, privacy: .public) \(shortId, privacy: .public): no answer from Dart within \(Int(responseTimeout * 1_000))ms")
         continuation.resume(throwing: SiriBridgeError.timedOut(command.kind))
       }
       DispatchQueue.main.asyncAfter(deadline: .now() + responseTimeout, execute: timeout)
@@ -170,12 +204,19 @@ final class SiriIntentCoordinator {
         "command",
         arguments: command.dictionary(expiresAt: expiresAt)
       ) { response in
-        guard !completed else { return }
+        guard !completed else {
+          log.notice("\(kind, privacy: .public) \(shortId, privacy: .public): late answer from Dart ignored")
+          return
+        }
         completed = true
         timeout.cancel()
+        let elapsedMs = Int(Date().timeIntervalSince(sentAt) * 1_000)
         do {
-          continuation.resume(returning: try SiriCommandResult(response: response))
+          let result = try SiriCommandResult(response: response)
+          log.notice("\(kind, privacy: .public) \(shortId, privacy: .public): answered in \(elapsedMs)ms, \(result.disposition.rawValue, privacy: .public) success=\(result.success)")
+          continuation.resume(returning: result)
         } catch {
+          log.error("\(kind, privacy: .public) \(shortId, privacy: .public): bad answer after \(elapsedMs)ms: \(error.localizedDescription, privacy: .public)")
           continuation.resume(throwing: error)
         }
       }

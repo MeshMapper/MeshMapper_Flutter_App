@@ -399,6 +399,33 @@ class OfflineSessionService {
     return remaining.length;
   }
 
+  /// Replace a session's whole ping list (not just a leading prefix) and
+  /// persist immediately. Used to strip rows the upload auth cannot accept
+  /// before any chunk is built, so the partial-upload cleanup that follows
+  /// (which removes a prefix by uploaded count) counts against the rows
+  /// that are actually sent.
+  Future<void> replacePings(
+      String filename, List<Map<String, dynamic>> pings) async {
+    final index = _sessions.indexWhere((s) => s.filename == filename);
+    if (index == -1) {
+      debugWarn('[OFFLINE] Session not found for ping replacement: $filename');
+      return;
+    }
+
+    final session = _sessions[index];
+    final updatedData = Map<String, dynamic>.from(session.data);
+    updatedData['pings'] = pings;
+    updatedData['ping_count'] = pings.length;
+
+    _sessions[index] = session.copyWith(
+      data: updatedData,
+      pingCount: pings.length,
+    );
+    await _saveSessions();
+    debugLog(
+        '[OFFLINE] Replaced pings for $filename: ${pings.length} remain');
+  }
+
   /// Get a session by filename
   OfflineSession? getSession(String filename) {
     try {

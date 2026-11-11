@@ -3,9 +3,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:mesh_mapper/services/gps_service.dart';
 
 /// Airborne block: a fix counts as airborne when its altitude (less the
-/// GPS's own vertical error) clears 6,000 m or its ground speed clears
-/// 250 km/h. Three consecutive airborne fixes latch, three consecutive
-/// ground fixes clear. Unknown altitude and speed arrive as 0.0 from
+/// GPS's own vertical error) clears 6,000 m with its speed unknown or at
+/// least 150 km/h, or its ground speed clears 250 km/h. Three consecutive
+/// airborne fixes latch, three consecutive ground fixes clear. Unknown altitude and speed arrive as 0.0 from
 /// geolocator and must never qualify.
 
 /// Each call is a distinct fix with its own timestamp, the way real fixes
@@ -68,6 +68,51 @@ void main() {
 
     test('unknown altitude and speed never qualify', () {
       expect(GpsService.positionLooksAirborne(_pos()), isFalse);
+    });
+
+    test('a high altitude at a known driving speed does not qualify', () {
+      // Denver: an iOS fix read 18,490 m in a car doing 8 km/h.
+      expect(
+          GpsService.positionLooksAirborne(_pos(
+              altitude: 18490,
+              altitudeAccuracy: 30,
+              speed: 8 / 3.6,
+              speedAccuracy: 1)),
+          isFalse);
+    });
+
+    test('a high altitude with a known zero speed does not qualify', () {
+      expect(
+          GpsService.positionLooksAirborne(_pos(
+              altitude: 12000,
+              altitudeAccuracy: 30,
+              speed: 0,
+              speedAccuracy: 1)),
+          isFalse);
+    });
+
+    test('a high altitude with unknown speed still qualifies', () {
+      expect(
+          GpsService.positionLooksAirborne(
+              _pos(altitude: 12000, altitudeAccuracy: 30)),
+          isTrue);
+    });
+
+    test('a high altitude at 150 km/h or more qualifies', () {
+      expect(
+          GpsService.positionLooksAirborne(_pos(
+              altitude: 12000,
+              altitudeAccuracy: 30,
+              speed: 150 / 3.6,
+              speedAccuracy: 1)),
+          isTrue);
+      expect(
+          GpsService.positionLooksAirborne(_pos(
+              altitude: 12000,
+              altitudeAccuracy: 30,
+              speed: 149 / 3.6,
+              speedAccuracy: 1)),
+          isFalse);
     });
   });
 
@@ -217,6 +262,56 @@ void main() {
           reason: 'two distinct fixes plus a repeat is not three');
 
       gps.trackAirborne(_pos(altitude: 9200, altitudeAccuracy: 20));
+      expect(gps.isAirborne, isTrue);
+    });
+
+    test('three high fixes at a known driving speed do not latch', () {
+      for (var i = 0; i < 3; i++) {
+        gps.trackAirborne(_pos(
+            altitude: 18490,
+            altitudeAccuracy: 30,
+            speed: 8 / 3.6,
+            speedAccuracy: 1));
+      }
+      expect(gps.isAirborne, isFalse);
+      expect(gps.airborneGate, isNull);
+    });
+
+    test('a high fix at 160 km/h latches and records the altitude gate', () {
+      for (var i = 0; i < 3; i++) {
+        gps.trackAirborne(_pos(
+            altitude: 12000,
+            altitudeAccuracy: 30,
+            speed: 160 / 3.6,
+            speedAccuracy: 1));
+      }
+      expect(gps.isAirborne, isTrue);
+      expect(gps.airborneGate, AirborneGate.altitude);
+      expect(gps.airborneAltitude, 12000.0);
+    });
+
+    test('a high fix with unknown speed latches on the altitude gate', () {
+      for (var i = 0; i < 3; i++) {
+        gps.trackAirborne(_pos(altitude: 12000, altitudeAccuracy: 30));
+      }
+      expect(gps.isAirborne, isTrue);
+      expect(gps.airborneGate, AirborneGate.altitude);
+      expect(gps.airborneSpeed, isNull);
+    });
+
+    test('a known-slow high fix in between restarts the airborne streak', () {
+      gps.trackAirborne(_pos(altitude: 12000, altitudeAccuracy: 30));
+      gps.trackAirborne(_pos(altitude: 12000, altitudeAccuracy: 30));
+      gps.trackAirborne(_pos(
+          altitude: 12000,
+          altitudeAccuracy: 30,
+          speed: 8 / 3.6,
+          speedAccuracy: 1));
+      gps.trackAirborne(_pos(altitude: 12000, altitudeAccuracy: 30));
+      gps.trackAirborne(_pos(altitude: 12000, altitudeAccuracy: 30));
+      expect(gps.isAirborne, isFalse);
+
+      gps.trackAirborne(_pos(altitude: 12000, altitudeAccuracy: 30));
       expect(gps.isAirborne, isTrue);
     });
 

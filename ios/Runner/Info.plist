@@ -42,6 +42,11 @@
 	<string>This app needs background GPS for continuous wardriving</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>This app needs GPS for wardriving location tracking</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>CoverageMapping</key>
+		<string>MeshMapper needs your precise location to place coverage on the map.</string>
+	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app uses audio for notification sounds</string>
 	<key>NSPhotoLibraryUsageDescription</key>

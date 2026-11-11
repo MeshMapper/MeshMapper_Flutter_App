@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 import 'gps_info_chip.dart';
 
 import '../models/log_entry.dart';
+import '../models/map_view_state.dart';
 import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
@@ -27,6 +28,7 @@ import '../utils/cluster_spread.dart';
 import '../utils/coalesced_async_runner.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
+import '../utils/gps_marker_colors.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
@@ -36,10 +38,14 @@ import '../utils/repeater_format.dart';
 import '../utils/repeater_marker_painter.dart';
 import '../utils/repeater_marker_style.dart';
 import '../utils/map_style_errors.dart';
+import '../utils/marker_data_version.dart';
 import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
 import 'repeater_admin_sheet.dart';
 import 'repeater_id_chip.dart';
+import 'repeater_nickname_dialog.dart';
+import 'repeater_nickname_widgets.dart';
+import 'repeater_scope_chips.dart';
 import 'rx_path_chain.dart';
 
 /// Satellite style as inline MapLibre style JSON (ArcGIS raster source).
@@ -63,7 +69,7 @@ String _repeaterIdentity(Repeater repeater) => rcCleanHex(repeater.hexId);
 /// Repeater shapes have one bitmap per (status color × hop_byte shape) — 12
 /// total. Coverage markers have one bitmap per (ping type × success state) for
 /// the user's currently-selected style — 8 total per style preference. GPS
-/// marker has one bitmap per style — 6 total.
+/// marker has one bitmap per (style × colour choice) — 14 total.
 class _MapImages {
   _MapImages._();
 
@@ -109,10 +115,14 @@ class _MapImages {
 
   static const coverageTypes = ['tx', 'rx', 'disc', 'trace', 'deferred'];
 
-  // GPS marker bitmaps: one per style
-  // Names: gps_arrow, gps_car, etc. The list of styles lives in
-  // _registerMapImages where we map each style key to its CustomPainter.
-  static String gps(String style) => 'gps_$style';
+  // GPS marker bitmaps: one per style and colour choice
+  // Names: gps_arrow, gps_car, etc. for the default colour, gps_car_green etc.
+  // for the others. The list of styles lives in _registerMapImages where we
+  // map each style key to its CustomPainter.
+  static String gps(String style, String color) =>
+      GpsMarkerColors.normalize(color) == GpsMarkerColors.defaultChoice
+          ? 'gps_$style'
+          : 'gps_${style}_$color';
 }
 
 /// Renders a [CustomPainter] into a PNG byte buffer using `dart:ui`.
@@ -650,6 +660,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       false; // Track if we've done the one-time initial zoom to GPS
   bool _hasZoomedToLastKnown =
       false; // Track if we've zoomed to last known position (before GPS)
+  // The zoom MapLibreMap was created at (initialCameraPosition is read once).
+  double? _initialCameraZoom;
+  // False until the camera has been handed the remembered zoom (one of the
+  // startup zooms above) or the user has moved it off the creation zoom.
+  // Until then a camera idle is still the creation camera, possibly built
+  // before preferences loaded, and recording it would overwrite the zoom
+  // about to be restored.
+  bool _zoomRestoreSettled = false;
   bool _loggedMpxSanityCheck =
       false; // One-time log comparing formula vs MapLibre m/px
 
@@ -686,9 +704,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // layer styling (see #347).
   bool _showRepeaters = true;
 
-  // Collapsible map controls in landscape
-  bool _mapControlsExpanded = true;
-
   // Rotation lock (disable rotation gestures while keeping pinch-to-zoom)
   bool _rotationLocked = false;
 
@@ -711,6 +726,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // the first entry and restored ONCE when the last view closes, so switching
   // directly between views animates only once and restores to the original view.
   bool _cameraFocusActive = false;
+
+  /// The zoom a focus view or history fit last left the camera at, until the
+  /// camera moves off it. See [_rememberCameraZoom].
+  double? _transientZoomHeld;
   bool _focusPanelMinimized = false;
   dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
 
@@ -720,11 +739,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   _MinimizedInfoPopup? _minimizedInfoPopup;
 
   // MapLibre style and overlay tracking.
-  // Tracks the zone code we last rendered the coverage overlay for. When the
-  // zone check succeeds after the style has already loaded (e.g. first check
-  // failed with gps_inaccurate and a later retry succeeded), _addCoverageOverlay
-  // would otherwise never re-run and the coverage layer would stay missing.
-  String? _lastOverlayZoneCode;
+  // Tracks the coverage host (the region or group code) we last rendered the
+  // coverage overlay for. When the zone check succeeds after the style has
+  // already loaded (e.g. first check failed with gps_inaccurate and a later
+  // retry succeeded), _addCoverageOverlay would otherwise never re-run and the
+  // coverage layer would stay missing.
+  String? _lastOverlayHostCode;
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
   // the current preference in _onCoverageOpacityNotify to detect slider
   // changes and apply them live via _applyCoverageOverlayOpacity (no layer
@@ -858,6 +878,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   bool _styleLoadInProgress = false;
   final CoalescedAsyncRunner _styleLoadRunner = CoalescedAsyncRunner();
 
+  // Serializes region border rebuilds. The style restore and the build()
+  // watcher can both ask at once; overlapping remove-then-add runs raced
+  // into sourceAlreadyExists and could leave the border line missing.
+  final CoalescedAsyncRunner _regionBorderRunner = CoalescedAsyncRunner();
+
   // Monotonic counter for the Android deferred style re-sync. Bumped when a
   // style reload BEGINS (a new styleString handed to MapLibreMap), at the
   // start of every _restoreStyle, and again when a re-sync is armed at the end
@@ -896,6 +921,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // _syncAllAnnotations) so the two features never wipe each other.
   bool _coverageLinesInstalled = false;
   bool _coverageCellsInstalled = false;
+  // The selected repeater's coverage lines, kept while its cells are on the
+  // map (cleared with them in _clearCoverageCells) so the Repeater Coverage
+  // Lines switch can redraw or clear them without a reselect.
+  RepeaterCoverageLines? _repeaterCoverageLines;
+  // The switch value _onRepeaterCoverageLinesNotify last saw, so it acts only
+  // on a flip and not on every provider notify.
+  bool? _lastSeenShowRepeaterCoverageLines;
   // Set while a tapped cell's fan-out is shown: the repeater ids that heard the
   // cell's pings. Non-null -> _buildRepeaterFeatureCollection hides every
   // repeater NOT in the set (web fades-but-keeps; the app hides for consistency
@@ -1055,9 +1087,35 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // a direct listener too. See _onCoverageOpacityNotify.
     _patchProviderRef!.addListener(_onCoverageOpacityNotify);
     _patchProviderRef!.addListener(_onCoverageFilterNotify);
+    // The Repeater Coverage Lines switch does not bump mapRevision either.
+    _lastSeenShowRepeaterCoverageLines =
+        _patchProviderRef!.preferences.showRepeaterCoverageLines;
+    _patchProviderRef!.addListener(_onRepeaterCoverageLinesNotify);
   }
 
   AppStateProvider? _patchProviderRef;
+
+  /// Fires on every provider notify; applies a flipped Repeater Coverage Lines
+  /// switch to the selected repeater straight away (web
+  /// `mmRedrawSelectedCoverage` parity), no rebuild. Leaves the lines layer
+  /// alone unless the selected repeater's own lines are drawn: a tapped tile's
+  /// fan-out shares the layer and the switch does not cover it.
+  void _onRepeaterCoverageLinesNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    final show = appState.preferences.showRepeaterCoverageLines;
+    if (show == _lastSeenShowRepeaterCoverageLines) return;
+    _lastSeenShowRepeaterCoverageLines = show;
+    final drawn = _repeaterCoverageLines;
+    final segments = repeaterCoverageLinesAfterSwitch(drawn,
+        show: show,
+        selectedRepeaterId: _isolatedRepeaterId,
+        tileSelected: _cellPopupActive);
+    if (drawn == null || segments == null) return;
+    debugLog('[COVERAGE] repeater coverage lines ${show ? 'on' : 'off'}: '
+        '${segments.length} drawn');
+    _updateCoverageLines(segments, drawn.lat, drawn.lon, width: 1.5);
+  }
 
   /// Auth/release can change the effective window on a UI-only notify.
   /// Observe it directly so the memoized map never keeps a regional override.
@@ -1168,7 +1226,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (!_showMeshMapperOverlay) return;
     final appState = context.read<AppStateProvider>();
     if (!appState.preferences.mapTilesEnabled) return;
-    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) return;
+    if (appState.coverageHostCode == null ||
+        appState.coverageHostCode!.isEmpty) {
+      return;
+    }
     debugLog('[MAP] Recovering coverage overlay after app resume');
     _addCoverageOverlay(appState);
   }
@@ -1181,11 +1242,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // keep the local only for listener cleanup below.
     _mapController = null;
     _styleLoadRunner.cancel();
+    _regionBorderRunner.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
     _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
     _patchProviderRef?.removeListener(_onCoverageFilterNotify);
+    _patchProviderRef?.removeListener(_onRepeaterCoverageLinesNotify);
     _tileLoadTimeoutTimer?.cancel();
     if (controller != null) {
       controller.removeListener(_onCameraChanged);
@@ -1478,6 +1541,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   void _exitFocusCamera() {
     if (!_cameraFocusActive) return;
     _cameraFocusActive = false;
+    // Before the zoom-back, so the saved center lands at the true map center.
+    _clearFitPadding();
     final center = _preFocusCenter;
     final zoom = _preFocusZoom;
     final restoreFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
@@ -1501,6 +1566,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         if (restoreRot) _alwaysNorth = false;
       });
     }
+  }
+
+  /// Android only: drop the edge padding a fit-to-box ([_animateFitBounds]) left
+  /// on the native map. MapLibre Android keeps a `newLatLngBounds` padding as
+  /// the map's viewport padding, and every later camera move (none carry a
+  /// padding) keeps it, so the map center stays pushed up by the room left for
+  /// the focus sheet. Auto-follow then adds its own control panel offset on top
+  /// and the GPS marker lands near the top of the screen. iOS applies a fit's
+  /// padding to that one move only, so it needs nothing here.
+  void _clearFitPadding() {
+    if (kIsWeb || !Platform.isAndroid) return;
+    if (_mapController == null || !_isMapReady || !_canAnimateCamera) return;
+    debugLog('[MAP CENTER] clearing fit padding after focus view');
+    _mapController!.updateContentInsets(EdgeInsets.zero).catchError((e) {
+      debugLog('[MAP CENTER] clearing fit padding failed: $e');
+    });
   }
 
   /// True while any focus view (ping focus, tile coverage, repeater coverage) is
@@ -1708,11 +1789,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _isMapReady &&
         _canAnimateCamera) {
       _hasZoomedToLastKnown = true;
+      _zoomRestoreSettled = true;
       final lastKnownCenter = LatLng(lastKnown.lat, lastKnown.lon);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _animateToPositionWithZoom(lastKnownCenter, 15.0 - _zoomEpsilon);
-          debugLog('[MAP] Initial zoom to last known position');
+          final zoom = _startupZoom(appState, 15.0 - _zoomEpsilon);
+          _animateToPositionWithZoom(lastKnownCenter, zoom);
+          debugLog('[MAP] Initial zoom to last known position '
+              '(zoom=${zoom.toStringAsFixed(2)})');
         }
       });
     }
@@ -1725,8 +1809,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // One-time initial zoom to GPS (even with auto-follow off, centered on GPS).
       if (!_hasInitialZoomed && _isMapReady && _canAnimateCamera) {
         _hasInitialZoomed = true;
+        _zoomRestoreSettled = true;
         final initialPosition = center;
         _lastGpsPosition = initialPosition;
+        // The zoom the user last left the map at, or 16 on a first launch.
+        final initialZoom = _startupZoom(appState, 16.0 - _zoomEpsilon);
+        // Follow ticks aim at the startup zoom too, so one that lands during
+        // this animation cannot strand the camera at an in-between zoom.
+        // _onCameraIdle hands zoom back to the camera once it settles.
+        if (_autoFollow) _autoFollowDesiredZoom ??= initialZoom;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             if (_autoFollow) {
@@ -1734,13 +1825,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   initialPosition,
                   widget.bottomPaddingPixels,
                   widget.rightPaddingPixels,
-                  16.0 - _zoomEpsilon);
-              _animateToPositionWithZoom(adjustedPosition, 16.0 - _zoomEpsilon);
-              debugLog(
-                  '[MAP] Initial zoom to GPS position (with panel offset)');
+                  initialZoom);
+              _animateToPositionWithZoom(adjustedPosition, initialZoom);
+              debugLog('[MAP] Initial zoom to GPS position (with panel offset, '
+                  'zoom=${initialZoom.toStringAsFixed(2)})');
             } else {
-              _animateToPositionWithZoom(initialPosition, 16.0 - _zoomEpsilon);
-              debugLog('[MAP] Initial zoom to GPS position');
+              _animateToPositionWithZoom(initialPosition, initialZoom);
+              debugLog('[MAP] Initial zoom to GPS position '
+                  '(zoom=${initialZoom.toStringAsFixed(2)})');
             }
           }
         });
@@ -1822,6 +1914,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState.currentPosition?.longitude,
         _computedHeading,
         appState.preferences.gpsMarkerStyle,
+        appState.preferences.gpsMarkerColor,
       );
       if (gpsVersion != _lastGpsSyncVersion) {
         // NOT recorded here: _syncGpsSymbol records the version of what it
@@ -1933,6 +2026,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     } else if (!appState.viewingHistorySession && _wasViewingHistory) {
       _wasViewingHistory = false;
+      // The camera is left at the session fit: not a zoom to remember.
+      _transientZoomHeld = _mapController?.cameraPosition?.zoom;
     }
 
     // Sync native annotations whenever marker data changes (provider triggers
@@ -2184,9 +2279,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Collapsible map controls (toggle at top, expands downward)
   Widget _buildCollapsibleMapControls(AppStateProvider appState) {
     // Use external state if provided, otherwise use internal state
-    final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
+    // Portrait keeps its own state in the provider so it survives a relaunch.
+    final isExpanded = widget.mapControlsExpanded ??
+        appState.mapViewState.mapControlsExpanded;
     final onToggle = widget.onMapControlsToggle ??
-        () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
+        () => setState(() => appState.setMapControlsColumnExpanded(
+            !appState.mapViewState.mapControlsExpanded));
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2295,16 +2393,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // onStyleLoadedCallback → _onStyleLoaded re-registers images, rebuilds
     // cluster layers, re-adds the coverage overlay, and re-syncs annotations.
 
-    // Detect zoneCode or overlay-pref changes → schedule a SINGLE coalesced
-    // refresh; the _coverageRefreshScheduled flag ensures at most one refresh
-    // is queued per frame even when both change together.
+    // Detect coverage host (region or group code) or overlay-pref changes →
+    // schedule a SINGLE coalesced refresh; the _coverageRefreshScheduled flag
+    // ensures at most one refresh is queued per frame even when both change
+    // together. A move between two members of the same group keeps the host,
+    // so nothing here fires for it.
     //
-    // The zoneCode watcher is needed because _addCoverageOverlay only runs
+    // The host watcher is needed because _addCoverageOverlay only runs
     // during _onStyleLoaded — if the first zone check failed with
-    // gps_inaccurate, the style loads with zoneCode=null and the overlay is
-    // skipped. When a later retry sets the zone, nothing else would trigger
-    // the coverage layer.
-    final zoneChanged = appState.zoneCode != _lastOverlayZoneCode &&
+    // gps_inaccurate, the style loads with coverageHostCode=null and the
+    // overlay is skipped. When a later retry sets the zone, nothing else
+    // would trigger the coverage layer.
+    final zoneChanged = appState.coverageHostCode != _lastOverlayHostCode &&
         _isMapReady &&
         _styleLoaded;
     // Grid size is baked into the tile URL and the CVD palette into the layer
@@ -2341,8 +2441,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     if (zoneChanged || overlayPrefChanged || radioChanged) {
       if (zoneChanged) {
-        _lastOverlayZoneCode = appState.zoneCode;
-        // The session patch belongs to the old region's grid.
+        _lastOverlayHostCode = appState.coverageHostCode;
+        // The session patch belongs to the old region's (or group's) grid.
         appState.clearCoveragePatch();
       }
       if (overlayPrefChanged) {
@@ -2438,11 +2538,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // MapLibre GL map (base tiles via style; coverage overlay added programmatically)
         MapLibreMap(
           styleString: newStyleUrl,
+          // Read once by the platform view at creation, so pin the zoom the
+          // map was created at: _onCameraIdle compares against it.
           initialCameraPosition: CameraPosition(
             target: center,
-            zoom: _defaultZoom,
+            zoom: _initialCameraZoom ??=
+                appState.mapViewState.zoom ?? _defaultZoom,
           ),
-          minMaxZoomPreference: const MinMaxZoomPreference(3, _maxUserZoom),
+          minMaxZoomPreference:
+              const MinMaxZoomPreference(MapViewState.minZoom, _maxUserZoom),
           rotateGesturesEnabled: !_rotationLocked,
           scrollGesturesEnabled: true,
           zoomGesturesEnabled: true,
@@ -2638,7 +2742,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
     final appState = context.read<AppStateProvider>();
-    final zone = appState.zoneCode;
+    final zone = appState.coverageHostCode;
     if (zone == null || zone.isEmpty) return;
 
     final gridSize = appState.preferences.coverageGridSize;
@@ -3346,6 +3450,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // also gone with the style; reset so the next draw treats it as fresh.
       _coverageLinesInstalled = false;
       _coverageCellsInstalled = false;
+      _repeaterCoverageLines = null;
       _coverageHeardRepeaterIds = null;
       _coverageDistanceLabelSymbols.clear();
       _registeredCoverageLabelImages.clear();
@@ -3380,12 +3485,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // Re-add coverage overlay AFTER cluster layers exist so _addCoverageOverlay
       // can target the bottom repeater layer as its belowLayerId reference. This
-      // keeps the insertion point consistent with the zoneCode watcher path —
+      // keeps the insertion point consistent with the host watcher path:
       // both end up with raster at the bottom of the repeater stack, not above it.
       if (!_canContinueStyleRestore()) return;
       await _refreshCoverageOverlay(appState);
       if (!_canContinueStyleRestore()) return;
-      _lastOverlayZoneCode = appState.zoneCode;
+      _lastOverlayHostCode = appState.coverageHostCode;
 
       // Regional boundary layer — style reload wipes custom sources/layers.
       // Reset the signature so the build()-driven watcher will repaint even
@@ -3676,8 +3781,48 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// current zoom (line ~1005), so the user can pinch-zoom freely while
   /// auto-follow is on without each tick snapping the zoom back.
   void _onCameraIdle() {
-    if (!_autoFollow || _mapController == null) return;
+    if (_mapController == null) return;
+    _rememberCameraZoom();
+    if (!_autoFollow) return;
     _autoFollowDesiredZoom = null;
+  }
+
+  /// The zoom a startup camera move should land at: the one the user last left
+  /// the map at, else [firstLaunchZoom]. Read live from the provider, because
+  /// the GPS listener can run this before the widget has rebuilt.
+  double _startupZoom(AppStateProvider appState, double firstLaunchZoom) =>
+      appState.mapViewState.zoom ?? firstLaunchZoom;
+
+  /// Record the settled camera zoom so the next launch opens at it. Skipped
+  /// for transient cameras: a focus view (tapped ping, cell or repeater) and
+  /// the history session fit. The provider drops repeats and debounces writes.
+  void _rememberCameraZoom() {
+    if (!mounted) return;
+    final zoom = _mapController?.cameraPosition?.zoom;
+    if (zoom == null || !zoom.isFinite) return;
+    final appState = context.read<AppStateProvider>();
+    if (!appState.preferencesLoaded) return;
+    if (_cameraFocusActive || appState.viewingHistorySession) {
+      _transientZoomHeld = zoom;
+      return;
+    }
+    // A transient view leaves its zoom behind when it closes (the history
+    // fit stays put). That is not the user's until they zoom away from it.
+    final held = _transientZoomHeld;
+    if (held != null) {
+      if (!MapViewState.zoomWorthSaving(held, zoom)) return;
+      _transientZoomHeld = null;
+    }
+    if (!_zoomRestoreSettled) {
+      final created = _initialCameraZoom;
+      if (created == null ||
+          !MapViewState.zoomWorthSaving(created, zoom)) {
+        return;
+      }
+      // The user zoomed before any startup zoom ran: theirs wins.
+      _zoomRestoreSettled = true;
+    }
+    appState.rememberMapZoom(zoom);
   }
 
   /// Add MeshMapper coverage raster overlay as a MapLibre source+layer.
@@ -3696,14 +3841,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       debugLog('[MAP] Coverage overlay add skipped: mapTilesEnabled=false');
       return;
     }
-    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) {
-      debugLog(
-          '[MAP] Coverage overlay add skipped: zoneCode=${appState.zoneCode}');
+    if (appState.coverageHostCode == null ||
+        appState.coverageHostCode!.isEmpty) {
+      debugLog('[MAP] Coverage overlay add skipped: '
+          'coverageHostCode=${appState.coverageHostCode}');
       return;
     }
 
     final prefs = appState.preferences;
-    final zone = appState.zoneCode!.toLowerCase();
+    // The region's site, or the group's when the zone belongs to one: the
+    // group's site merges every member's coverage.
+    final zone = appState.coverageHostCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
     final recentDays = appState.coverageOverlayDays;
     // Display every recent result. Only the Smart Pinging lookup filters types.
@@ -3745,15 +3893,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // The server emits an integer status category per cell (st); colour
       // happens HERE via match expressions, so colour-vision palettes apply
       // without any server param and a tile carries data, not pixels.
+      // cf declares the tile format this build understands (blocks carrying
+      // `k`); only send it while the decoder, the patch filter and the paint
+      // all handle blocks.
       final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize$radioSuffix$recentSuffix';
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize&cf=$kCoverageTileFormat$radioSuffix$recentSuffix';
       debugLog(
           '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
-      // minzoom 7 = the raster's old on-screen range (512px-convention vector
-      // tiles sit one display-zoom lower than 256px raster tiles).
+      // minzoom 2: the server answers z2 and up, zoomed-out tiles as blocks
+      // of 300 m cells (each carrying `k`). The fill paints from `st` alone,
+      // so a block colours exactly like a cell.
       await _mapController!.addSource(
         sourceId,
-        VectorSourceProperties(tiles: [url], minzoom: 7, maxzoom: 14),
+        VectorSourceProperties(tiles: [url], minzoom: 2, maxzoom: 14),
       );
       await _mapController!.addFillLayer(
         sourceId,
@@ -4049,12 +4201,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// GeoJSON FeatureCollection of the session patch: one rectangle per cell,
   /// corners computed from grid indices exactly like the server's tiles.
   Map<String, dynamic> _buildPatchGeoJson(AppStateProvider appState) {
-    final steps = kCoverageGridSteps[appState.preferences.coverageGridSize] ??
-        kCoverageGridSteps[300]!;
+    final gridSize = appState.preferences.coverageGridSize;
     final features = <Map<String, dynamic>>[];
     for (final cell in appState.coveragePatchCells.values) {
-      final lat0 = cell.i * steps[0];
-      final lon0 = cell.j * steps[1];
+      final b = cell.bounds(gridSize);
+      final lat0 = b[0];
+      final lon0 = b[1];
+      final steps = [b[2], b[3]];
       // No feature id: nothing reads it on the patch layer, and 42-bit ids
       // don't survive Android's float32 JSON bridge anyway (see
       // _applyBasePatchFilter).
@@ -4086,33 +4239,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// on the feature id: Android's filter converter parses every JSON number
   /// as float32, which silently rounds the 42-bit ids so an id-based `in`
   /// never matches. Strings cross the bridge untouched on every platform.
+  ///
+  /// A zoomed-out block (a feature carrying `k`) is never hidden: its i/j are
+  /// block indices, so one that happens to equal a patched cell's indices
+  /// would otherwise vanish. See [coveragePatchBaseFilter].
   Future<void> _applyBasePatchFilter(
       AppStateProvider appState, String baseLayerId) async {
     if (_mapController == null || appState.coveragePatchCells.isEmpty) return;
     final keys = [
       for (final cell in appState.coveragePatchCells.values)
-        '${cell.i}_${cell.j}'
+        if (!cell.isBlock) '${cell.i}_${cell.j}'
     ];
     try {
-      await _mapController!.setFilter(baseLayerId, [
-        '!',
-        [
-          'in',
-          [
-            'concat',
-            [
-              'to-string',
-              ['get', 'i']
-            ],
-            '_',
-            [
-              'to-string',
-              ['get', 'j']
-            ],
-          ],
-          ['literal', keys],
-        ],
-      ]);
+      await _mapController!
+          .setFilter(baseLayerId, coveragePatchBaseFilter(keys));
     } catch (e) {
       debugLog('[MAP] Coverage base filter failed: $e');
     }
@@ -4230,7 +4370,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ///     of the state bar; a `new` chip is taller than the rest.
   ///   - 5 cluster badge discs, one per dominant state.
   ///   - 8 coverage marker bitmaps for the user's currently-selected style.
-  ///   - 6 GPS marker bitmaps (one per style).
+  ///   - 14 GPS marker bitmaps (7 styles × 2 colour choices). Every colour is
+  ///     baked up front, so a colour change only swaps the image name.
   ///
   /// The cluster presence-dot strips are NOT registered here: which ones are
   /// reachable depends on the states actually on screen, so
@@ -4241,6 +4382,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Future<void> _registerMapImages(AppStateProvider appState) async {
     if (_mapController == null) return;
 
+    var stage = 'starting';
     try {
       // 1. Repeater chip bodies: 5 states × 3 hop widths.
       for (final status in RepeaterMarkerStatus.values) {
@@ -4256,12 +4398,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             borderRadius: RepeaterMarkerStyle.chipCornerRadius,
             isNew: isNew,
           );
+          stage = 'rendering ${_MapImages.repeater(status.wireKey, hopBytes)}';
           final bytes = await _renderPainterToPng(
             painter,
             Size(chip.width + repeaterChipGlowMargin * 2,
                 chip.height + repeaterChipGlowMargin * 2),
             devicePixelRatio: RepeaterMarkerStyle.bakeDevicePixelRatio,
           );
+          stage = 'adding ${_MapImages.repeater(status.wireKey, hopBytes)}';
           await _mapController!.addImage(
             _MapImages.repeater(status.wireKey, hopBytes),
             bytes,
@@ -4271,40 +4415,52 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // 2. Cluster badge discs: one per dominant state.
       for (final status in RepeaterMarkerStatus.values) {
+        stage = 'rendering ${_MapImages.repeaterBadge(status.wireKey)}';
         final bytes =
             await _renderRepeaterBadgePng(_repeaterStatusColor(status.wireKey));
+        stage = 'adding ${_MapImages.repeaterBadge(status.wireKey)}';
         await _mapController!
             .addImage(_MapImages.repeaterBadge(status.wireKey), bytes);
       }
 
       // 3. Coverage markers: 8 variants for current style
+      stage = 'registering coverage images (${appState.preferences.markerStyle})';
       await _registerCoverageImages(appState.preferences.markerStyle);
 
-      // 4. GPS marker variants: 7 styles
+      // 4. GPS marker variants: 7 styles × every colour choice
       const gpsSize = Size(48, 48);
-      final gpsPainters = <String, CustomPainter>{
-        'arrow': const _ArrowPainter(),
-        'car': const _CarMarkerPainter(),
-        'bike': const _BikeMarkerPainter(),
-        'boat': const _BoatMarkerPainter(),
-        'walk': const _WalkMarkerPainter(),
-        'dog': const _DogMarkerPainter(),
-        'chomper': const _ChomperMarkerPainter(),
+      final gpsPainters = <String, CustomPainter Function(GpsMarkerColors)>{
+        'arrow': _ArrowPainter.new,
+        'car': _CarMarkerPainter.new,
+        'bike': _BikeMarkerPainter.new,
+        'boat': _BoatMarkerPainter.new,
+        'walk': _WalkMarkerPainter.new,
+        'dog': _DogMarkerPainter.new,
+        'chomper': _ChomperMarkerPainter.new,
       };
+      var gpsImageCount = 0;
       for (final entry in gpsPainters.entries) {
-        final bytes = await _renderPainterToPng(entry.value, gpsSize);
-        await _mapController!.addImage(_MapImages.gps(entry.key), bytes);
+        for (final color in GpsMarkerColors.choices) {
+          final name = _MapImages.gps(entry.key, color);
+          final painter =
+              entry.value(GpsMarkerColors.forStyle(entry.key, color));
+          stage = 'rendering $name';
+          final bytes = await _renderPainterToPng(painter, gpsSize);
+          stage = 'adding $name';
+          await _mapController!.addImage(name, bytes);
+          gpsImageCount++;
+        }
       }
 
       _imagesRegistered = true;
       debugLog(
-          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater chip + ${_MapImages.repeaterStatuses.length} cluster badge + 8 coverage + ${gpsPainters.length} GPS marker images');
+          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater chip + ${_MapImages.repeaterStatuses.length} cluster badge + 8 coverage + $gpsImageCount GPS marker images');
       // NOTE: do NOT trigger _syncAllAnnotations here. The repeater cluster
       // source/layers haven't been created yet — _onStyleLoaded calls
       // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
       // once everything is in place.
     } catch (e) {
-      debugError('[MAP] Failed to register marker images: $e');
+      debugError('[MAP] Failed to register marker images while $stage: $e');
     }
   }
 
@@ -4916,6 +5072,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (!mounted) return;
       _syncSpiderSymbols(appState, currentZoom);
     });
+    // A post-frame callback does not schedule a frame of its own, and the
+    // setState frame from _spiderfy/_collapseSpider has usually already run by
+    // the time the await above returns. Map gestures and GPS do not rebuild
+    // this widget, so without this the spider push waited for an unrelated
+    // frame: opening a spider hid the originals and showed nothing, and
+    // closing one left the spread drawn over the restored originals.
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   // ---------------------------------------------------------------------------
@@ -4949,7 +5112,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Maximum zoom the camera can reach (matches `minMaxZoomPreference`).
   /// Subtracted by [_zoomEpsilon] to dodge the integer-zoom label-blink
   /// bug described above.
-  static const double _maxUserZoom = 17.0 - _zoomEpsilon;
+  static const double _maxUserZoom = MapViewState.maxZoom;
 
   /// How far a tap may land from a cluster badge and still count as hitting
   /// it. The native tap dispatcher is more forgiving than an exact-point
@@ -5584,8 +5747,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       await _mapController!.setGeoJsonSource(
         _gpsPuckSourceId,
-        _buildGpsPuckFeatureCollection(
-            pos.latitude, pos.longitude, style, iconRotate),
+        _buildGpsPuckFeatureCollection(pos.latitude, pos.longitude, style,
+            appState.preferences.gpsMarkerColor, iconRotate),
       );
       _recordGpsSyncVersion(appState, pos);
     } catch (e) {
@@ -5602,20 +5765,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       pos?.longitude,
       _computedHeading,
       appState.preferences.gpsMarkerStyle,
+      appState.preferences.gpsMarkerColor,
     );
   }
 
   /// One-Point FeatureCollection for the GPS puck source. `iconImage` and
   /// `iconRotate` are read by the puck symbol layer's data-driven expressions.
-  Map<String, dynamic> _buildGpsPuckFeatureCollection(
-      double lat, double lon, String style, double iconRotate) {
+  Map<String, dynamic> _buildGpsPuckFeatureCollection(double lat, double lon,
+      String style, String color, double iconRotate) {
     return {
       'type': 'FeatureCollection',
       'features': [
         {
           'type': 'Feature',
           'properties': {
-            'iconImage': _MapImages.gps(style),
+            'iconImage': _MapImages.gps(style, color),
             'iconRotate': iconRotate,
           },
           'geometry': {
@@ -5708,7 +5872,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       await _mapController!.setGeoJsonSource(
         _gpsPuckSourceId,
-        _buildGpsPuckFeatureCollection(pos.latitude, pos.longitude, style,
+        _buildGpsPuckFeatureCollection(
+            pos.latitude,
+            pos.longitude,
+            style,
+            appState.preferences.gpsMarkerColor,
             _gpsIconRotate(style, _computedHeading ?? 0)),
       );
     } catch (_) {}
@@ -6065,7 +6233,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Empty the coverage-cells source so it renders nothing (layer stays).
+  /// Also forgets the selected repeater's kept lines: with no cells under them
+  /// the Repeater Coverage Lines switch must not draw them back.
   Future<void> _clearCoverageCells() async {
+    _repeaterCoverageLines = null;
     if (_mapController == null || !_coverageCellsInstalled) return;
     try {
       await _mapController!
@@ -6200,22 +6371,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Feature B draw: render [matched] (the points that heard [repeater]) as
   /// deduped status-coloured coverage cells plus a status-coloured dashed line
-  /// from the repeater to each cell centre. The lines layer is ensured BEFORE
-  /// the cells layer so the lines read on top. Returns the (capped) cells so the
-  /// caller can frame them with the repeater.
+  /// from the repeater to each cell centre. The lines only draw while the
+  /// Repeater Coverage Lines switch is on, but are kept either way so a flip
+  /// can redraw them (_onRepeaterCoverageLinesNotify). The lines layer is
+  /// ensured BEFORE the cells layer (switch on or off) so the lines read on
+  /// top. Returns every cell so the caller can frame them with the repeater.
   Future<List<RepeaterCoverageCell>> _drawRepeaterCoverage(Repeater repeater,
       List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
     final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
     final blob = gridSize == 100 ? 1 : 0;
-    // High cap so a repeater's full footprint draws (web parity — it draws all).
-    // Still bounded (farthest-first) to protect against pathological volumes.
-    final cells = _capByFarthest(
-      repeaterCoverageCells(matched, repeater,
-          latStep: steps[0], lonStep: steps[1], blob: blob),
-      (c) => c.distanceMeters,
-      5000,
-      '[COVERAGE] repeater coverage',
-    );
+    // Every cell draws (web parity: it draws all). Only the lines are capped:
+    // capping the cells farthest-first dropped the ones nearest a busy
+    // repeater and left a pale hole round it.
+    final cells = repeaterCoverageCells(matched, repeater,
+        latStep: steps[0], lonStep: steps[1], blob: blob);
+    debugLog('[COVERAGE] repeater ${repeater.id} coverage: '
+        '${cells.length} cells');
     if (cells.isEmpty) {
       await _clearCoverageCells();
       await _clearCoverageLines();
@@ -6223,16 +6394,33 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     await _ensureCoverageLinesLayer();
     await _updateCoverageCells(cells, cvd, steps[0], steps[1]);
-    final segments = [
-      for (final c in cells)
-        (
-          lat: c.centerLat,
-          lon: c.centerLon,
-          color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
-        ),
-    ];
+    // Bounded (farthest-first, so the longest-reach lines survive) to protect
+    // against pathological volumes.
+    final lineCells = _capByFarthest(
+      cells,
+      (c) => c.distanceMeters,
+      5000,
+      '[COVERAGE] repeater coverage lines',
+    );
+    final lines = RepeaterCoverageLines(
+      repeaterId: _repeaterIdentity(repeater),
+      lat: repeater.lat,
+      lon: repeater.lon,
+      segments: [
+        for (final c in lineCells)
+          (
+            lat: c.centerLat,
+            lon: c.centerLon,
+            color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
+          ),
+      ],
+    );
+    _repeaterCoverageLines = lines;
+    final show =
+        _patchProviderRef?.preferences.showRepeaterCoverageLines ?? false;
     // Skinnier than the tile fan-out — a repeater draws many lines at once.
-    await _updateCoverageLines(segments, repeater.lat, repeater.lon,
+    // Switch off: an empty list clears any lines already drawn.
+    await _updateCoverageLines(lines.visible(show), repeater.lat, repeater.lon,
         width: 1.5);
     // Dim the base coverage tiles so the repeater's coloured cells + lines pop
     // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in
@@ -6248,8 +6436,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Always-on: renders whenever polygons are present, independent of BLE
   /// or auth state. Idempotent — safe to call repeatedly (removes existing
   /// source/layers first).
-  Future<void> _refreshRegionBorders(AppStateProvider appState) async {
-    if (_mapController == null || !_styleLoaded) return;
+  ///
+  /// One rebuild runs at a time. Calls that arrive while one is running
+  /// coalesce into a single follow-up rebuild, which reads the borders and
+  /// layer state as they are by then; every caller's future completes after
+  /// that follow-up.
+  Future<void> _refreshRegionBorders(AppStateProvider appState) =>
+      _regionBorderRunner.run(() => _rebuildRegionBorders(appState));
+
+  Future<void> _rebuildRegionBorders(AppStateProvider appState) async {
+    if (!mounted || _mapController == null || !_styleLoaded) return;
 
     // Remove existing layers (label, line) and source. Order matters: layers
     // reference the source, so they must go first. Each try/catch tolerates
@@ -6690,11 +6886,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (t.success) traceSuccessTotal++;
     }
 
+    // Each capped list contributes its length plus the identity of both ends,
+    // so add-one/evict-one at the 500 cap still moves the version.
     return Object.hashAll([
-      appState.txPings.length,
-      appState.rxPings.length,
-      appState.discLogEntries.length,
-      appState.traceLogEntries.length,
+      cappedListSignature(appState.txPings),
+      cappedListSignature(appState.rxPings),
+      cappedListSignature(appState.discLogEntries),
+      cappedListSignature(appState.traceLogEntries),
       deferredMarkers.length,
       deferredMarkers.lastOrNull,
       appState.repeaters.length,
@@ -6705,13 +6903,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _focusedPingTimestamp,
       _focusedRepeaters.length,
       appState.preferences.gpsMarkerStyle,
+      appState.preferences.gpsMarkerColor,
       appState.preferences.markerStyle,
       txEchoTotal,
       discNodeTotal,
       traceSuccessTotal,
       appState.preferences.showDeferredMarkers,
       appState.viewingHistorySession,
-      appState.historySessionMarkers?.length ?? 0,
+      // The history list is replaced wholesale per session, so its identity
+      // (not just its length) tells two same-sized sessions apart.
+      identityHashCode(appState.historySessionMarkers),
     ]);
   }
 
@@ -6725,8 +6926,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     };
   }
 
-  /// Build a single overlay table row with colored dot, repeater ID, and SNR
-  TableRow _overlayRow(String repeaterId, double snr, Color dotColor,
+  /// Build a single overlay table row with colored dot, label, and SNR.
+  /// [label] is the user's nickname when the row resolves to one repeater
+  /// that has one, else its server name (with Repeater Names in Top Heard on),
+  /// else the repeater's hex ID.
+  TableRow _overlayRow(String label, double snr, Color dotColor,
       {bool isLarge = false}) {
     final dotSize = isLarge ? 9.0 : 6.0;
     final fontSize = isLarge ? 17.0 : 11.0;
@@ -6750,7 +6954,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         Padding(
           padding: EdgeInsets.symmetric(vertical: rowVerticalPadding),
           child: Text(
-            repeaterId,
+            label,
             style: TextStyle(
               fontSize: fontSize,
               fontWeight: FontWeight.w600,
@@ -6777,7 +6981,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// Top heard repeaters overlay (bottom-right of map)
+  /// Top heard repeaters overlay (top-left of map, under the GPS chip)
   Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
     final topRepeaters = appState.topRepeatersBySnr;
     final rxSlot = appState.rxOverlaySlot;
@@ -6821,17 +7025,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               defaultColumnWidth: const IntrinsicColumnWidth(),
               columnWidths: {
                 0: const IntrinsicColumnWidth(), // dot
-                1: const IntrinsicColumnWidth(), // ID
+                1: const IntrinsicColumnWidth(), // label
                 2: FixedColumnWidth(isLarge ? 12 : 8), // spacer
                 3: const IntrinsicColumnWidth(), // SNR
               },
               children: [
                 for (final r in topRepeaters)
-                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type),
+                  _overlayRow(appState.topHeardLabel(r.repeaterId), r.snr,
+                      _overlayTypeColor(r.type),
                       isLarge: isLarge),
                 if (rxSlot != null)
-                  _overlayRow(rxSlot.repeaterId, rxSlot.snr,
-                      _overlayTypeColor(OverlayPingType.rx),
+                  _overlayRow(appState.topHeardLabel(rxSlot.repeaterId),
+                      rxSlot.snr, _overlayTypeColor(OverlayPingType.rx),
                       isLarge: isLarge),
               ],
             ),
@@ -6859,8 +7064,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         tooltip: 'Map Style: ${mapStyle.label}',
         onPressed: () => _cycleMapStyle(appState),
       ),
-      // MeshMapper overlay toggle (only show when zone code available)
-      if (appState.zoneCode != null)
+      // MeshMapper overlay toggle (only show when a coverage host is known)
+      if (appState.coverageHostCode != null)
         _buildControlButton(
           icon: Icons.layers,
           tooltip: _showMeshMapperOverlay
@@ -8787,7 +8992,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         iconColor: color, valueColor: color);
   }
 
-  /// Row-1 identity for the repeater pill: a status-coloured dot + the name.
+  /// Row-1 identity for the repeater pill: a status-coloured dot + the name,
+  /// then the user's nickname tag when it has one (edited from the sheet).
   Widget _repeaterPillTitle(Repeater repeater, Color statusColor) {
     final theme = Theme.of(context);
     return Row(
@@ -8808,7 +9014,33 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 color: theme.colorScheme.onSurface),
           ),
         ),
+        // Selected rather than read once: the pill can outlive an edit.
+        Selector<AppStateProvider, String?>(
+          selector: (_, s) => s.nicknameForRepeater(repeater),
+          builder: (context, nickname, _) => nickname == null
+              ? const SizedBox.shrink()
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(width: 6),
+                    RepeaterNicknameTag(nickname: nickname),
+                  ],
+                ),
+        ),
       ],
+    );
+  }
+
+  /// The repeater sheet's Nickname button beside Manage: "Nickname" until
+  /// one is set, then the nickname. Opens the nickname dialog. Only built for
+  /// a repeater with a full key.
+  Widget _nicknameButton(AppStateProvider appState, Repeater repeater) {
+    return Selector<AppStateProvider, String?>(
+      selector: (_, s) => s.nicknameForRepeater(repeater),
+      builder: (context, nickname, _) => RepeaterNicknameButton(
+        nickname: nickname,
+        onPressed: () => editRepeaterNickname(context, appState, repeater),
+      ),
     );
   }
 
@@ -10774,25 +11006,42 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               const SizedBox(height: 14),
               // Manage: opens the admin sheet for this repeater. Disabled with
               // the reason when the key is short or the app cannot manage now.
+              // Beside it, for a repeater with a full key, the Nickname button
+              // (the nickname itself once one is set). A repeater without one
+              // can take no nickname, so Manage keeps the full width and its
+              // "Full key unknown" covers both. The reason spans the whole
+              // row: under a half-width Manage it wrapped to two lines beside
+              // empty space.
               Builder(builder: (context) {
                 final block = appState.repeaterAdminBlockReason;
                 final hasKey = isFullPublicKey(repeater.hexId);
                 final hint = !hasKey ? 'Full key unknown' : block;
+                final manage = FilledButton.tonalIcon(
+                  icon:
+                      const Icon(Icons.admin_panel_settings_outlined, size: 18),
+                  label: const Text('Manage'),
+                  onPressed: hint == null
+                      ? () {
+                          Navigator.pop(context);
+                          showRepeaterAdminSheet(this.context,
+                              RepeaterTarget.fromRepeater(repeater));
+                        }
+                      : null,
+                );
                 return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      FilledButton.tonalIcon(
-                        icon: const Icon(Icons.admin_panel_settings_outlined,
-                            size: 18),
-                        label: const Text('Manage'),
-                        onPressed: hint == null
-                            ? () {
-                                Navigator.pop(context);
-                                showRepeaterAdminSheet(this.context,
-                                    RepeaterTarget.fromRepeater(repeater));
-                              }
-                            : null,
-                      ),
+                      if (hasKey)
+                        Row(
+                          children: [
+                            Expanded(child: manage),
+                            const SizedBox(width: 8),
+                            Expanded(
+                                child: _nicknameButton(appState, repeater)),
+                          ],
+                        )
+                      else
+                        manage,
                       if (hint != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
@@ -10970,6 +11219,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         Text(repeater.displayPreset!,
                             style: const TextStyle(fontSize: 13)),
                       ),
+                    // The scopes the server has confirmed for this repeater.
+                    // Absent when it knows none or predates the field.
+                    if (repeater.scopeChips.isNotEmpty)
+                      _repRow(
+                        context,
+                        Icons.sell_outlined,
+                        RepeaterScopeChips(chips: repeater.scopeChips),
+                      ),
                     // Administrators (repeater administrators feature)
                     _repRow(
                       context,
@@ -11020,7 +11277,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     // nothing to retry against: fetchRepeaterCoveragePoints
                     // answers null without making a request, so a Retry button
                     // would just loop on the same answer. Say why instead.
-                    final hasZone = (appState.zoneCode ?? '').isNotEmpty;
+                    final hasZone =
+                        (appState.coverageHostCode ?? '').isNotEmpty;
                     // Pop with our own token: the result handler treats every
                     // other value, a bare pop included, as a real close and
                     // tears the selection down.
@@ -11221,7 +11479,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
 /// Paints a crisp directional arrow pointing up
 class _ArrowPainter extends CustomPainter {
-  const _ArrowPainter();
+  final GpsMarkerColors colors;
+  const _ArrowPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11241,9 +11500,9 @@ class _ArrowPainter extends CustomPainter {
 
     canvas.drawPath(outlinePath, outlinePaint);
 
-    // Blue arrow on top
+    // Coloured arrow on top
     final arrowPaint = Paint()
-      ..color = const Color(0xFF2196F3) // Material blue
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     final arrowPath = ui.Path()
@@ -11262,7 +11521,8 @@ class _ArrowPainter extends CustomPainter {
 
 /// Paints a car silhouette for GPS position marker
 class _CarMarkerPainter extends CustomPainter {
-  const _CarMarkerPainter();
+  final GpsMarkerColors colors;
+  const _CarMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11281,9 +11541,9 @@ class _CarMarkerPainter extends CustomPainter {
     );
     canvas.drawRRect(outlineRect, outlinePaint);
 
-    // Blue car body
+    // Car body
     final bodyPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     final bodyRect = RRect.fromRectAndRadius(
@@ -11292,9 +11552,9 @@ class _CarMarkerPainter extends CustomPainter {
     );
     canvas.drawRRect(bodyRect, bodyPaint);
 
-    // Windshield (darker blue rectangle near top)
+    // Windshield (darker rectangle near top)
     final windshieldPaint = Paint()
-      ..color = const Color(0xFF1565C0)
+      ..color = colors.shade
       ..style = PaintingStyle.fill;
     final windshieldRect = RRect.fromRectAndRadius(
       Rect.fromCenter(center: Offset(cx, cy - 3), width: 7, height: 4),
@@ -11309,7 +11569,8 @@ class _CarMarkerPainter extends CustomPainter {
 
 /// Paints a bicycle silhouette for GPS position marker
 class _BikeMarkerPainter extends CustomPainter {
-  const _BikeMarkerPainter();
+  final GpsMarkerColors colors;
+  const _BikeMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11322,13 +11583,13 @@ class _BikeMarkerPainter extends CustomPainter {
       ..strokeWidth = 3;
 
     final bikePaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5
       ..strokeCap = StrokeCap.round;
 
     final fillPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     // Two wheels
@@ -11355,11 +11616,11 @@ class _BikeMarkerPainter extends CustomPainter {
           ..strokeWidth = 3.5
           ..strokeCap = StrokeCap.round);
 
-    // Blue wheels
+    // Wheels
     canvas.drawCircle(leftWheel, wheelR, bikePaint);
     canvas.drawCircle(rightWheel, wheelR, bikePaint);
 
-    // Blue frame
+    // Frame
     canvas.drawPath(framePath, bikePaint);
 
     // Seat dot
@@ -11372,7 +11633,8 @@ class _BikeMarkerPainter extends CustomPainter {
 
 /// Paints a boat silhouette for GPS position marker
 class _BoatMarkerPainter extends CustomPainter {
-  const _BoatMarkerPainter();
+  final GpsMarkerColors colors;
+  const _BoatMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11385,7 +11647,7 @@ class _BoatMarkerPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     final fillPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     // Hull outline (wider)
@@ -11419,7 +11681,7 @@ class _BoatMarkerPainter extends CustomPainter {
         Offset(cx, cy + 2),
         Offset(cx, cy - 9),
         Paint()
-          ..color = const Color(0xFF2196F3)
+          ..color = colors.body
           ..strokeWidth = 1.5
           ..strokeCap = StrokeCap.round);
 
@@ -11440,7 +11702,7 @@ class _BoatMarkerPainter extends CustomPainter {
     canvas.drawPath(
         sail,
         Paint()
-          ..color = const Color(0xFF64B5F6)
+          ..color = colors.light
           ..style = PaintingStyle.fill);
   }
 
@@ -11450,7 +11712,8 @@ class _BoatMarkerPainter extends CustomPainter {
 
 /// Paints a walking person silhouette for GPS position marker
 class _WalkMarkerPainter extends CustomPainter {
-  const _WalkMarkerPainter();
+  final GpsMarkerColors colors;
+  const _WalkMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11464,13 +11727,13 @@ class _WalkMarkerPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     final personPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round;
 
     final fillPaint = Paint()
-      ..color = const Color(0xFF2196F3)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     // Head outline + fill
@@ -11508,9 +11771,10 @@ class _WalkMarkerPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-/// Paints a Chomper (cyan wedge) GPS position marker — mouth faces up (direction of travel)
+/// Paints a Chomper (wedge, cyan by default) GPS position marker — mouth faces up (direction of travel)
 class _ChomperMarkerPainter extends CustomPainter {
-  const _ChomperMarkerPainter();
+  final GpsMarkerColors colors;
+  const _ChomperMarkerPainter(this.colors);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11541,9 +11805,9 @@ class _ChomperMarkerPainter extends CustomPainter {
       ..close();
     canvas.drawPath(outlinePath, outlinePaint);
 
-    // Cyan body
+    // Body
     final bodyPaint = Paint()
-      ..color = const Color(0xFF00BCD4)
+      ..color = colors.body
       ..style = PaintingStyle.fill;
 
     final bodyPath = ui.Path()
@@ -11564,10 +11828,8 @@ class _ChomperMarkerPainter extends CustomPainter {
 
 /// Paints a dog silhouette (side profile, facing right) for GPS position marker
 class _DogMarkerPainter extends CustomPainter {
-  const _DogMarkerPainter();
-
-  static const _blue = Color(0xFF2196F3);
-  static const _darkBlue = Color(0xFF1565C0);
+  final GpsMarkerColors colors;
+  const _DogMarkerPainter(this.colors);
 
   /// Body, neck, head and muzzle as one closed silhouette around [cx],[cy].
   ui.Path _bodyPath(double cx, double cy) {
@@ -11628,8 +11890,8 @@ class _DogMarkerPainter extends CustomPainter {
     final body = _bodyPath(cx, cy);
     final tail = _tailPath(cx, cy);
 
-    // Every white outline goes down before any blue, so the halo around one
-    // limb never paints over the blue of the one beside it.
+    // Every white outline goes down before any fill, so the halo around one
+    // limb never paints over the fill of the one beside it.
     final legOutline = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
@@ -11647,20 +11909,20 @@ class _DogMarkerPainter extends CustomPainter {
     canvas.drawPath(body, bodyOutline);
 
     final legPaint = Paint()
-      ..color = _blue
+      ..color = colors.body
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.6
       ..strokeCap = StrokeCap.round;
 
     _drawLegs(canvas, cx, cy, legPaint);
     canvas.drawPath(tail, legPaint);
-    canvas.drawPath(body, Paint()..color = _blue);
+    canvas.drawPath(body, Paint()..color = colors.body);
 
     // Ear and nose read as darker shading on top of the body, the way the car
     // marker's windshield does — no white outline, so nothing separates limbs.
-    canvas.drawPath(_earPath(cx, cy), Paint()..color = _darkBlue);
+    canvas.drawPath(_earPath(cx, cy), Paint()..color = colors.shade);
     canvas.drawCircle(
-        Offset(cx + 11.3, cy - 6.3), 0.9, Paint()..color = _darkBlue);
+        Offset(cx + 11.3, cy - 6.3), 0.9, Paint()..color = colors.shade);
     canvas.drawCircle(
         Offset(cx + 7, cy - 8.5), 1, Paint()..color = Colors.white);
   }

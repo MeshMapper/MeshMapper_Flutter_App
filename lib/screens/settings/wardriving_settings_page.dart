@@ -5,6 +5,7 @@ import '../../models/connection_state.dart';
 import '../../models/user_preferences.dart';
 import '../../providers/app_state_provider.dart';
 import '../../widgets/carpeater_setup_dialog.dart';
+import '../../widgets/scope_discovery_firmware_note.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: Wardriving.
@@ -135,6 +136,24 @@ class WardrivingSettingsPage extends StatelessWidget {
               ),
             if (appState.smartPingEnabled)
               SwitchListTile(
+                secondary: const Icon(Icons.swap_horiz),
+                title: const Text('Delay only flood pings'),
+                subtitle: appState.enforceSmartPing
+                    ? Text(
+                        'Set by Regional Admin. ${_floodOnlySubtitle(appState.smartPingFloodOnly)}',
+                        style: const TextStyle(color: Colors.amber),
+                      )
+                    : Text(_floodOnlySubtitle(appState.smartPingFloodOnly)),
+                value: appState.smartPingFloodOnly,
+                onChanged: (isAutoMode || appState.enforceSmartPing)
+                    ? null
+                    : (value) {
+                        appState.updatePreferences(
+                            prefs.copyWith(smartPingFloodOnly: value));
+                      },
+              ),
+            if (appState.smartPingEnabled)
+              SwitchListTile(
                 secondary: const Icon(Icons.layers_outlined),
                 title: const Text('Show only recent coverage'),
                 subtitle: const Text(
@@ -156,6 +175,64 @@ class WardrivingSettingsPage extends StatelessWidget {
                         appState.updatePreferences(
                             prefs.copyWith(showDeferredMarkers: value));
                       },
+              ),
+            SwitchListTile(
+              secondary: const Icon(Icons.travel_explore),
+              title: Row(
+                children: [
+                  const Flexible(
+                      child: Text('Scope Discovery',
+                          overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    onPressed: () => _showScopeDiscoveryInfo(context),
+                    icon: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    appState.enforceScopeDiscovery
+                        ? 'Set by Regional Admin. Asks nearby repeaters for their scopes. Adds a little airtime; pings are not delayed.'
+                        : 'Asks nearby repeaters for their scopes. Adds a little airtime; pings are not delayed.',
+                    style: appState.enforceScopeDiscovery
+                        ? const TextStyle(color: Colors.amber)
+                        : null,
+                  ),
+                  ScopeDiscoveryFirmwareNote(
+                      show: appState.scopeDiscoveryNeedsNewerFirmware),
+                ],
+              ),
+              value: appState.scopeDiscoveryEnabled,
+              onChanged: (isAutoMode || appState.enforceScopeDiscovery)
+                  ? null
+                  : (value) {
+                      appState.updatePreferences(
+                          prefs.copyWith(scopeDiscoveryEnabled: value));
+                    },
+            ),
+            if (appState.scopeDiscoveryEnabled)
+              ListTile(
+                leading: const Icon(Icons.history),
+                title: const Text('Ask repeaters again after'),
+                subtitle: Text(appState.enforceScopeDiscovery
+                    ? '${_scopeDiscoveryDaysLabel(appState.scopeRefreshDays)} (set by Regional Admin)'
+                    : _scopeDiscoveryDaysLabel(prefs.scopeDiscoveryDays)),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !isAutoMode && !appState.enforceScopeDiscovery,
+                onTap: (isAutoMode || appState.enforceScopeDiscovery)
+                    ? null
+                    : () => _showScopeDiscoveryDaysSelector(context, appState),
               ),
             SwitchListTile(
               secondary: const Icon(Icons.timer_off),
@@ -668,7 +745,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits.',
+                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits. In Hybrid, a held GRP_TXT is never replaced by a discovery request, so it is the first ping into a clear square and can paint it green. With Delay only flood pings on, discovery keeps going out while the GRP_TXT waits.',
                 style: TextStyle(fontSize: 13),
               ),
               SizedBox(height: 12),
@@ -676,7 +753,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                'A square with a two-way (green) or discovery (cyan) result inside your chosen window. Squares match your Coverage Grid setting, so what is deferred is what is already painted on the map.',
+                'With Delay only flood pings on (the default), a flood ping waits only in a square with a two-way (green) result inside your window, and discovery requests always go out. With it off, both wait in a square with a green or cyan result. Squares match your Coverage Grid setting, so what is deferred is what is already painted on the map.',
                 style: TextStyle(fontSize: 13),
               ),
               SizedBox(height: 12),
@@ -697,6 +774,54 @@ class WardrivingSettingsPage extends StatelessWidget {
                 '\u2022 Listening to other mesh traffic, which is free coverage\n'
                 '\u2022 Anywhere coverage data cannot be loaded',
                 style: TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showScopeDiscoveryInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.travel_explore, size: 24),
+            SizedBox(width: 8),
+            Text('Scope Discovery'),
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'In Passive and Hybrid, after each discovery MeshMapper can ask the repeaters it found which scopes they carry, and adds the answers to the map.',
+                style: TextStyle(fontSize: 14),
+              ),
+              SizedBox(height: 12),
+              Text(
+                'A repeater is only asked when it is due: nobody has checked it within the "Ask repeaters again after" window. Answers from other wardrivers and from the region\'s observers count too, so a repeater someone else already checked is skipped and nothing is sent to it.',
+                style: TextStyle(fontSize: 14),
+              ),
+              SizedBox(height: 12),
+              Text(
+                'When repeaters are due, your radio asks up to 3 of the strongest, one at a time, and waits a few seconds for each answer. Your pings keep their normal schedule. A small "Scopes" badge shows on the ping button while it is asking, and each request appears in the log under SCP.',
+                style: TextStyle(fontSize: 14),
+              ),
+              SizedBox(height: 12),
+              Text(
+                'It needs companion firmware v1.16.0 or newer.',
+                style: TextStyle(fontSize: 14),
               ),
             ],
           ),
@@ -1049,6 +1174,10 @@ class WardrivingSettingsPage extends StatelessWidget {
     );
   }
 
+  String _floodOnlySubtitle(bool floodOnly) => floodOnly
+      ? 'Discovery always goes out. Flood pings wait only in green squares.'
+      : 'Flood pings and discovery wait in green or cyan squares.';
+
   String _smartPingDaysLabel(int days) => days == 1 ? '1 day' : '$days days';
 
   void _showSmartPingDaysSelector(
@@ -1089,6 +1218,62 @@ class WardrivingSettingsPage extends StatelessWidget {
             child: const Text('Save'),
           ),
         ],
+      ),
+    );
+  }
+
+  String _scopeDiscoveryDaysLabel(int days) =>
+      days == 1 ? '1 day' : '$days days';
+
+  void _showScopeDiscoveryDaysSelector(
+      BuildContext context, AppStateProvider appState) {
+    final controller = TextEditingController(
+        text: appState.preferences.scopeDiscoveryDays.toString());
+    String? errorText;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Ask repeaters again after'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+            decoration: InputDecoration(
+              suffixText: 'days',
+              helperText:
+                  '${ScopeDiscoveryDays.min} to ${ScopeDiscoveryDays.max} days',
+              errorText: errorText,
+            ),
+            onChanged: (_) {
+              if (errorText != null) setState(() => errorText = null);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = int.tryParse(controller.text.trim());
+                if (value == null ||
+                    value < ScopeDiscoveryDays.min ||
+                    value > ScopeDiscoveryDays.max) {
+                  setState(() => errorText =
+                      'Enter a number from ${ScopeDiscoveryDays.min} to ${ScopeDiscoveryDays.max}');
+                  return;
+                }
+                appState.updatePreferences(
+                  appState.preferences.copyWith(scopeDiscoveryDays: value),
+                );
+                Navigator.pop(context);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
       ),
     );
   }

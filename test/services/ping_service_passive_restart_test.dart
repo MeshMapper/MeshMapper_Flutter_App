@@ -7,6 +7,7 @@ import 'package:mesh_mapper/models/connection_state.dart';
 import 'package:mesh_mapper/models/device_model.dart';
 import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/countdown_timer_service.dart';
+import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/gps_service.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/ping_service.dart';
@@ -27,6 +28,9 @@ import 'package:mesh_mapper/services/wakelock_service.dart';
 /// a new session always opens with a discovery.
 
 class _FakeGps implements GpsService {
+  @override
+  FixAltitude fixAltitudeOf(Position position) => const FixAltitude.unknown();
+
   Position? position;
 
   @override
@@ -99,8 +103,9 @@ class _FakeConnection implements MeshCoreConnection {
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #sendDiscoveryRequest) {
       discoveryTransmits++;
-      return discoveryGate?.future ??
-          Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
+      return (discoveryGate?.future ??
+              Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4])))
+          .then((tag) => (tag: tag, sentAt: DateTime.now()));
     }
     throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
   }
@@ -159,7 +164,7 @@ PingService _build(
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: discoveryWindow,
       deviceId: 'TEST',
-    )..checkRecentCoverage = (lat, lon) => RecentCoverage.clear;
+    )..checkRecentCoverage = (lat, lon, kind) => RecentCoverage.clear;
 
 void main() {
   testWidgets('a user stop keeps the 25 m anchor, so a restart in place is held',

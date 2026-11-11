@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/debug_file_logger.dart';
 import '../../utils/constants.dart';
+import '../../utils/share_origin.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/bug_report_dialog.dart';
 import '../../widgets/upload_logs_dialog.dart';
@@ -157,8 +158,10 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
               subtitle: const Text('Report bugs or request features'),
               onTap: () => _showBugReportDialog(context, appState),
             ),
-            // Debug logs are mobile only. The web build keeps no log files.
-            if (!kIsWeb) ...[
+          ]),
+          // Debug logs are mobile only. The web build keeps no log files.
+          if (!kIsWeb)
+            SettingsSectionCard(title: 'Debug Logs', children: [
               SwitchListTile(
                 secondary: Icon(
                   Icons.bug_report,
@@ -166,7 +169,7 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
                 ),
                 title: Row(
                   children: [
-                    const Text('Debug Logs'),
+                    const Text('Write logs to file'),
                     if (appState.debugLogsEnabled) ...[
                       const SizedBox(width: 8),
                       Container(
@@ -242,12 +245,11 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
                     ),
                   )
                 else
-                  ...appState.debugLogFiles.asMap().entries.map((entry) {
-                    final index = entry.key;
-                    final file = entry.value;
+                  ...appState.debugLogFiles.map((file) {
                     final filename = file.path.split('/').last;
                     final sizeBytes = file.lengthSync();
-                    final isCurrentLog = index == 0;
+                    final isCurrentLog =
+                        file.path == DebugFileLogger.currentLogPath;
                     final timestampMatch =
                         RegExp(r'meshmapper-debug-(\d+)\.txt')
                             .firstMatch(filename);
@@ -291,18 +293,21 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
                                 _showLogViewer(context, appState, file),
                             tooltip: 'View',
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.share, size: 20),
-                            onPressed: () => appState.shareDebugLog(file),
-                            tooltip: 'Share',
+                          Builder(
+                            builder: (buttonContext) => IconButton(
+                              icon: const Icon(Icons.share, size: 20),
+                              onPressed: () => appState.shareDebugLog(file,
+                                  sharePositionOrigin:
+                                      globalRectOf(buttonContext)),
+                              tooltip: 'Share',
+                            ),
                           ),
                         ],
                       ),
                     );
                   }),
               ],
-            ],
-          ]),
+            ]),
         ],
       ),
     );

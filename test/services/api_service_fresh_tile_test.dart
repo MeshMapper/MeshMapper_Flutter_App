@@ -18,6 +18,7 @@ void main() {
             'x': '4173',
             'y': '6157',
             'gsize': '100',
+            'cf': '2',
             'fresh': '1',
             'f_freq': '910.525',
             'f_bw': '62.5',
@@ -122,5 +123,56 @@ void main() {
 
     expect(result.changed, isNull);
     expect(result.body, isNull);
+  });
+
+  group('a missing verdict says why', () {
+    test('an absent header on a 200 reads as no verdict, not a failure',
+        () async {
+      final api = ApiService(client: MockClient((_) async {
+        return http.Response.bytes([1], 200);
+      }));
+
+      final result =
+          await api.freshenVectorTile(zone: 'yow', z: 14, x: 1, y: 2);
+
+      expect(result.changed, isNull);
+      expect(result.noVerdictReason, 'header absent');
+    });
+
+    test('a non-2xx names its status', () async {
+      final api = ApiService(client: MockClient((_) async {
+        return http.Response('', 503);
+      }));
+
+      final result =
+          await api.freshenVectorTile(zone: 'yow', z: 13, x: 1, y: 2);
+
+      expect(result.changed, isNull);
+      expect(result.noVerdictReason, 'HTTP 503');
+    });
+
+    test('a transport error reads as a failed request', () async {
+      final api = ApiService(client: MockClient((_) async {
+        throw http.ClientException('connection reset');
+      }));
+
+      final result =
+          await api.freshenVectorTile(zone: 'yow', z: 13, x: 1, y: 2);
+
+      expect(result.changed, isNull);
+      expect(result.noVerdictReason, 'request failed');
+    });
+
+    test('a verdict carries no reason', () async {
+      final api = ApiService(client: MockClient((_) async {
+        return http.Response('', 204, headers: {'x-tile-changed': '0'});
+      }));
+
+      final result =
+          await api.freshenVectorTile(zone: 'yow', z: 12, x: 1, y: 2);
+
+      expect(result.changed, isFalse);
+      expect(result.noVerdictReason, isNull);
+    });
   });
 }

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+
 import '../../utils/debug_logger_io.dart';
 import 'packet_validator.dart';
 import 'protocol_constants.dart';
@@ -16,6 +18,11 @@ class DiscTracker {
   final Map<String, DiscoveredNode> nodes = {};
 
   Timer? _windowTimer;
+
+  /// This sweep's own tag and when its command was submitted to the radio.
+  /// Only a reply carrying [_ownTag] gets a reply time.
+  Uint8List? _ownTag;
+  DateTime? _sentAt;
 
   /// Callback to check if a repeater should be ignored (carpeater filter)
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
@@ -49,10 +56,15 @@ class DiscTracker {
 
   /// Start tracking discovery responses
   ///
-  /// @param tag - 4-byte random tag (for logging purposes)
+  /// @param tag - this sweep's own 4-byte tag
+  /// @param sentAt - when the discovery command was submitted to the radio;
+  ///   a reply carrying [tag] gets its time after this as
+  ///   [DiscoveredNode.discoveryReplyAfter]. Replies to any other tag are
+  ///   still accepted, without a reply time.
   /// @param windowDuration - How long to listen (default 7 seconds)
   void startTracking({
     required Uint8List tag,
+    DateTime? sentAt,
     Duration windowDuration = const Duration(seconds: 7),
   }) {
     debugLog('[DISC] Starting discovery tracking');
@@ -62,6 +74,8 @@ class DiscTracker {
     isListening = true;
     startTime = DateTime.now();
     nodes.clear();
+    _ownTag = Uint8List.fromList(tag);
+    _sentAt = sentAt;
 
     // Start window timer
     _windowTimer?.cancel();
@@ -144,7 +158,20 @@ class DiscTracker {
       final remoteSnrRaw = rawBytes[2].toSigned(8);
       final remoteSnr = remoteSnrRaw / 4.0;
 
-      // Skip tag (bytes 3-6) - we accept any response during the window
+      // Any tag is accepted during the window (another phone's discovery
+      // included); only this sweep's own tag gets a reply time.
+      final sentAt = _sentAt;
+      final ownTag = _ownTag;
+      Duration? replyAfter;
+      if (sentAt != null &&
+          ownTag != null &&
+          ownTag.length == 4 &&
+          rawBytes[3] == ownTag[0] &&
+          rawBytes[4] == ownTag[1] &&
+          rawBytes[5] == ownTag[2] &&
+          rawBytes[6] == ownTag[3]) {
+        replyAfter = clock.now().difference(sentAt);
+      }
 
       // Extract public key (bytes 7-38)
       final pubkey = rawBytes.sublist(7, 39);
@@ -205,7 +232,17 @@ class DiscTracker {
             localRssi: localRssi,
             remoteSnr: remoteSnr,
             pubkeyFull: pubkeyHex,
+            // Short ids can collide: a reply time only carries over within
+            // the same full key.
+            discoveryReplyAfter: replyAfter ??
+                (existing.pubkeyFull == pubkeyHex
+                    ? existing.discoveryReplyAfter
+                    : null),
           );
+        } else if (existing.discoveryReplyAfter == null &&
+            replyAfter != null &&
+            existing.pubkeyFull == pubkeyHex) {
+          nodes[repeaterId] = existing.withReplyAfter(replyAfter);
         }
       } else {
         // New node
@@ -218,6 +255,7 @@ class DiscTracker {
           localRssi: localRssi,
           remoteSnr: remoteSnr,
           pubkeyFull: pubkeyHex,
+          discoveryReplyAfter: replyAfter,
         );
       }
 
@@ -247,7 +285,11 @@ class DiscoveredNode {
   final int localRssi; // RSSI as seen by local device (dBm)
   final double remoteSnr; // SNR as seen by remote node (dB)
   final String
-      pubkeyFull; // Full 32-byte public key as hex (local only, not sent to API)
+      pubkeyFull; // Full 32-byte public key as hex (sent to the API as public_key on the DISC item)
+
+  /// How long after the discovery command was submitted this node's reply
+  /// to it arrived. Null for a reply to another phone's discovery.
+  final Duration? discoveryReplyAfter;
 
   DiscoveredNode({
     required this.repeaterId,
@@ -256,7 +298,19 @@ class DiscoveredNode {
     required this.localRssi,
     required this.remoteSnr,
     required this.pubkeyFull,
+    this.discoveryReplyAfter,
   });
+
+  /// This node with [after] as its reply time.
+  DiscoveredNode withReplyAfter(Duration after) => DiscoveredNode(
+        repeaterId: repeaterId,
+        nodeType: nodeType,
+        localSnr: localSnr,
+        localRssi: localRssi,
+        remoteSnr: remoteSnr,
+        pubkeyFull: pubkeyFull,
+        discoveryReplyAfter: after,
+      );
 
   /// Get node type as display string
   String get nodeTypeName =>

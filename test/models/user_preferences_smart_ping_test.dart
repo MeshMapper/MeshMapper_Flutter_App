@@ -26,11 +26,18 @@ void main() {
     expect(SmartPingDays.defaultDays, 14);
   });
 
+  test('delay only flood pings defaults to on', () {
+    expect(const UserPreferences().smartPingFloodOnly, isTrue);
+    expect(UserPreferences.fromJson({}).smartPingFloodOnly, isTrue);
+  });
+
   test('round trips through json', () {
-    const prefs = UserPreferences(smartPingEnabled: false, smartPingDays: 3);
+    const prefs = UserPreferences(
+        smartPingEnabled: false, smartPingDays: 3, smartPingFloodOnly: false);
     final back = UserPreferences.fromJson(prefs.toJson());
     expect(back.smartPingEnabled, isFalse);
     expect(back.smartPingDays, 3);
+    expect(back.smartPingFloodOnly, isFalse);
     expect(back, prefs);
   });
 
@@ -50,5 +57,9 @@ void main() {
     expect(changed.smartPingDays, 30);
     expect(changed.smartPingEnabled, isTrue);
     expect(prefs.copyWith(smartPingEnabled: false).smartPingEnabled, isFalse);
+    final flood = prefs.copyWith(smartPingFloodOnly: false);
+    expect(flood.smartPingFloodOnly, isFalse);
+    expect(flood, isNot(prefs));
+    expect(flood.copyWith(smartPingFloodOnly: true), prefs);
   });
 }

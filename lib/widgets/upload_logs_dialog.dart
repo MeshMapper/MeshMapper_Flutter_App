@@ -64,7 +64,9 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
 
   Future<void> _loadUploadableFiles() async {
     try {
-      final files = await widget.appState.prepareDebugLogsForUpload();
+      // Listed as they are. The live log is rotated once, at submit, never
+      // on opening the sheet: that left a stub file behind every cancel.
+      final files = await widget.appState.listDebugLogFiles();
       if (mounted) {
         setState(() {
           _availableLogFiles = files;
@@ -156,24 +158,14 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
     });
 
     try {
-      // Rotate the current log file now that the user has committed to uploading
+      // The one rotation: the live log is closed in place (same path) so it
+      // is complete, and a new current file takes over. The selection was
+      // made by path, so it still names the closed file, and the new current
+      // is not in the returned list.
       final freshFiles = await widget.appState.prepareDebugLogsForUpload();
-
-      // Build the upload list using the user's selection applied to the freshly rotated files.
-      // Selected paths from before rotation still match, plus any newly rotated file is included.
-      final selectedPaths = Set<String>.from(_selectedLogFiles);
-      final filesToUpload =
-          freshFiles.where((f) => selectedPaths.contains(f.path)).toList();
-
-      // If the rotation produced a new file that wasn't in the original selection
-      // (i.e. the previously-active log that just got rotated), include it too
-      // since the user selected "all" initially and this file has new content.
-      final newFiles =
-          freshFiles.where((f) => !selectedPaths.contains(f.path)).toList();
-      if (newFiles.isNotEmpty &&
-          selectedPaths.length == _availableLogFiles.length) {
-        filesToUpload.addAll(newFiles);
-      }
+      final filesToUpload = freshFiles
+          .where((f) => _selectedLogFiles.contains(f.path))
+          .toList();
 
       if (filesToUpload.isEmpty) {
         if (mounted) {
@@ -521,6 +513,9 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                             } else {
                               sizeDisplay =
                                   '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                            }
+                            if (file.path == DebugFileLogger.currentLogPath) {
+                              sizeDisplay = '$sizeDisplay (current)';
                             }
 
                             return ListTile(

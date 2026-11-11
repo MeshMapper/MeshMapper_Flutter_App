@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/offline_session_service.dart';
 
 /// Regression tests for the offline-session lifecycle duplicate bug.
@@ -74,6 +75,31 @@ void main() {
     });
 
     test(
+        'replacePings rewrites the whole list and persists it, unlike removeProcessedPings which only drops a prefix',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final service = OfflineSessionService();
+      await service.init();
+
+      final rows = [
+        {'type': 'DISC', 'seq': 0},
+        {'type': 'SCOPES', 'seq': 1},
+        {'type': 'RX', 'seq': 2},
+        {'type': 'SCOPES', 'seq': 3},
+      ];
+      await service.updateCurrentSession(rows, deviceName: 'Test');
+      final filename = service.sessions.single.filename;
+
+      final withoutScopes = rows.where((r) => r['type'] != 'SCOPES').toList();
+      await service.replacePings(filename, withoutScopes);
+
+      final reloaded = service.getSession(filename)!;
+      expect(reloaded.pingCount, 2);
+      expect(reloaded.data['pings'], withoutScopes);
+      expect(reloaded.data['ping_count'], 2);
+    });
+
+    test(
         'final save with empty queue still finalizes, so next session does not append to the old one',
         () async {
       SharedPreferences.setMockInitialValues({});
@@ -98,6 +124,48 @@ void main() {
           reason: 'first session keeps its original 3 pings (no append)');
       expect(service.sessions.first.pingCount, 2,
           reason: 'second session holds only its own 2 pings');
+    });
+
+    test('an offline session keeps the altitude trio through save and reload',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final service = OfflineSessionService();
+      await service.init();
+      await service.updateCurrentSession([
+        {
+          'type': 'RX',
+          'lat': 45.0,
+          'lon': -75.0,
+          'altitude': 84,
+          'altitude_ref': 'ellipsoid',
+          'altitude_acc': 9,
+        }
+      ], deviceName: 'Test');
+      service.finalizeCurrentSession();
+
+      final reloaded = OfflineSessionService();
+      await reloaded.init();
+      final pings =
+          (reloaded.sessions.first.data['pings'] as List).cast<Map>();
+      expect(pings.single['altitude'], 84);
+      expect(pings.single['altitude_ref'], 'ellipsoid');
+      expect(pings.single['altitude_acc'], 9);
+
+      final uploaded = <Map<String, dynamic>>[];
+      await runOfflineChunkedUpload(
+        pings.map((p) => Map<String, dynamic>.from(p)).toList(),
+        scopeDiscoveryOffered: true,
+        batchSize: 50,
+        persistRows: (_) async {},
+        uploadChunk: (chunk, _, __) async {
+          uploaded.addAll(chunk);
+          return true;
+        },
+        forwardChunk: (_, __) {},
+      );
+      expect(uploaded.single['altitude'], 84);
+      expect(uploaded.single['altitude_ref'], 'ellipsoid');
+      expect(uploaded.single['altitude_acc'], 9);
     });
   });
 }

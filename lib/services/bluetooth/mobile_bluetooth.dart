@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,6 +15,53 @@ import 'bluetooth_service.dart';
 
 /// Mobile Bluetooth implementation using flutter_blue_plus
 /// For Android and iOS platforms
+/// Delays between retries of an Android write the stack refused as busy.
+const List<Duration> kGattBusyRetryDelays = [
+  Duration(milliseconds: 50),
+  Duration(milliseconds: 100),
+  Duration(milliseconds: 150),
+];
+
+/// True when [error] is Android's ERROR_GATT_WRITE_REQUEST_BUSY, which the
+/// stack returns when another write (often a second app on the same radio)
+/// still holds the GATT queue. The write never went out, so it is safe to
+/// send again.
+bool isGattWriteBusy(Object error) =>
+    error.toString().contains('ERROR_GATT_WRITE_REQUEST_BUSY');
+
+/// Runs [write], retrying it after each of [delays] while it fails with
+/// [isGattWriteBusy]. Any other error, or a busy error after the last retry,
+/// is rethrown unchanged.
+@visibleForTesting
+Future<void> writeRetryingGattBusy(
+  Future<void> Function() write, {
+  List<Duration> delays = kGattBusyRetryDelays,
+  Future<void> Function(Duration delay)? sleep,
+}) async {
+  for (var attempt = 0;; attempt++) {
+    try {
+      await write();
+      if (attempt > 0) {
+        debugLog('[BLE] Write succeeded after $attempt GATT busy '
+            'retr${attempt == 1 ? 'y' : 'ies'}');
+      }
+      return;
+    } catch (e) {
+      if (!isGattWriteBusy(e) || attempt >= delays.length) {
+        if (attempt > 0) {
+          debugWarn('[BLE] Write failed after $attempt GATT busy '
+              'retr${attempt == 1 ? 'y' : 'ies'}: $e');
+        }
+        rethrow;
+      }
+      final delay = delays[attempt];
+      debugLog('[BLE] GATT write busy, retrying in ${delay.inMilliseconds} ms '
+          '(${attempt + 1}/${delays.length})');
+      await (sleep ?? Future<void>.delayed)(delay);
+    }
+  }
+}
+
 class MobileBluetoothService implements BluetoothService {
   // Retry constants for transient connect failures (see ble_connect_retry_policy.dart)
   static const int _maxRetries = 3;
@@ -280,6 +328,12 @@ class MobileBluetoothService implements BluetoothService {
   /// the shared device state (_bleDevice, characteristics, subscriptions).
   int _connectEpoch = 0;
 
+  /// The highest epoch cancelled by [cancelConnect]. Separates "the user
+  /// cancelled this attempt" from "a newer connect superseded it": only a
+  /// cancelled attempt may close a link it opened after the cancel, since a
+  /// superseding connect may be using the same peripheral.
+  int _cancelledEpoch = 0;
+
   @override
   Future<void> connect(String deviceId, {int? maxAttempts}) async {
     final epoch = ++_connectEpoch;
@@ -318,17 +372,36 @@ class MobileBluetoothService implements BluetoothService {
           _bleDevice = null;
         }
 
+        // A cancel can land during the previous-device disconnect above;
+        // check before taking a fresh device reference into shared state.
+        if (epoch != _connectEpoch) {
+          throw Exception('Connection attempt superseded');
+        }
+
         // Get the device
-        _bleDevice = fbp.BluetoothDevice.fromId(deviceId);
+        final pendingDevice = fbp.BluetoothDevice.fromId(deviceId);
+        _bleDevice = pendingDevice;
         debugLog('[BLE] Device reference created');
 
         // Connect to GATT server FIRST (before subscribing to state changes)
         debugLog('[BLE] Connecting to GATT...');
-        await _bleDevice!.connect(
+        await pendingDevice.connect(
           timeout: const Duration(seconds: 15),
           mtu:
               null, // Disable automatic MTU negotiation during connect to avoid race condition errors on Android
         );
+        if (epoch <= _cancelledEpoch) {
+          // The link's connected event raced the cancel's disconnect and
+          // won, so the link is open even though the attempt was cancelled.
+          debugLog('[BLE] Link opened after the connect was cancelled, '
+              'closing it');
+          try {
+            await pendingDevice.disconnect(queue: false);
+          } catch (e) {
+            debugWarn('[BLE] Closing cancelled link failed (ignoring): $e');
+          }
+          throw Exception('Connection attempt cancelled');
+        }
         debugLog('[BLE] GATT connected');
 
         // Request larger MTU AFTER connection is established
@@ -352,6 +425,9 @@ class MobileBluetoothService implements BluetoothService {
           final mtu = await _bleDevice!.mtu.first;
           debugLog('[BLE] iOS MTU: $mtu bytes');
         }
+        if (epoch != _connectEpoch) {
+          throw Exception('Connection attempt superseded');
+        }
 
         // NOW subscribe to connection state changes (after we're connected)
         // Use skip(1) to ignore the initial state emission from the stream.
@@ -369,6 +445,9 @@ class MobileBluetoothService implements BluetoothService {
         // Discover services
         debugLog('[BLE] Discovering services...');
         final services = await _bleDevice!.discoverServices();
+        if (epoch != _connectEpoch) {
+          throw Exception('Connection attempt superseded');
+        }
         debugLog('[BLE] Found ${services.length} services');
 
         // Find our service
@@ -397,6 +476,9 @@ class MobileBluetoothService implements BluetoothService {
         // Enable notifications on TX characteristic
         debugLog('[BLE] Enabling notifications...');
         await _txCharacteristic!.setNotifyValue(true);
+        if (epoch != _connectEpoch) {
+          throw Exception('Connection attempt superseded');
+        }
         _notificationSubscription =
             _txCharacteristic!.lastValueStream.listen((value) {
           if (value.isNotEmpty &&
@@ -523,6 +605,52 @@ class MobileBluetoothService implements BluetoothService {
   }
 
   @override
+  Future<void> cancelConnect() async {
+    // Bumping the epoch makes the running connect() loop stop retrying and
+    // rethrow from wherever it is, without cleaning up after itself.
+    _cancelledEpoch = _connectEpoch;
+    ++_connectEpoch;
+    if (_connectionStatus == ConnectionStatus.connected) {
+      // The link finished opening just before the cancel landed: close it
+      // the normal way so the provider's disconnect cleanup runs.
+      debugLog('[BLE] Connect cancelled after the link opened, disconnecting');
+      await disconnect();
+      return;
+    }
+    final device = _bleDevice;
+    debugLog('[BLE] Cancelling connection attempt '
+        '(pending device: ${device?.remoteId.str ?? 'none'})');
+    // Take every shared field before the first await, so a connect loop
+    // resuming in a gap cannot install a listener that is then dropped
+    // uncancelled. The state listener goes first so the GATT drop cannot
+    // fire _handleDisconnection mid-cancel.
+    final stateSubscription = _connectionStateSubscription;
+    final notificationSubscription = _notificationSubscription;
+    _connectionStateSubscription = null;
+    _notificationSubscription = null;
+    _bleDevice = null;
+    _rxCharacteristic = null;
+    _txCharacteristic = null;
+    await stateSubscription?.cancel();
+    await notificationSubscription?.cancel();
+    if (device != null) {
+      try {
+        // queue: false jumps the plugin's operation queue, which the pending
+        // connect holds. Without it the cancel would wait for the connect
+        // timeout. It also tells iOS to drop the pending connection, which it
+        // would otherwise complete later on its own.
+        // Bounded so a platform that never reports the drop cannot leave
+        // the button on "Cancelling"; the epoch bump has already freed the
+        // connect loop.
+        await device.disconnect(queue: false, timeout: 5);
+      } catch (e) {
+        debugWarn('[BLE] Cancel disconnect failed (ignoring): $e');
+      }
+    }
+    _updateStatus(ConnectionStatus.error);
+  }
+
+  @override
   Future<void> disconnect() async {
     try {
       await _bleDevice?.disconnect();
@@ -531,14 +659,36 @@ class MobileBluetoothService implements BluetoothService {
     }
   }
 
+  /// Tail of the local write queue. Every write waits for the one before it,
+  /// so a write retrying a GATT busy refusal keeps its place in line instead
+  /// of letting a later frame reach the radio first. Never completes with an
+  /// error.
+  Future<void> _writeTail = Future<void>.value();
+
   @override
   Future<void> write(Uint8List data) async {
-    if (_rxCharacteristic == null) {
-      throw Exception('Not connected');
-    }
+    final previous = _writeTail;
+    final done = Completer<void>();
+    _writeTail = done.future;
+    try {
+      await previous;
+      final characteristic = _rxCharacteristic;
+      if (characteristic == null) {
+        throw Exception('Not connected');
+      }
 
-    // Write to RX characteristic (device reads from this)
-    await _rxCharacteristic!.write(data, withoutResponse: false);
+      // Write to RX characteristic (device reads from this). Android can
+      // refuse a write as busy without sending it; that one is retried
+      // briefly here so the caller's await covers the retry.
+      Future<void> send() => characteristic.write(data, withoutResponse: false);
+      if (Platform.isAndroid) {
+        await writeRetryingGattBusy(send);
+      } else {
+        await send();
+      }
+    } finally {
+      done.complete();
+    }
   }
 
   @override

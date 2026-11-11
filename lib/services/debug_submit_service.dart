@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -69,13 +70,104 @@ class UploadSession {
       );
 }
 
+/// Outcome of one file upload attempt.
+enum UploadAttemptOutcome {
+  /// The server stored the file.
+  success,
+
+  /// The request never got a usable answer (connection dropped, timeout).
+  /// The bytes may still have landed.
+  transportError,
+
+  /// HTTP 400 "Session Closed": the server no longer accepts uploads for
+  /// this session, which it does once a file has landed.
+  sessionClosed,
+
+  /// Any other refusal.
+  failed,
+}
+
+/// Result of the upload step for one file, before it is confirmed.
+enum _UploadStepResult {
+  /// An attempt succeeded.
+  uploaded,
+
+  /// "Session Closed" after an earlier transport error: the file most likely
+  /// landed on that earlier attempt, so upload-complete decides (its hash
+  /// check is the authority).
+  landedUnconfirmed,
+
+  /// Every attempt failed.
+  failed,
+}
+
 /// Service for submitting bug reports and uploading debug files
 class DebugSubmitService {
   static const String baseUrl = 'https://meshmapper.net/debug/submitdebug.php';
 
   final http.Client _client;
 
-  DebugSubmitService({http.Client? client}) : _client = client ?? http.Client();
+  /// Base step for retry backoff. Tests shorten it; the app uses 1 s.
+  final Duration _retryDelayUnit;
+
+  DebugSubmitService({
+    http.Client? client,
+    Duration retryDelayUnit = const Duration(seconds: 1),
+  })  : _client = client ?? http.Client(),
+        _retryDelayUnit = retryDelayUnit;
+
+  /// Attempts at request-upload: the first plus two retries on a transport
+  /// error.
+  static const int _requestUploadAttempts = 3;
+
+  /// Attempts at the file upload itself.
+  static const int _uploadAttempts = 3;
+
+  /// Upload [file] to [session], retrying up to [_uploadAttempts] times.
+  Future<_UploadStepResult> _uploadWithRetries({
+    required UploadSession session,
+    required File file,
+    required String tag,
+  }) async {
+    var sawTransportError = false;
+    for (int attempt = 1; attempt <= _uploadAttempts; attempt++) {
+      final outcome = await uploadFileAttempt(
+        uploadUrl: session.uploadUrl,
+        file: file,
+      );
+
+      if (outcome == UploadAttemptOutcome.success) {
+        debugLog('$tag File data uploaded');
+        return _UploadStepResult.uploaded;
+      }
+      if (outcome == UploadAttemptOutcome.sessionClosed) {
+        if (sawTransportError) {
+          // The earlier attempt's answer was lost, but the server has since
+          // closed the session, which it does once a file lands. Let
+          // upload-complete check the hash instead of failing here.
+          debugLog('$tag Session closed after an earlier dropped attempt; '
+              'asking the server to confirm the file');
+          return _UploadStepResult.landedUnconfirmed;
+        }
+        // No attempt of ours can have landed, and a closed session takes no
+        // more uploads, so a retry cannot succeed.
+        debugWarn('$tag Upload session closed with no file from this app; '
+            'not retrying');
+        return _UploadStepResult.failed;
+      }
+      if (outcome == UploadAttemptOutcome.transportError) {
+        sawTransportError = true;
+      }
+
+      if (attempt < _uploadAttempts) {
+        final delay = _retryDelayUnit * (attempt * 2); // 2s, 4s backoff
+        debugWarn('$tag Upload attempt $attempt/$_uploadAttempts failed, '
+            'retrying in ${delay.inMilliseconds / 1000}s...');
+        await Future.delayed(delay);
+      }
+    }
+    return _UploadStepResult.failed;
+  }
 
   /// Main orchestration method - submits bug report with optional file uploads
   Future<BugReportResult> submitBugReport({
@@ -342,31 +434,15 @@ class DebugSubmitService {
 
       // Step 3: Upload the file (with retry logic)
       debugLog('[BUG REPORT] Step 3/4: Uploading file data...');
-      var uploadSuccess = false;
-      const maxRetries = 3;
+      final upload = await _uploadWithRetries(
+        session: session,
+        file: file,
+        tag: '[BUG REPORT]',
+      );
 
-      for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        uploadSuccess = await uploadFile(
-          uploadUrl: session.uploadUrl,
-          file: file,
-        );
-
-        if (uploadSuccess) {
-          debugLog('[BUG REPORT] SUCCESS: File data uploaded');
-          break;
-        }
-
-        if (attempt < maxRetries) {
-          final delaySeconds = attempt * 2; // 2s, 4s backoff
-          debugWarn(
-              '[BUG REPORT] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
-          await Future.delayed(Duration(seconds: delaySeconds));
-        }
-      }
-
-      if (!uploadSuccess) {
-        debugError(
-            '[BUG REPORT] FAILED: File upload failed after $maxRetries attempts for: $filename');
+      if (upload == _UploadStepResult.failed) {
+        debugError('[BUG REPORT] FAILED: File upload failed after '
+            '$_uploadAttempts attempts for: $filename');
         return false;
       }
 
@@ -386,6 +462,13 @@ class DebugSubmitService {
         userNotes: userNotes,
       );
 
+      if (!completeSuccess && upload == _UploadStepResult.landedUnconfirmed) {
+        // No attempt was ever acknowledged, so without the server's
+        // confirmation there is no evidence the file landed.
+        debugError('[BUG REPORT] FAILED: Server did not confirm $filename '
+            'after a closed session');
+        return false;
+      }
       if (!completeSuccess) {
         debugWarn(
             '[BUG REPORT] WARNING: Upload confirmation failed for: $filename');
@@ -501,13 +584,27 @@ class DebugSubmitService {
       debugLog('[BUG REPORT]   platform: $platform');
 
       final stopwatch = Stopwatch()..start();
-      final response = await _client
-          .post(
-            Uri.parse(url),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      http.Response? response;
+      for (int attempt = 1; response == null; attempt++) {
+        try {
+          response = await _client
+              .post(
+                Uri.parse(url),
+                headers: {'Content-Type': 'application/json'},
+                body: json.encode(payload),
+              )
+              .timeout(const Duration(seconds: 30));
+        } on Exception catch (e) {
+          if (!_isTransportError(e) || attempt >= _requestUploadAttempts) {
+            rethrow;
+          }
+          final delay = _retryDelayUnit * attempt; // 1s, 2s backoff
+          debugWarn('[BUG REPORT] Request upload attempt '
+              '$attempt/$_requestUploadAttempts got no answer ($e), '
+              'retrying in ${delay.inMilliseconds / 1000}s...');
+          await Future.delayed(delay);
+        }
+      }
       stopwatch.stop();
 
       debugLog(
@@ -541,8 +638,24 @@ class DebugSubmitService {
     }
   }
 
+  /// A failure to get any answer back, as opposed to a server refusal.
+  static bool _isTransportError(Object e) =>
+      e is http.ClientException ||
+      e is TimeoutException ||
+      e is SocketException ||
+      e is HttpException;
+
   /// Step 3: Upload the file using multipart/form-data
   Future<bool> uploadFile({
+    required String uploadUrl,
+    required File file,
+  }) async =>
+      await uploadFileAttempt(uploadUrl: uploadUrl, file: file) ==
+      UploadAttemptOutcome.success;
+
+  /// One upload attempt, saying how it went so the caller can tell a lost
+  /// answer from a refusal.
+  Future<UploadAttemptOutcome> uploadFileAttempt({
     required String uploadUrl,
     required File file,
   }) async {
@@ -565,7 +678,7 @@ class DebugSubmitService {
 
       final stopwatch = Stopwatch()..start();
       final streamedResponse =
-          await request.send().timeout(const Duration(seconds: 120));
+          await _client.send(request).timeout(const Duration(seconds: 120));
       final response = await http.Response.fromStream(streamedResponse);
       stopwatch.stop();
 
@@ -580,9 +693,13 @@ class DebugSubmitService {
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
       if (response.statusCode != 200) {
+        if (response.statusCode == 400 && _isSessionClosed(response.body)) {
+          debugWarn('[BUG REPORT] Upload refused: session closed');
+          return UploadAttemptOutcome.sessionClosed;
+        }
         debugError('[BUG REPORT] HTTP error: ${response.statusCode}');
         debugError('[BUG REPORT] Response body: ${response.body}');
-        return false;
+        return UploadAttemptOutcome.failed;
       }
 
       final data = json.decode(response.body) as Map<String, dynamic>;
@@ -596,13 +713,29 @@ class DebugSubmitService {
             '[BUG REPORT]   stored_hash: ${data['stored_hash'].toString().substring(0, 16)}...');
       }
 
-      final success = data['success'] == true;
-      return success;
+      return data['success'] == true
+          ? UploadAttemptOutcome.success
+          : UploadAttemptOutcome.failed;
     } catch (e, stackTrace) {
+      if (_isTransportError(e)) {
+        debugWarn('[BUG REPORT] Upload attempt got no answer: $e');
+        return UploadAttemptOutcome.transportError;
+      }
       debugError('[BUG REPORT] Upload file exception: $e');
       debugError('[BUG REPORT] Stack trace: $stackTrace');
-      return false;
+      return UploadAttemptOutcome.failed;
     }
+  }
+
+  static bool _isSessionClosed(String body) {
+    try {
+      final data = json.decode(body);
+      if (data is Map && data['message'] is String) {
+        return (data['message'] as String).trim().toLowerCase() ==
+            'session closed';
+      }
+    } catch (_) {}
+    return false;
   }
 
   /// Step 4: Confirm upload completion
@@ -766,31 +899,15 @@ class DebugSubmitService {
           // Step 3: Upload file
           reportChunkProgress('Uploading $chunkName...', 0.4);
           debugLog('[DEBUG UPLOAD] Uploading file...');
-          var uploadSuccess = false;
-          const maxRetries = 3;
+          final upload = await _uploadWithRetries(
+            session: session,
+            file: chunk,
+            tag: '[DEBUG UPLOAD]',
+          );
 
-          for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            uploadSuccess = await uploadFile(
-              uploadUrl: session.uploadUrl,
-              file: chunk,
-            );
-
-            if (uploadSuccess) {
-              debugLog('[DEBUG UPLOAD] File uploaded successfully');
-              break;
-            }
-
-            if (attempt < maxRetries) {
-              final delaySeconds = attempt * 2;
-              debugWarn(
-                  '[DEBUG UPLOAD] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
-              await Future.delayed(Duration(seconds: delaySeconds));
-            }
-          }
-
-          if (!uploadSuccess) {
-            debugError(
-                '[DEBUG UPLOAD] FAILED: Upload failed after $maxRetries attempts for $chunkName');
+          if (upload == _UploadStepResult.failed) {
+            debugError('[DEBUG UPLOAD] FAILED: Upload failed after '
+                '$_uploadAttempts attempts for $chunkName');
             allSucceeded = false;
             break;
           }
@@ -806,6 +923,15 @@ class DebugSubmitService {
             userNotes: userNotes ?? 'Direct debug log upload',
           );
 
+          if (!completeSuccess &&
+              upload == _UploadStepResult.landedUnconfirmed) {
+            // No attempt was ever acknowledged, so without the server's
+            // confirmation there is no evidence the file landed.
+            debugError('[DEBUG UPLOAD] FAILED: Server did not confirm '
+                '$chunkName after a closed session');
+            allSucceeded = false;
+            break;
+          }
           if (!completeSuccess) {
             debugWarn(
                 '[DEBUG UPLOAD] Confirmation failed but file was uploaded');

@@ -151,16 +151,16 @@ void main() {
         ((la / 0.0027).floor(), (lo / 0.00384).floor());
 
     test('unknown before any tile has loaded', () {
-      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
     });
 
     test('covered when the tile lists the cell, clear otherwise', () async {
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
       expect(svc.loadedTileCount, 1);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
       // A different cell in the same tile.
-      expect(svc.isCovered(lat + 0.003, lon), RecentCoverage.clear);
+      expect(svc.isCovered(lat + 0.003, lon, forTx: true), RecentCoverage.clear);
       expect(fetches.calls.single.gsize, 300);
       expect(fetches.calls.single.days, 14);
       expect(fetches.calls.single.zone, 'YOW');
@@ -169,14 +169,14 @@ void main() {
     test('a 204 (empty body) is a loaded, empty tile', () async {
       fetches.answers['2373/2933'] = Uint8List(0);
       await svc.onPosition(lat, lon);
-      expect(svc.isCovered(lat, lon), RecentCoverage.clear);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.clear);
     });
 
     test('a failed fetch stays unknown and retries after 30 s, not before',
         () async {
       fetches.answers['2373/2933'] = null;
       await svc.onPosition(lat, lon);
-      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
       expect(fetches.calls.length, 1);
 
       now = now.add(const Duration(seconds: 10));
@@ -187,7 +187,7 @@ void main() {
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
       expect(fetches.calls.length, 2);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
     });
 
     test('a throwing fetch is a failed fetch, not a rejected future', () async {
@@ -195,7 +195,7 @@ void main() {
       // An unhandled throw here fails the test: onPosition runs off the GPS
       // listener and must never reject.
       await svc.onPosition(lat, lon);
-      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
       expect(fetches.calls.length, 1);
 
       now = now.add(const Duration(seconds: 10));
@@ -206,7 +206,7 @@ void main() {
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
       expect(fetches.calls.length, 2);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
     });
 
     test('a throwing refresh keeps the old set', () async {
@@ -216,7 +216,7 @@ void main() {
       fetches.throwNext = StateError('the fetch blew up');
       await svc.onPosition(lat + 0.002, lon);
       expect(fetches.calls.length, 2);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
     });
 
     test('a failed refresh keeps the old set', () async {
@@ -226,7 +226,7 @@ void main() {
       fetches.answers['2373/2933'] = null;
       await svc.onPosition(lat + 0.002, lon);
       expect(fetches.calls.length, 2);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
     });
 
     test('a fresh tile is reused; a 5 minute old one is refetched', () async {
@@ -277,13 +277,84 @@ void main() {
           statuses: [1, 5]);
       await svc.onPosition(lat, lon);
       expect(svc.loadedTileCount, 0);
-      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
     });
 
     test('a session mark is covered at once, even with no tile', () {
-      svc.markCovered(lat, lon);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
-      expect(svc.isCovered(lat + 0.01, lon), RecentCoverage.unknown);
+      svc.markCovered(lat, lon, CoverageColor.green);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
+      expect(svc.isCovered(lat + 0.01, lon, forTx: true), RecentCoverage.unknown);
+    });
+
+    group('flood only', () {
+      void floodOnly(bool on) => svc.configure(
+          zone: 'YOW', gridSize: 300, days: 14, enabled: true, floodOnly: on);
+
+      Future<void> loadGreenAndCyan() async {
+        fetches.answers['2373/2933'] = tileWithCells(
+            [cellOf(lat, lon), cellOf(lat + 0.003, lon)],
+            statuses: [1, 2]);
+        await svc.onPosition(lat, lon);
+      }
+
+      test('all pings: green and cyan cells hold both kinds', () async {
+        floodOnly(false);
+        await loadGreenAndCyan();
+        for (final la in [lat, lat + 0.003]) {
+          expect(svc.isCovered(la, lon, forTx: true), RecentCoverage.covered);
+          expect(svc.isCovered(la, lon, forTx: false), RecentCoverage.covered);
+        }
+      });
+
+      test('a green cell holds TX, never discovery', () async {
+        floodOnly(true);
+        await loadGreenAndCyan();
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
+        expect(svc.isCovered(lat, lon, forTx: false), RecentCoverage.clear);
+      });
+
+      test('a cyan cell holds nothing', () async {
+        floodOnly(true);
+        await loadGreenAndCyan();
+        expect(svc.isCovered(lat + 0.003, lon, forTx: true),
+            RecentCoverage.clear);
+        expect(svc.isCovered(lat + 0.003, lon, forTx: false),
+            RecentCoverage.clear);
+      });
+
+      test('discovery is clear even before a tile loads', () {
+        floodOnly(true);
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
+        expect(svc.isCovered(lat, lon, forTx: false), RecentCoverage.clear);
+      });
+
+      test('a cyan session mark does not hold TX, a green one does', () {
+        floodOnly(true);
+        svc.markCovered(lat, lon, CoverageColor.cyan);
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
+        svc.markCovered(lat, lon, CoverageColor.green);
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
+      });
+
+      test('a green session mark is not downgraded by a later cyan mark', () {
+        floodOnly(true);
+        svc.markCovered(lat, lon, CoverageColor.green);
+        svc.markCovered(lat, lon, CoverageColor.cyan);
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
+      });
+
+      test('switching flood only keeps loaded tiles', () async {
+        floodOnly(false);
+        await loadGreenAndCyan();
+        expect(svc.loadedTileCount, 1);
+        final fetched = fetches.calls.length;
+        floodOnly(true);
+        expect(svc.floodOnly, isTrue);
+        expect(svc.loadedTileCount, 1);
+        await svc.onPosition(lat + 0.002, lon);
+        expect(fetches.calls.length, fetched);
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
+      });
     });
 
     test('follows the 100 m grid when configured for it', () async {
@@ -292,18 +363,19 @@ void main() {
       fetches.answers['2373/2933'] = tileWithCells([c]);
       await svc.onPosition(lat, lon);
       expect(fetches.calls.single.gsize, 100);
-      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
-      expect(svc.isCovered(lat + 0.001, lon), RecentCoverage.clear);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered);
+      expect(svc.isCovered(lat + 0.001, lon, forTx: true), RecentCoverage.clear);
     });
 
     test('reconfiguring the window or grid clears the cache', () async {
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
-      svc.markCovered(lat + 0.01, lon);
+      svc.markCovered(lat + 0.01, lon, CoverageColor.green);
       svc.configure(zone: 'YOW', gridSize: 300, days: 7, enabled: true);
       expect(svc.loadedTileCount, 0);
-      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
-      expect(svc.isCovered(lat + 0.01, lon), RecentCoverage.unknown,
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
+      expect(svc.isCovered(lat + 0.01, lon, forTx: true),
+          RecentCoverage.unknown,
           reason: 'session marks belong to the old configuration');
     });
 
@@ -317,7 +389,7 @@ void main() {
     test('a radio preset change clears the cache', () async {
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
-      svc.markCovered(lat + 0.01, lon);
+      svc.markCovered(lat + 0.01, lon, CoverageColor.green);
       expect(svc.loadedTileCount, 1);
       svc.configure(
           zone: 'YOW',
@@ -327,7 +399,8 @@ void main() {
           radioKey: '906.875,250,10');
       expect(svc.loadedTileCount, 0,
           reason: 'tiles fetched under the old preset answer for the wrong layer');
-      expect(svc.isCovered(lat + 0.01, lon), RecentCoverage.unknown,
+      expect(svc.isCovered(lat + 0.01, lon, forTx: true),
+          RecentCoverage.unknown,
           reason: 'session marks belong to the old preset');
     });
 
@@ -354,7 +427,7 @@ void main() {
       svc.configure(zone: 'YOW', gridSize: 300, days: 14, enabled: false);
       await svc.onPosition(lat, lon);
       expect(svc.isActive, isFalse);
-      expect(svc.isCovered(lat, lon), RecentCoverage.clear);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.clear);
       svc.configure(zone: null, gridSize: 300, days: 14, enabled: true);
       await svc.onPosition(lat, lon);
       expect(svc.isActive, isFalse);
@@ -364,10 +437,10 @@ void main() {
     test('clear drops everything', () async {
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
-      svc.markCovered(lat, lon);
+      svc.markCovered(lat, lon, CoverageColor.green);
       svc.clear();
       expect(svc.loadedTileCount, 0);
-      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
+      expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.unknown);
     });
 
     group('deferral dedupe', () {
@@ -414,11 +487,11 @@ void main() {
       });
 
       test('clearDeferred empties only the deferred set', () {
-        svc.markCovered(lat, lon);
+        svc.markCovered(lat, lon, CoverageColor.green);
         expect(svc.markDeferred(lat, lon), isTrue);
         svc.clearDeferred();
         expect(svc.markDeferred(lat, lon), isTrue);
-        expect(svc.isCovered(lat, lon), RecentCoverage.covered,
+        expect(svc.isCovered(lat, lon, forTx: true), RecentCoverage.covered,
             reason: 'the session mark is untouched');
       });
 

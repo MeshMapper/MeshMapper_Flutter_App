@@ -9,6 +9,9 @@ import 'package:http/http.dart' as http;
 import '../models/device_catalog.dart';
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/mvt_cells.dart';
+import 'api_queue_service.dart' show altitudeLabelSummary;
+import 'border_loader.dart' show BorderAnswer;
 import 'meshcore/regional_carpeater_filter.dart';
 import 'network_state_service.dart';
 
@@ -84,6 +87,20 @@ bool _connectionWasAlreadyClosed(Object error) =>
     error is http.ClientException &&
     error.message.contains('Connection closed before full header was received');
 
+/// A failed repeater read, distinct from a successful empty list.
+/// Contains no response body, request headers or credentials.
+class RepeaterFetchException implements Exception {
+  final int? statusCode;
+  const RepeaterFetchException([this.statusCode]);
+
+  bool get isAuthenticationFailure => statusCode == 401 || statusCode == 403;
+
+  @override
+  String toString() => isAuthenticationFailure
+      ? 'Repeater authentication failed (HTTP $statusCode)'
+      : 'Repeater request failed${statusCode == null ? '' : ' (HTTP $statusCode)'}';
+}
+
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
 ///
@@ -129,9 +146,15 @@ class ApiService {
   /// Longest hold a `Retry-After` header can impose on the wardrive door.
   static const Duration maxWardriveRetryAfter = Duration(hours: 1);
 
+  // Repeater reads have their own per-host hold, independent of wardriving.
+  // A preset change must not bypass the host's Retry-After.
+  final Map<String, ({DateTime until, RepeaterFetchException failure})>
+      _repeaterReadHolds = {};
+
   final http.Client _client;
   final NetworkStateSource _networkState;
   final Duration _deviceCatalogTimeout;
+  final Duration _borderTimeout;
   final DateTime Function() _now;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
@@ -162,6 +185,10 @@ class ApiService {
   int _apiHopBytes = 1;
   bool _enforceSmartPing = false;
   int _apiSmartPingDays = 14;
+  bool _apiSmartPingFloodOnly = true;
+  bool _scopeDiscoveryOffered = false;
+  bool _enforceScopeDiscovery = false;
+  int _apiScopeRefreshDays = 14;
 
   /// The user's own CARpeater key, sent as `carpeater` on connect and
   /// register auths, never on an offline-mode auth. Null while the CARpeater
@@ -206,6 +233,26 @@ class ApiService {
   /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
   int get apiSmartPingDays => _apiSmartPingDays;
 
+  /// Whether Smart Pinging holds a flood (TX) ping back only for a green
+  /// square and never holds a discovery request; only binding when
+  /// [enforceSmartPing] is true. True when the field is
+  /// missing or anything other than false / 0.
+  bool get apiSmartPingFloodOnly => _apiSmartPingFloodOnly;
+
+  /// Whether the last live auth carried the `scope_discovery` key at all.
+  /// The key's PRESENCE is the gate: a server that predates the feature never
+  /// sends it, and the app must never ask a repeater for its scopes without
+  /// it, whatever the user's own switch says.
+  bool get scopeDiscoveryOffered => _scopeDiscoveryOffered;
+
+  /// Whether scope discovery is forced on by the regional admin.
+  bool get enforceScopeDiscovery => _enforceScopeDiscovery;
+
+  /// The scope discovery refresh window (days) the server sent; only binding
+  /// when [enforceScopeDiscovery] is true. 14 when the field is missing or
+  /// non-numeric, floored at 7.
+  int get apiScopeRefreshDays => _apiScopeRefreshDays;
+
   /// Every CARpeater key the region shares, replaced in full on every auth.
   /// Upper-case 64 hex, sorted. Empty when the server sent none or predates
   /// the feature.
@@ -223,10 +270,12 @@ class ApiService {
     http.Client? client,
     NetworkStateSource? networkState,
     Duration deviceCatalogTimeout = const Duration(seconds: 10),
+    Duration borderTimeout = const Duration(seconds: 60),
     DateTime Function()? now,
   })  : _client = client ?? http.Client(),
         _networkState = networkState ?? NetworkStateService.instance,
         _deviceCatalogTimeout = deviceCatalogTimeout,
+        _borderTimeout = borderTimeout,
         _now = now ?? DateTime.now;
 
   /// Fetches the public model catalog without affecting session callbacks.
@@ -337,22 +386,29 @@ class ApiService {
   ///
   /// The per-attempt timeout lives at the call site, so the replay gets its
   /// own full allowance rather than the remains of the first one's.
+  ///
+  /// [prepareReplay], when given, is asked for the replay at the moment it is
+  /// about to go out, so a caller whose body depends on state that may have
+  /// changed while the first attempt was failing can rebuild it. Returning
+  /// null skips the replay and rethrows the first attempt's error.
   Future<http.Response> _send(
     String label,
     Future<http.Response> Function() request, {
     DateTime? deadline,
+    Future<http.Response> Function()? Function()? prepareReplay,
   }) async {
-    Future<http.Response> sendAttempt() {
-      if (deadline == null) return request();
+    Future<http.Response> sendAttempt(Future<http.Response> Function() send) {
+      if (deadline == null) return send();
       final remaining = deadline.difference(_now());
       if (remaining <= Duration.zero) {
         throw TimeoutException('$label deadline expired');
       }
-      return request().timeout(remaining);
+      return send().timeout(remaining);
     }
 
-    Future<http.Response> completeWithinDeadline() async {
-      final response = await sendAttempt();
+    Future<http.Response> completeWithinDeadline(
+        Future<http.Response> Function() send) async {
+      final response = await sendAttempt(send);
       if (deadline != null && !_now().isBefore(deadline)) {
         throw TimeoutException('$label deadline expired');
       }
@@ -360,15 +416,21 @@ class ApiService {
     }
 
     try {
-      return await completeWithinDeadline();
+      return await completeWithinDeadline(request);
     } catch (e) {
       if (!_connectionWasAlreadyClosed(e)) rethrow;
       if (deadline != null && !_now().isBefore(deadline)) {
         throw TimeoutException('$label deadline expired');
       }
+      final replay = prepareReplay == null ? request : prepareReplay();
+      if (replay == null) {
+        debugWarn('[API] $label found the connection already closed by the '
+            'server, nothing left to send again');
+        rethrow;
+      }
       debugWarn('[API] $label found the connection already closed by the '
           'server, sending it again');
-      return completeWithinDeadline();
+      return completeWithinDeadline(replay);
     }
   }
 
@@ -530,6 +592,7 @@ class ApiService {
     required double lon,
     required double accuracyMeters,
     required String appVersion,
+    String? radioFreq,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -541,6 +604,9 @@ class ApiService {
         'ver': appVersion,
         'timestamp': timestamp,
         'key': apiKey,
+        // The radio preset picks which of the zone's preset rows answers
+        // slots_max and flood_disabled. Without it the server uses the `*` row.
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
 
       final response = await _send(
@@ -593,10 +659,22 @@ class ApiService {
 
   /// Fetch regional boundary polygons from the MeshMapper API.
   ///
-  /// Returns a list of `{code, polygon}` maps where `polygon` is a list of
-  /// `[lat, lon]` pairs (as sent by the server). Returns `null` on failure
-  /// or maintenance mode.
-  Future<List<Map<String, dynamic>>?> fetchBorderPolygons({
+  /// Returns the `{code, polygon}` maps (`polygon` is a list of `[lat, lon]`
+  /// pairs as sent by the server) with the body's `border_hash`, which the
+  /// server sends only on a complete answer. Returns `null` on failure, on
+  /// maintenance mode and on the HTTP 503 `border_unavailable` answer (a
+  /// polygon the server could not read; see docs/APP_API.md in
+  /// MeshMapper_Server).
+  ///
+  /// A group's answer can be megabytes, so each attempt gets a long
+  /// allowance and is aborted when it runs out. A plain Future timeout would
+  /// leave the body downloading in the background, and the next zone check
+  /// would start another one on top of it. The returned future only
+  /// completes once the request has really ended. An abort is never sent
+  /// again; the one replay [_send] makes (the server closed a reused
+  /// connection before any header) gets its own allowance, so the call can
+  /// take up to twice [_borderTimeout].
+  Future<BorderAnswer?> fetchBorderPolygons({
     required double lat,
     required double lon,
     required String appVersion,
@@ -612,15 +690,29 @@ class ApiService {
         'key': apiKey,
       };
 
+      Future<http.Response> post() async {
+        final abort = Completer<void>();
+        final abortTimer = Timer(_borderTimeout, () {
+          if (!abort.isCompleted) abort.complete();
+        });
+        try {
+          final request = http.AbortableRequest('POST', Uri.parse(borderUrl),
+              abortTrigger: abort.future)
+            ..headers['Content-Type'] = 'application/json'
+            ..body = json.encode(payload);
+          final streamed = await _client.send(request);
+          return await http.Response.fromStream(streamed);
+        } finally {
+          abortTimer.cancel();
+        }
+      }
+
+      // The abort ends an attempt at _borderTimeout. The outer timeout is
+      // only a backstop for a client that ignores the abort trigger, so the
+      // caller's in-flight guard can never stay set forever.
       final response = await _send(
         'POST /wardrive-api.php/border',
-        () => _client
-            .post(
-              Uri.parse(borderUrl),
-              headers: {'Content-Type': 'application/json'},
-              body: json.encode(payload),
-            )
-            .timeout(const Duration(seconds: 10)),
+        () => post().timeout(_borderTimeout + const Duration(seconds: 15)),
       );
 
       stopwatch.stop();
@@ -652,17 +744,30 @@ class ApiService {
 
       if (data == null) return null;
       if (_checkMaintenanceMode(data)) return null;
+      if (response.statusCode != 200 || data['success'] == false) {
+        // 503 border_unavailable among them: never shown, never saved.
+        return null;
+      }
 
       final polygons = data['polygons'];
       if (polygons is! List) return null;
+      final hash = data['border_hash'];
 
-      return polygons
-          .whereType<Map>()
-          .map((p) => Map<String, dynamic>.from(p))
-          .toList();
+      return BorderAnswer(
+        polygons
+            .whereType<Map>()
+            .map((p) => Map<String, dynamic>.from(p))
+            .toList(),
+        borderHash: hash is String && hash.isNotEmpty ? hash : null,
+      );
     } catch (e) {
       stopwatch.stop();
-      debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
+      if (e is http.RequestAbortedException) {
+        debugError('[BORDER] POST /wardrive-api.php/border aborted after '
+            '${_borderTimeout.inSeconds}s');
+      } else {
+        debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
+      }
       return null;
     }
   }
@@ -676,6 +781,7 @@ class ApiService {
   /// @param offlineMode Set to true when uploading offline session data
   /// @param skipSessionStore When true, does not write to shared _sessionId/_txAllowed/etc. Caller manages session locally.
   /// @param sessionId Explicit session ID for disconnect. When provided, disconnect uses this instead of _sessionId and skips _clearSession().
+  /// @param keepPolicy On a disconnect release that a connect for the same radio follows at once (a group handoff): clear the session itself but keep the zone policy the UI reads, see [_clearSession].
   /// @returns Map with success, session_id, tx_allowed, rx_allowed, expires_at, reason, message
   Future<Map<String, dynamic>?> requestAuth({
     required String reason,
@@ -695,6 +801,7 @@ class ApiService {
     bool Function()? shouldStoreSession,
     String? sessionId,
     Map<String, dynamic>? extras,
+    bool keepPolicy = false,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -822,6 +929,10 @@ class ApiService {
           // upload, so tell the listener to drop those pings.
           final previousSessionId = _sessionId;
           final newSessionId = data['session_id'] as String?;
+          // A withdrawal of scope discovery takes effect before anything is
+          // awaited: a lookup already out could otherwise complete and send
+          // its scope request while the queue cleanup below runs.
+          _applyScopeDiscovery(data, withdrawOnly: true);
           if (previousSessionId != null &&
               newSessionId != null &&
               previousSessionId != newSessionId) {
@@ -926,9 +1037,25 @@ class ApiService {
               (smartDays is int && smartDays >= 1 && smartDays <= 365)
                   ? smartDays
                   : 14;
+          final floodOnly = data['smart_ping_flood_only'];
+          _apiSmartPingFloodOnly = !(floodOnly == false || floodOnly == 0);
           if (_enforceSmartPing) {
             debugLog(
-                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window');
+                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window, '
+                '${_apiSmartPingFloodOnly ? 'flood only' : 'all pings'}');
+          }
+
+          // Scope discovery (APP_API.md). The key's PRESENCE is the gate: a
+          // server that predates the feature would store a SCOPES item as a
+          // TX row.
+          _applyScopeDiscovery(data);
+          final sdDays = data['scope_refresh_days'];
+          _apiScopeRefreshDays = sdDays is num && sdDays.isFinite
+              ? (sdDays.toInt() < 7 ? 7 : sdDays.toInt())
+              : 14;
+          if (_enforceScopeDiscovery) {
+            debugLog(
+                '[SCOPES] Regional admin enforces scope discovery: $_apiScopeRefreshDays day window');
           }
 
           // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
@@ -969,8 +1096,17 @@ class ApiService {
       } else if (reason == 'disconnect') {
         // Only clear shared session when no explicit sessionId was provided
         // (explicit sessionId means caller manages its own session lifecycle)
+        // A release only forgets the session it released. A new session
+        // stored while this POST was out (a reconnect's connect auth landing
+        // inside a handoff's release) must not be nulled by the old one's
+        // answer.
         if (sessionId == null) {
-          _clearSession();
+          if (_sessionId == null || _sessionId == payload['session_id']) {
+            _clearSession(keepPolicy: keepPolicy);
+          } else {
+            debugLog('[API] Release answered for a session already replaced, '
+                'keeping the new one');
+          }
         }
       }
 
@@ -1035,6 +1171,14 @@ class ApiService {
         'holding every wardrive send for ${wait.inSeconds}s');
   }
 
+  int _lastUploadDroppedScopes = 0;
+
+  /// How many SCOPES items the last [submitWardriveData] call left out of
+  /// its replay because scope discovery was withdrawn while the first
+  /// attempt was failing. Zero when nothing was left out. The queue reads it
+  /// after a success so it counts only what the server actually received.
+  int get lastUploadDroppedScopes => _lastUploadDroppedScopes;
+
   /// Submit wardrive data batch to API
   /// Matches submitWardriveData() in wardrive.js
   ///
@@ -1045,6 +1189,7 @@ class ApiService {
   /// that apart from a rejection and hold the data without spending a retry
   Future<Map<String, dynamic>?> submitWardriveData(
       List<Map<String, dynamic>> entries) async {
+    _lastUploadDroppedScopes = 0;
     if (_sessionId == null) {
       throw Exception('Cannot submit: no session_id');
     }
@@ -1059,15 +1204,33 @@ class ApiService {
         if (autoMode != null) 'auto_mode': autoMode,
       };
 
+      Future<http.Response> post(Map<String, dynamic> body) => _client
+          .post(
+            Uri.parse(wardriveEndpoint),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 30));
+
       final response = await _send(
         'POST /wardrive-api.php/wardrive',
-        () => _client
-            .post(
-              Uri.parse(wardriveEndpoint),
-              headers: {'Content-Type': 'application/json'},
-              body: json.encode(payload),
-            )
-            .timeout(const Duration(seconds: 30)),
+        () => post(payload),
+        // The queue only let SCOPES into this batch because scope discovery
+        // was offered when it built it. A live auth can withdraw that while
+        // the first attempt is failing on a dead socket, so the replay reads
+        // the gate again and leaves the answers out once it has closed.
+        prepareReplay: () {
+          if (_scopeDiscoveryOffered) return () => post(payload);
+          final kept =
+              entries.where((e) => e['type'] != 'SCOPES').toList();
+          if (kept.length == entries.length) return () => post(payload);
+          _lastUploadDroppedScopes = entries.length - kept.length;
+          debugWarn('[API] Replay drops ${entries.length - kept.length} '
+              'SCOPES item(s): scope discovery withdrawn since the batch '
+              'was built');
+          if (kept.isEmpty) return null;
+          return () => post({...payload, 'data': kept});
+        },
       );
 
       stopwatch.stop();
@@ -1106,6 +1269,7 @@ class ApiService {
         request: {
           'data': '${entries.length} items',
           'items': antennaSummary,
+          'altitude': altitudeLabelSummary(entries),
           if (autoMode != null) 'auto_mode': autoMode,
         },
         response: data,
@@ -1500,6 +1664,10 @@ class ApiService {
     _heartbeatInFlight = true;
     _lastHeartbeatSentAt = now;
 
+    // The session this keepalive speaks for. A manual action can recover to a
+    // replacement session while this send is still in flight, and the late
+    // answer about the old one must not cancel or retry the new one's lane.
+    final sentSessionId = _sessionId;
     Map<String, dynamic>? result;
     try {
       // Get GPS coordinates from provider (matching wardrive.js behavior)
@@ -1507,6 +1675,12 @@ class ApiService {
       result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
     } finally {
       _heartbeatInFlight = false;
+    }
+
+    if (result?['success'] != true && _sessionId != sentSessionId) {
+      debugLog('[HEARTBEAT] Ignoring a failed keepalive for a session that '
+          'has since been replaced');
+      return;
     }
 
     if (result?['success'] == true) {
@@ -1549,6 +1723,26 @@ class ApiService {
         'zone_disabled',
       };
 
+      // An idle app (no mode running or stopping, no ping in flight, nothing
+      // queued) has no use for a fresh session. This is the Android case
+      // where a stopped mode lets the process freeze in the background, the
+      // keepalive never fires, and the overdue one comes back expired on
+      // resume: recovering here minted a session that never saw a ping. Stop
+      // the keepalive instead and leave the session lapsed. The next Start or
+      // manual ping runs checkSessionValid, which posts its own heartbeat,
+      // gets the same session_expired and recovers there. The enabled flag is
+      // kept so that recovery reschedules the keepalive for the new session.
+      if (reason == 'session_expired' && (isSessionIdle?.call() ?? false)) {
+        debugLog('[HEARTBEAT] Session lapsed while idle, stopping the '
+            'keepalive; the next ping or mode start will refresh it');
+        _heartbeatTimer?.cancel();
+        _heartbeatTimer = null;
+        _heartbeatRetryTimer?.cancel();
+        _heartbeatRetryTimer = null;
+        _heartbeatRetryCount = 0;
+        return;
+      }
+
       final recovery =
           reason == 'session_expired' ? await _recoverExpiredSession() : null;
       if (recovery == SessionRecoveryResult.recovered) {
@@ -1583,30 +1777,56 @@ class ApiService {
   }
 
   /// Clear session data and cancel all timers
-  void _clearSession() {
+  /// Forgets the session. With [keepPolicy] only the session itself goes
+  /// (id, wire key, counter, expiry, storm-brake hold, keepalive timers) and
+  /// the zone policy stays: `txAllowed`, `rxAllowed`, the channels and
+  /// scopes, the enforce flags, the minimum interval, the hop width, the
+  /// Smart Pinging and scope discovery terms. A group handoff releases with
+  /// that and mints again at once; the connect branch overwrites every one of
+  /// those fields on success, so nothing stale can outlive the mint, and the
+  /// UI (the ping buttons, the status bar, the Smart Pinging lookup) does not
+  /// read the release-to-mint gap as "Passive only" with no session.
+  void _clearSession({bool keepPolicy = false}) {
     _sessionId = null;
     _wireKey = null;
     _pingCounter = 0;
-    _txAllowed = false;
-    _rxAllowed = false;
     _sessionExpiresAt = null;
-    _channels = [];
-    _scopes = [];
-    _enforceHybrid = false;
-    _enforceDiscDrop = false;
-    _floodDisabled = false;
-    _minModeInterval = 15;
-    _apiHopBytes = 1;
-    _enforceSmartPing = false;
-    _apiSmartPingDays = 14;
+    if (!keepPolicy) {
+      _txAllowed = false;
+      _rxAllowed = false;
+      _channels = [];
+      _scopes = [];
+      _enforceHybrid = false;
+      _enforceDiscDrop = false;
+      _floodDisabled = false;
+      _minModeInterval = 15;
+      _apiHopBytes = 1;
+      _enforceSmartPing = false;
+      _apiSmartPingDays = 14;
+      _apiSmartPingFloodOnly = true;
+      final scopeWasOffered = _scopeDiscoveryOffered;
+      final scopeWasEnforced = _enforceScopeDiscovery;
+      _scopeDiscoveryOffered = false;
+      _enforceScopeDiscovery = false;
+      _apiScopeRefreshDays = 14;
+      if (scopeWasOffered || scopeWasEnforced) onScopeDiscoveryChanged?.call();
+    }
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     _heartbeatRetryCount = 0;
     _wardriveBlockedUntil = null;
-    debugLog('[API] Session cleared');
+    debugLog(keepPolicy
+        ? '[API] Session cleared, zone policy kept for the mint'
+        : '[API] Session cleared');
   }
+
+  /// Forgets the session and its zone policy in full. For a caller that
+  /// released with `keepPolicy` and then could not mint: with no session to
+  /// follow, the kept policy would otherwise outlive the session it came
+  /// with.
+  void clearSession() => _clearSession();
 
   /// Legacy: Check if we have a slot (compatibility with old code)
   bool get hasSlot => hasSession;
@@ -1615,6 +1835,13 @@ class ApiService {
   /// one recoverable session error. The provider owns the auth payload and
   /// decides whether its connection state still permits recovery.
   Future<SessionRecoveryResult> Function()? onSessionExpiredRecovery;
+
+  /// True when nothing would use a refreshed session right now: no auto mode
+  /// running or stopping, no ping in flight, nothing queued for upload. Read
+  /// only by the scheduled keepalive, which then lets an expired session lapse
+  /// instead of re-minting one (see [_sendScheduledHeartbeat]). Every action
+  /// path still recovers through [checkSessionValid] or the upload door.
+  bool Function()? isSessionIdle;
 
   /// Callback for session errors (session_expired, bad_session, outside_zone)
   /// Set by AppStateProvider to handle auto-disconnect
@@ -1627,6 +1854,32 @@ class ApiService {
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
+
+  /// Reads `scope_discovery` from a live auth answer and fires
+  /// [onScopeDiscoveryChanged] when either flag changes. With [withdrawOnly]
+  /// only a withdrawal is applied (offered or enforced going false), never a
+  /// grant: it runs before the answer's session is known to be stored, so a
+  /// stale answer can only ever switch scope work off.
+  void _applyScopeDiscovery(Map<String, dynamic> data,
+      {bool withdrawOnly = false}) {
+    final offered = data.containsKey('scope_discovery');
+    final sd = data['scope_discovery'];
+    final enforced = sd == true || sd == 1;
+    final wasOffered = _scopeDiscoveryOffered;
+    final wasEnforced = _enforceScopeDiscovery;
+    _scopeDiscoveryOffered = withdrawOnly ? wasOffered && offered : offered;
+    _enforceScopeDiscovery = withdrawOnly ? wasEnforced && enforced : enforced;
+    if (wasOffered != _scopeDiscoveryOffered ||
+        wasEnforced != _enforceScopeDiscovery) {
+      onScopeDiscoveryChanged?.call();
+    }
+  }
+
+  /// Fired synchronously whenever [scopeDiscoveryOffered] or
+  /// [enforceScopeDiscovery] changes (a live `/auth` answer, or the session
+  /// being cleared), so scope work the server just withdrew stops before its
+  /// next write to the radio.
+  void Function()? onScopeDiscoveryChanged;
 
   /// Fired when /auth returns a session id different from the one we held.
   /// Wired to ApiQueueService.dropStaleTaggedItems(). See that method for why.
@@ -1693,7 +1946,11 @@ class ApiService {
   /// 304 retains this verdict; it does not mean the render was unchanged.
   /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
   /// is empty; package:http has already gunzipped the response).
-  Future<({bool? changed, Uint8List? body})> freshenVectorTile({
+  /// `noVerdictReason`: why `changed` is null (`header absent`, `HTTP <code>`
+  /// or `request failed`); null whenever a verdict came back. An absent
+  /// header is the normal answer for an on-demand render, not a failure.
+  Future<({bool? changed, Uint8List? body, String? noVerdictReason})>
+      freshenVectorTile({
     required String zone,
     required int z,
     required int x,
@@ -1705,7 +1962,7 @@ class ApiService {
         '${recentDays == null ? '' : '&f_days=$recentDays'}';
     final url =
         Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
-            '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
+            '?z=$z&x=$x&y=$y&gsize=$gsize&cf=$kCoverageTileFormat&fresh=1$filter');
     final verdictOnly = z >= 11 && z <= 13;
     final sw = Stopwatch()..start();
     // No GET line here: the response and failure lines below both name the
@@ -1727,17 +1984,22 @@ class ApiService {
       if (response.statusCode != 200 &&
           response.statusCode != 204 &&
           !(verdictOnly && response.statusCode == 304)) {
-        return (changed: null, body: null);
+        return (
+          changed: null,
+          body: null,
+          noVerdictReason: 'HTTP ${response.statusCode}',
+        );
       }
       final body = response.statusCode == 200 ? response.bodyBytes : null;
       return (
         changed: changed == null ? null : changed == '1',
         body: body,
+        noVerdictReason: changed == null ? 'header absent' : null,
       );
     } catch (e) {
       debugWarn(
           '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
-      return (changed: null, body: null);
+      return (changed: null, body: null, noVerdictReason: 'request failed');
     }
   }
 
@@ -1765,13 +2027,14 @@ class ApiService {
       'x': '$x',
       'y': '$y',
       'gsize': '$gsize',
+      'cf': '$kCoverageTileFormat',
       'f_days': '$days',
       'f_types': 'green,cyan',
       ...filter,
     });
     final sw = Stopwatch()..start();
     debugLog(
-        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
+        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&cf=$kCoverageTileFormat&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
     try {
       final response = await _send(
         'GET /vector_tile.php?z=$z&x=$x&y=$y (recent coverage)',
@@ -1814,6 +2077,9 @@ class ApiService {
     }
 
     try {
+      // The session this batch is sent under (submitWardriveData reads the
+      // same field before its first await).
+      final sentSessionId = _sessionId;
       final result = await submitWardriveData(pings);
 
       if (result == null) {
@@ -1833,6 +2099,17 @@ class ApiService {
 
       // Check for session errors that require disconnect
       final reason = result['reason'] as String?;
+
+      // A refusal for a session this service no longer holds (released by a
+      // Disconnect, or replaced by a reconnect or recovery while the POST was
+      // out) says nothing about the current one. Acting on it cleared a fresh
+      // session and tore down the new connection. Same rule as the release
+      // answer: only the session it was about is forgotten.
+      if (_sessionId != sentSessionId) {
+        debugLog('[API] Upload batch refused ($reason) for a session already '
+            'released or replaced, ignoring');
+        return UploadResult.held;
+      }
 
       // All errors that require session invalidation and disconnect
       const criticalErrors = {
@@ -1907,18 +2184,24 @@ class ApiService {
   }
 
   /// Fetch repeaters for a zone from the MeshMapper API
-  /// Returns a list of enabled repeaters for the given IATA zone code
+  /// Uses the build-time App key even before a session exists. Throws on
+  /// failure so callers can preserve a still-valid list. Failed reads are
+  /// held per host for a minute, or the server's Retry-After on a 429.
   Future<List<Repeater>> fetchRepeaters(String iata) async {
     final stopwatch = Stopwatch()..start();
     const endpoint = '/get_repeaters.php';
+    final host = '${iata.toLowerCase()}.meshmapper.net';
+    final hold = _repeaterReadHolds[host];
+    if (hold != null && _now().isBefore(hold.until)) throw hold.failure;
+    _repeaterReadHolds.remove(host);
     try {
       final filter = _radioFilterParams();
-      final url = Uri.https('${iata.toLowerCase()}.meshmapper.net', endpoint,
-          filter.isEmpty ? null : filter);
+      final url = Uri.https(host, endpoint, filter.isEmpty ? null : filter);
 
       final response = await _send(
         'GET $endpoint',
-        () => _client.get(url).timeout(const Duration(seconds: 15)),
+        () => _client.get(url, headers: const {'X-API-Key': apiKey}).timeout(
+            const Duration(seconds: 15)),
       );
 
       stopwatch.stop();
@@ -1931,7 +2214,15 @@ class ApiService {
           statusCode: response.statusCode,
           response: 'error',
         );
-        return [];
+        final failure = RepeaterFetchException(response.statusCode);
+        final until = _now().add(response.statusCode == 429
+            ? parseRetryAfter(response.headers['retry-after'])
+            : const Duration(minutes: 1));
+        final existing = _repeaterReadHolds[host];
+        if (existing == null || until.isAfter(existing.until)) {
+          _repeaterReadHolds[host] = (until: until, failure: failure);
+        }
+        throw failure;
       }
 
       final List<dynamic> jsonList =
@@ -1961,8 +2252,16 @@ class ApiService {
       return repeaters;
     } catch (e) {
       stopwatch.stop();
-      debugError('[API] GET $endpoint failed: $e');
-      return [];
+      final failure =
+          e is RepeaterFetchException ? e : const RepeaterFetchException();
+      _repeaterReadHolds.putIfAbsent(
+          host,
+          () => (
+                until: _now().add(const Duration(minutes: 1)),
+                failure: failure,
+              ));
+      debugError('[API] GET $endpoint failed: $failure');
+      throw failure;
     }
   }
 
@@ -2130,7 +2429,11 @@ class ApiService {
         method: 'POST',
         stopwatch: stopwatch,
         statusCode: response.statusCode,
-        request: {'data': '${entries.length} items', 'items': antennaSummary},
+        request: {
+          'data': '${entries.length} items',
+          'items': antennaSummary,
+          'altitude': altitudeLabelSummary(entries),
+        },
         response: data,
       );
 

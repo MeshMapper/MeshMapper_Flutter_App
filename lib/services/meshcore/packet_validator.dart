@@ -110,6 +110,14 @@ class PacketValidator {
     final encryptedMessage = metadata.encryptedPayload.sublist(3);
     debugLog('[RX FILTER] Encrypted message: ${encryptedMessage.length} bytes');
 
+    // AES-ECB needs whole 16-byte blocks; a ragged length is a malformed
+    // packet, not a decryption error.
+    if (!CryptoService.isValidCiphertextLength(encryptedMessage.length)) {
+      debugLog('[RX FILTER] ❌ DROPPED: ciphertext length '
+          '${encryptedMessage.length} is not a multiple of 16');
+      return ValidationResult.failed('bad ciphertext length');
+    }
+
     final decryptedBytes = CryptoService.decryptChannelMessage(
       encryptedMessage,
       channelInfo.key,

@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/services/link_decision.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
 import 'package:mesh_mapper/utils/debug_logger_io.dart';
 
 import 'fake_companion_transport.dart';
+import 'scope_test_support.dart';
 
 /// CMD_SIGN framing contract (mirrors the portal's meshcore.js, which is what
 /// today's 1,475 live companion links were made with):
@@ -434,6 +438,66 @@ void main() {
       connection.abortPendingSign();
       await connection.getBatteryVoltage();
       expect(transport.commandAt(0), CommandCodes.getBatteryVoltage);
+    });
+  });
+
+  group('sign and the scope lease', () {
+    Uint8List nonce() => Uint8List.fromList(List<int>.generate(32, (i) => i));
+
+    /// Puts [conn] in the answer wait of a scope request.
+    void listen(FakeAsync async, ScopeRadio radio, MeshCoreConnection conn) {
+      final lease = grant(async, conn)!;
+      lease.requestScopes(scopeKey(0xAB), Uint8List.fromList([1, 0]),
+          answerWait: const Duration(seconds: 7),
+          notAfter: clock.now().add(const Duration(seconds: 30)));
+      async.flushMicrotasks();
+      radio.emit([ResponseCodes.err, ErrorCodes.notFound]);
+      async.flushMicrotasks();
+    }
+
+    test('a sign started during the lease waits for the listen to end', () {
+      onScopeClock(ScopeRadio.new, (async, radio, conn) {
+        listen(async, radio, conn);
+        expect(conn.isScopeLeaseActive, isTrue);
+        conn.sign(nonce()).then((_) {}, onError: (_) {});
+        async.flushMicrotasks();
+        radio.emit(sentFrame());
+        async.elapse(const Duration(seconds: 1));
+        expect(conn.isScopeListenActive, isTrue);
+        expect(radio.commands.contains(CommandCodes.signStart), isFalse,
+            reason: 'no sign while the scope listen holds the slot');
+        radio.emit(answerPush());
+        async.flushMicrotasks();
+        expect(radio.commands.last, CommandCodes.signStart);
+        async.elapse(const Duration(seconds: 6));
+      });
+    });
+
+    test('a sign waiting past its limit fails busy', () {
+      onScopeClock(ScopeRadio.new, (async, radio, conn) {
+        conn.signScopeWait = const Duration(seconds: 2);
+        listen(async, radio, conn);
+        radio.emit(sentFrame());
+        async.flushMicrotasks();
+        Object? error;
+        conn.sign(nonce()).then((_) {}, onError: (Object e) {
+          error = e;
+        });
+        async.elapse(const Duration(milliseconds: 1999));
+        expect(error, isNull);
+        async.elapse(const Duration(milliseconds: 1));
+        expect(error,
+            isA<SignException>().having((e) => e.code, 'code', 'busy'));
+        expect(radio.commands.contains(CommandCodes.signStart), isFalse);
+        async.elapse(const Duration(seconds: 8));
+      });
+    });
+
+    test('the link flow backs off on busy and never takes a strike', () {
+      expect(signFailureAction('busy'), SignFailureAction.backoff);
+      expect(signFailureAction('unsupported'), SignFailureAction.strike);
+      expect(signFailureAction('err'), SignFailureAction.silent);
+      expect(signFailureAction('aborted'), SignFailureAction.silent);
     });
   });
 }

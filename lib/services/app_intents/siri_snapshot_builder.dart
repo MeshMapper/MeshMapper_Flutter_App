@@ -1,5 +1,6 @@
 import '../../models/log_entry.dart';
 import '../../models/repeater.dart';
+import '../../utils/repeater_nicknames.dart';
 import '../external_surfaces/geo/external_surface_geo_builder.dart';
 import '../watch/watch_models.dart';
 import 'siri_snapshot_models.dart';
@@ -34,6 +35,7 @@ class SiriSnapshotBuilder {
     required List<Repeater> repeaters,
     int? hopBytes,
     DateTime? now,
+    Map<String, RepeaterNickname> nicknames = const {},
   }) {
     final cutoff = (now ?? DateTime.now()).subtract(maximumObservationAge);
     final candidates = <_SiriObservationCandidate>[];
@@ -44,18 +46,12 @@ class SiriSnapshotBuilder {
     Repeater? lookup(_SiriObservationCandidate candidate) {
       final cacheKey = _identityKey(candidate);
       if (repeaterCache.containsKey(cacheKey)) return repeaterCache[cacheKey];
-      final found = (candidate.identity == null
-              ? null
-              : ExternalSurfaceGeoBuilder.resolveRepeater(
-                  repeaters: repeaters,
-                  id: candidate.identity!,
-                  hopBytes: hopBytes,
-                )) ??
-          ExternalSurfaceGeoBuilder.resolveRepeater(
-            repeaters: repeaters,
-            id: candidate.displayId.toUpperCase(),
-            hopBytes: hopBytes,
-          );
+      final found = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+        displayId: candidate.displayId,
+        identity: candidate.identity,
+        repeaters: repeaters,
+        hopBytes: hopBytes,
+      );
       repeaterCache[cacheKey] = found;
       return found;
     }
@@ -73,7 +69,13 @@ class SiriSnapshotBuilder {
       return SiriRepeaterObservation(
         entityId: resolved ? repeaterEntityId(repeater) : null,
         displayHexId: normalizedId,
-        name: resolved && repeater.name != 'Unknown' ? repeater.name : null,
+        // The user's nickname for the resolved repeater outranks the server's
+        // name. Only the observations carry it: the Shortcuts catalogue keeps
+        // server names.
+        name: (resolved
+                ? RepeaterNicknames.nicknameFor(repeater, nicknames)
+                : null) ??
+            (resolved && repeater.name != 'Unknown' ? repeater.name : null),
         observedAt: candidate.observedAt,
         kind: candidate.kind,
         direct: candidate.direct,
@@ -263,18 +265,12 @@ class SiriSnapshotBuilder {
     required int? hopBytes,
   }) {
     if (heardRepeaters.isEmpty) return null;
-    final match = (candidate.identity == null
-            ? null
-            : ExternalSurfaceGeoBuilder.resolveRepeater(
-                repeaters: heardRepeaters,
-                id: candidate.identity!,
-                hopBytes: hopBytes,
-              )) ??
-        ExternalSurfaceGeoBuilder.resolveRepeater(
-          repeaters: heardRepeaters,
-          id: candidate.displayId.toUpperCase(),
-          hopBytes: hopBytes,
-        );
+    final match = ExternalSurfaceGeoBuilder.resolveOverlayRow(
+      displayId: candidate.displayId,
+      identity: candidate.identity,
+      repeaters: heardRepeaters,
+      hopBytes: hopBytes,
+    );
     return match == null ? null : repeaterEntityId(match);
   }
 

@@ -7,6 +7,7 @@ import 'package:mesh_mapper/models/connection_state.dart';
 import 'package:mesh_mapper/models/device_model.dart';
 import 'package:mesh_mapper/services/api_queue_service.dart';
 import 'package:mesh_mapper/services/countdown_timer_service.dart';
+import 'package:mesh_mapper/services/fix_altitude.dart';
 import 'package:mesh_mapper/services/gps_service.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/ping_service.dart';
@@ -17,6 +18,9 @@ import 'package:mesh_mapper/services/wakelock_service.dart';
 /// covered. Manual pings and the auto-mode start check never look.
 
 class _FakeGps implements GpsService {
+  @override
+  FixAltitude fixAltitudeOf(Position position) => const FixAltitude.unknown();
+
   Position? position;
   bool tooClose = false;
   bool airborne = false;
@@ -94,7 +98,8 @@ class _FakeConnection implements MeshCoreConnection {
     // A released banked discovery reaches the real send path, unlike the
     // deferral tests where validation returns first.
     if (invocation.memberName == #sendDiscoveryRequest) {
-      return Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
+      return Future.value(
+          (tag: Uint8List.fromList([1, 2, 3, 4]), sentAt: DateTime.now()));
     }
     throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
   }
@@ -137,10 +142,47 @@ Position _pos({double lat = 45.0, double lon = -75.0}) => Position(
       speedAccuracy: 1.0,
     );
 
-/// A coverage answer the test can change after the service is built.
+/// A GPS fake whose TX send completes, for tests that let a TX go out.
+class _SendingGps extends _FakeGps {
+  @override
+  void markPingPosition(Position position) {}
+}
+
+/// A radio that counts what went on the air, and lets a TX send complete.
+class _CountingConnection extends _FakeConnection {
+  int txTransmits = 0;
+  int discoveryTransmits = 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #sendPing) {
+      txTransmits++;
+      return Future<void>.value();
+    }
+    if (invocation.memberName == #sendDiscoveryRequest) {
+      discoveryTransmits++;
+    }
+    return super.noSuchMethod(invocation);
+  }
+}
+
+/// A coverage answer the test can change after the service is built. [tx]
+/// and [discovery] override [answer] for one kind of ping, and [asked]
+/// records which kind each lookup was for.
 class _Coverage {
   RecentCoverage answer;
-  _Coverage(this.answer);
+  RecentCoverage? tx;
+  RecentCoverage? discovery;
+  final List<BankedPingType> asked = [];
+  _Coverage(this.answer, {this.tx, this.discovery});
+
+  RecentCoverage answerFor(BankedPingType kind) {
+    asked.add(kind);
+    return switch (kind) {
+      BankedPingType.tx => tx ?? answer,
+      BankedPingType.discovery => discovery ?? answer,
+    };
+  }
 }
 
 /// [discoveryWindowTimer] and [cooldownTimer] are passed in only by the
@@ -163,7 +205,7 @@ PingService _buildWith(
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: discoveryWindowTimer ?? DiscoveryWindowTimer(),
       deviceId: 'TEST',
-    )..checkRecentCoverage = (lat, lon) => coverage.answer;
+    )..checkRecentCoverage = (lat, lon, kind) => coverage.answerFor(kind);
 
 PingService _build(_FakeGps gps, RecentCoverage answer) =>
     _buildWith(gps, _Coverage(answer));
@@ -185,6 +227,14 @@ void main() {
     expect(_build(gps, RecentCoverage.clear).canPing(), PingValidation.valid);
     expect(
         _build(gps, RecentCoverage.unknown).canPing(), PingValidation.valid);
+  });
+
+  test('the TX validator asks about TX', () {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.clear);
+    final ping = _buildWith(gps, coverage);
+    ping.canPing();
+    expect(coverage.asked, [BankedPingType.tx]);
   });
 
   test('no callback means no check', () {
@@ -678,15 +728,15 @@ void main() {
         reason: 'a banked ping must not go out on top of a live discovery');
     expect(ping.bankedPing, BankedPingType.tx);
 
-    // Control: let that discovery finish into a covered square, so it banks
-    // itself and leaves nothing in flight. The very same clear square now
-    // releases, which is what makes the refusal above about the discovery and
-    // not about one of the other guards.
+    // Control: let that discovery finish into a covered square, so it defers
+    // (leaving the banked TX ping in place) and leaves nothing in flight. The
+    // very same clear square now releases, which is what makes the refusal
+    // above about the discovery and not about one of the other guards.
     coverage.answer = RecentCoverage.covered;
     gps.freshPositionGate!.complete();
     await tester.pump();
     expect(ping.pingInProgress, isFalse);
-    expect(ping.bankedPing, BankedPingType.discovery);
+    expect(ping.bankedPing, BankedPingType.tx);
 
     coverage.answer = RecentCoverage.clear;
     expect(ping.maybeSendBankedPing(_pos(lat: 45.01)), isTrue);
@@ -826,6 +876,224 @@ void main() {
 
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();
+  });
+
+  testWidgets('a hybrid discovery leg never replaces a banked TX ping',
+      (tester) async {
+    // Hybrid favours the TX ping: once one is held, the discovery legs that
+    // defer after it leave it in the bank, so the first ping into a fresh
+    // square is the one that can come back two-way.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping =
+        _buildWith(gps, coverage, discoveryWindowTimer: discoveryWindow);
+    final reported = <BankedPingType>[];
+    ping.onPingDeferred = (lat, lon, held) => reported.add(held);
+
+    // Hybrid opens on discovery, which the covered square banks: no TX ping
+    // is held yet, so the discovery takes the slot.
+    await ping.enableAutoPing(hybridMode: true);
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // The TX leg defers in the same square and takes the slot over.
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // The next discovery leg defers too and leaves the TX ping in place.
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx,
+        reason: 'a deferred discovery must not replace a banked TX ping');
+    // The square's DEFER still names what was actually held each time.
+    expect(reported, [
+      BankedPingType.discovery,
+      BankedPingType.tx,
+      BankedPingType.tx,
+    ]);
+
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+  });
+
+  // The discovery leg holds the in-progress latch across its own fresh fix,
+  // and that fix never reaches the GPS stream, so the release check cannot
+  // see it. With the stream quiet (iOS in the background) the leg itself has
+  // to hand the slot to the held TX, on 'unknown' as well as 'clear'.
+  for (final answer in [RecentCoverage.clear, RecentCoverage.unknown]) {
+    testWidgets(
+        'a hybrid discovery leg on a ${answer.name} fix sends the banked TX',
+        (tester) async {
+      const discoveryLegWaitMs = 23000;
+
+      final gps = _SendingGps()..position = _pos();
+      final coverage = _Coverage(RecentCoverage.covered);
+      final conn = _CountingConnection();
+      final discoveryWindow = DiscoveryWindowTimer();
+      final cooldown = CooldownTimer();
+      final ping = _buildWith(gps, coverage,
+          discoveryWindowTimer: discoveryWindow,
+          cooldownTimer: cooldown,
+          connection: conn);
+      ping.getSessionId = () => 'YOW-20261012-0001';
+      ping.getNextPingCounter = () => 1;
+      final scheduled = <int>[];
+      ping.onAutoPingScheduled = (intervalMs, _) => scheduled.add(intervalMs);
+
+      // Discovery defers, then the TX leg defers and takes the slot.
+      await ping.enableAutoPing(hybridMode: true);
+      await tester.pump(const Duration(seconds: 24));
+      expect(ping.bankedPing, BankedPingType.tx);
+      expect(conn.txTransmits, 0);
+      expect(conn.discoveryTransmits, 0);
+
+      // The next leg is a discovery, and its fresh fix is not covered. No
+      // GPS tick runs the release check.
+      coverage.answer = answer;
+      await tester.pump(const Duration(seconds: 24));
+      await tester.pump();
+      expect(conn.txTransmits, 1,
+          reason: 'the held TX goes out in place of the discovery');
+      expect(conn.discoveryTransmits, 0,
+          reason: 'a discovery must not replace a held TX ping');
+      expect(ping.bankedPing, isNull);
+
+      // The alternation carries on: the TX's RX window closes and arms a
+      // discovery leg, which then goes out.
+      await tester.pump(const Duration(seconds: 6));
+      expect(scheduled.last, discoveryLegWaitMs,
+          reason: 'the leg after the handed over TX is a discovery');
+      gps.position = _pos(lat: 45.01);
+      await tester.pump(const Duration(seconds: 24));
+      await tester.pump();
+      expect(conn.discoveryTransmits, 1);
+      expect(conn.txTransmits, 1);
+
+      await ping.forceDisableAutoPing();
+      discoveryWindow.stop();
+      cooldown.stop();
+      ping.dispose();
+    });
+  }
+
+  // A square can be covered for TX while still clear for discovery. The
+  // discovery lane asks about its own kind, and only a square clear for TX
+  // hands a Hybrid leg over to a banked TX.
+
+  testWidgets('passive: a discovery goes out when only TX is covered',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.clear,
+        tx: RecentCoverage.covered, discovery: RecentCoverage.clear);
+    final conn = _CountingConnection();
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping = _buildWith(gps, coverage,
+        discoveryWindowTimer: discoveryWindow, connection: conn);
+
+    await ping.enableAutoPing(passiveMode: true);
+    await tester.pump();
+    expect(conn.discoveryTransmits, 1);
+    expect(ping.bankedPing, isNull);
+
+    await tester.pump(const Duration(seconds: 8));
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+  });
+
+  testWidgets(
+      'hybrid: a discovery leg in a square covered for TX sends the '
+      'discovery and keeps the banked TX', (tester) async {
+    final gps = _SendingGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final conn = _CountingConnection();
+    final discoveryWindow = DiscoveryWindowTimer();
+    final cooldown = CooldownTimer();
+    final ping = _buildWith(gps, coverage,
+        discoveryWindowTimer: discoveryWindow,
+        cooldownTimer: cooldown,
+        connection: conn);
+    ping.getSessionId = () => 'YOW-20261012-0001';
+    ping.getNextPingCounter = () => 1;
+
+    // Discovery defers, then the TX leg defers and takes the slot.
+    await ping.enableAutoPing(hybridMode: true);
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // The next leg is a discovery, into a square still covered for TX but
+    // clear for discovery.
+    coverage
+      ..tx = RecentCoverage.covered
+      ..discovery = RecentCoverage.clear;
+    await tester.pump(const Duration(seconds: 24));
+    await tester.pump();
+    expect(conn.discoveryTransmits, 1);
+    expect(conn.txTransmits, 0);
+    expect(ping.bankedPing, BankedPingType.tx,
+        reason: 'the TX stays held for a square clear for TX');
+
+    await tester.pump(const Duration(seconds: 8));
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+    cooldown.stop();
+    ping.dispose();
+  });
+
+  testWidgets('hybrid: a discovery leg clear for TX still hands over to the '
+      'banked TX', (tester) async {
+    final gps = _SendingGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final conn = _CountingConnection();
+    final discoveryWindow = DiscoveryWindowTimer();
+    final cooldown = CooldownTimer();
+    final ping = _buildWith(gps, coverage,
+        discoveryWindowTimer: discoveryWindow,
+        cooldownTimer: cooldown,
+        connection: conn);
+    ping.getSessionId = () => 'YOW-20261012-0001';
+    ping.getNextPingCounter = () => 1;
+
+    await ping.enableAutoPing(hybridMode: true);
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    coverage
+      ..tx = RecentCoverage.clear
+      ..discovery = RecentCoverage.clear;
+    await tester.pump(const Duration(seconds: 24));
+    await tester.pump();
+    expect(conn.txTransmits, 1);
+    expect(conn.discoveryTransmits, 0);
+    expect(ping.bankedPing, isNull);
+
+    await tester.pump(const Duration(seconds: 6));
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+    cooldown.stop();
+    ping.dispose();
+  });
+
+  test('a banked discovery releases when discovery is no longer held',
+      () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing(passiveMode: true);
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    coverage
+      ..discovery = RecentCoverage.clear
+      ..tx = RecentCoverage.covered;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+    expect(coverage.asked.last, BankedPingType.discovery);
+
+    await Future<void>.delayed(Duration.zero);
+    await ping.forceDisableAutoPing();
   });
 
   // Smart pinging reports each held ping through onPingDeferred so the

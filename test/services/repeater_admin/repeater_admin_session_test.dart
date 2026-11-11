@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/meshcore/buffer_utils.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
+import 'package:mesh_mapper/services/meshcore/scope_lease.dart';
+import 'package:mesh_mapper/services/repeater_admin/manage_target.dart';
 import 'package:mesh_mapper/services/repeater_admin/repeater_admin_models.dart';
 import 'package:mesh_mapper/services/repeater_admin/repeater_admin_session.dart';
 
@@ -188,6 +191,22 @@ void main() {
           'No reply from the repeater. Check the password and try again.');
       expect(session.busy, isFalse);
     });
+
+    test('a contact list that never finishes is not a password problem',
+        () async {
+      final future = session.login('admin-pw');
+      await transport.settle();
+      expect(commands(), [CommandCodes.getContacts]);
+      transport.emit([ResponseCodes.contactsStart, 2, 0, 0, 0]);
+      transport.emit([ResponseCodes.contact, ...contactPayload(otherKey)]);
+      // The radio goes quiet before END_OF_CONTACTS: the silence window
+      // (5 s by default) runs out and no login is ever sent.
+      expect(await future, isFalse);
+      expect(session.state, RepeaterAdminState.failed);
+      expect(session.lastError, kContactListTimeoutSentence);
+      expect(commands(), [CommandCodes.getContacts]);
+      expect(session.busy, isFalse);
+    }, timeout: const Timeout(Duration(seconds: 15)));
 
     test('a zero-hop contact reads as a direct route', () async {
       final future = session.login('admin-pw');
@@ -390,6 +409,41 @@ void main() {
           [CommandCodes.resetPath, ...repeaterKey]);
       transport.emit([ResponseCodes.ok]);
       expect(await retry, isTrue);
+    });
+
+    test('a scope lease, then its reply debt, refuse a command', () async {
+      final lease = await connection.acquireScopeLease(
+          admissionWait: const Duration(seconds: 1),
+          cancel: ScopeCancelToken());
+      expect(lease, isNotNull);
+      final before = transport.writes.length;
+      expect(await session.login('admin-pw'), isFalse);
+      expect(session.lastError, kScopeRadioBusyHint);
+      // A command the lease wrote, still owed its reply after the lease
+      // ends.
+      unawaited(lease!.restore(ContactRecord.parse(BufferReader(
+          Uint8List.fromList(contactPayload(repeaterKey))))));
+      await transport.settle();
+      await lease.release();
+      expect(connection.hasScopeReplyDebt, isTrue);
+      final owed = transport.writes.length;
+      expect(await session.login('admin-pw'), isFalse);
+      expect(session.lastError, kScopeRadioBusyHint);
+      expect(transport.writes.length, owed);
+      expect(owed, before + 1);
+
+      // Once that reply lands the radio is Manage's again.
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      expect(connection.isScopeRadioBusy, isFalse);
+    });
+
+    test('reply debt from ordinary traffic is not a scope request', () async {
+      await connection.debugWriteRaw(
+          Uint8List.fromList([CommandCodes.getContactByKey, ...repeaterKey]));
+      expect(connection.repliesOwedCount, 1);
+      expect(connection.hasScopeReplyDebt, isFalse);
+      expect(connection.isScopeRadioBusy, isFalse);
     });
 
     test('PATH_UPDATED re-reads the contact', () async {

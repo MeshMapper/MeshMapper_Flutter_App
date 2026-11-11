@@ -5,6 +5,16 @@ const String kChooseFromListHint = 'Choose from the list';
 const String kCompanionFirmwareFloorHint =
     'Update companion firmware to use Manage';
 
+/// Why Manage waits while a scope request still owns the radio.
+const String kScopeRadioBusyHint =
+    'Finishing a scope request. Try again in a few seconds.';
+
+/// Whether scope discovery still owns the radio: a lease is held, or a reply
+/// is still owed for a command already written.
+bool scopeRadioBusy(
+        {required bool isScopeLeaseActive, required bool hasScopeReplyDebt}) =>
+    isScopeLeaseActive || hasScopeReplyDebt;
+
 /// Companion capability code introduced with MeshCore v1.9.0, which forwards
 /// the login reply's ACL permissions and repeater firmware level.
 /// This is FIRMWARE_VER_CODE, byte 1 of RESP_CODE_DEVICE_INFO, not the release
@@ -52,6 +62,7 @@ String? manageBlockReason({
   required bool isRepeaterAdminActive,
   required bool isAutoReconnecting,
   required bool companionFirmwareSupported,
+  required bool scopeRadioBusy,
 }) {
   if (!isConnected || isAutoReconnecting) {
     return 'Connect a radio to manage this repeater';
@@ -62,5 +73,6 @@ String? manageBlockReason({
     return 'Wait for the current ping to finish';
   }
   if (isRepeaterAdminActive) return 'A repeater session is already open';
+  if (scopeRadioBusy) return kScopeRadioBusyHint;
   return null;
 }

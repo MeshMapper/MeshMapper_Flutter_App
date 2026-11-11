@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../utils/debug_logger_io.dart';
 import '../meshcore/connection.dart';
+import 'manage_target.dart' show kScopeRadioBusyHint, scopeRadioBusy;
 import 'repeater_admin_models.dart';
 
 enum RepeaterAdminState { idle, ensuringContact, loggingIn, admin, guest, failed }
@@ -25,6 +26,8 @@ const String kNeighboursUnansweredSentence =
     "This repeater's firmware cannot report neighbours.";
 const String kNeighboursTimeoutSentence =
     'No reply from the repeater. Try again.';
+const String kContactListTimeoutSentence =
+    "Your radio didn't finish sending its contact list. Try again.";
 const String kAdminCommandPendingSentence =
     'The radio is still finishing the previous request. '
     'Wait for its reply, or close Manage and try again.';
@@ -492,9 +495,21 @@ class RepeaterAdminSession extends ChangeNotifier {
       debugLog('[RADMIN] Command refused: ${_closed ? 'closed' : 'busy'}');
       return false;
     }
-    if (_connection.hasPendingAdminCommand) {
+    // A scope lease holds the admin slot too, so it is named first; the
+    // admin lane's own retained reply keeps its own sentence; reply debt
+    // left behind by a lease is the scope case again.
+    final scopeLease = _connection.isScopeLeaseActive;
+    if (!scopeLease && _connection.hasPendingAdminCommand) {
       _lastError = kAdminCommandPendingSentence;
       debugLog('[RADMIN] Command refused: radio request still pending');
+      _notify();
+      return false;
+    }
+    if (scopeRadioBusy(
+        isScopeLeaseActive: scopeLease,
+        hasScopeReplyDebt: _connection.hasScopeReplyDebt)) {
+      _lastError = kScopeRadioBusyHint;
+      debugLog('[RADMIN] Command refused: a scope request owns the radio');
       _notify();
       return false;
     }
@@ -518,13 +533,22 @@ class RepeaterAdminSession extends ChangeNotifier {
   }
 
   void _fail(String message) {
+    debugLog('[RADMIN] Failed: $message');
     _lastError = message;
     _state = RepeaterAdminState.failed;
     _notify();
   }
 
   Future<void> _ensureContact() async {
-    final contacts = await _connection.getContacts();
+    final List<ContactRecord> contacts;
+    try {
+      contacts = await _connection.getContacts();
+    } on TimeoutException {
+      // A local read, not the mesh: it must not read as a wrong password or
+      // count towards the automatic route reset.
+      debugWarn('[RADMIN] Contact list read timed out');
+      throw const RepeaterAdminFailure(kContactListTimeoutSentence);
+    }
     final existing = _findContact(contacts);
     if (existing != null) {
       // Leave it alone: an add would wipe the learned route.

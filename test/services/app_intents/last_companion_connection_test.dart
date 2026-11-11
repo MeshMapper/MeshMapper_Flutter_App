@@ -130,4 +130,52 @@ void main() {
       expect(resolve().disposition, ExternalCommandDisposition.admitted);
     });
   });
+
+  group('answer window', () {
+    test('waits the full quick-answer time when the deadline is far off', () {
+      expect(
+        lastCompanionAnswerWindow(now.add(const Duration(seconds: 25)),
+            now: now),
+        lastCompanionQuickAnswer,
+      );
+    });
+
+    test('answers before the deadline after a slow cold launch', () {
+      // 8 seconds left: answer 3 seconds clear of it.
+      expect(
+        lastCompanionAnswerWindow(now.add(const Duration(seconds: 8)),
+            now: now),
+        const Duration(seconds: 5),
+      );
+    });
+
+    test('answers at once when the margin is already gone', () {
+      expect(
+        lastCompanionAnswerWindow(now.add(const Duration(seconds: 2)),
+            now: now),
+        Duration.zero,
+      );
+      expect(
+        lastCompanionAnswerWindow(now.subtract(const Duration(seconds: 1)),
+            now: now),
+        Duration.zero,
+      );
+    });
+
+    test('an older native build sending no deadline gets the quick answer',
+        () {
+      expect(lastCompanionAnswerWindow(null, now: now),
+          lastCompanionQuickAnswer);
+    });
+
+    test('always answers inside the native 25 second budget', () {
+      // The deadline native code sends is at most 25 seconds out, so the
+      // answer lands with the margin still to spare.
+      final window = lastCompanionAnswerWindow(
+          now.add(const Duration(seconds: 25)),
+          now: now);
+      expect(window + lastCompanionAnswerMargin,
+          lessThanOrEqualTo(const Duration(seconds: 25)));
+    });
+  });
 }

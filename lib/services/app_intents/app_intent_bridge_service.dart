@@ -90,18 +90,33 @@ class AppIntentBridgeService {
       return _refusal('Malformed command').toMap();
     }
 
+    final shortId =
+        command.id.length > 8 ? command.id.substring(0, 8) : command.id;
     final previous = _commandOutcomes[command.id];
-    if (previous != null) return previous.toMap(commandId: command.id);
+    if (previous != null) {
+      debugLog('[SIRI] ${command.kind.name} $shortId: repeat delivery, '
+          'returning the earlier answer');
+      return previous.toMap(commandId: command.id);
+    }
     final inFlight = _inFlightCommands[command.id];
     if (inFlight != null) {
+      debugLog('[SIRI] ${command.kind.name} $shortId: repeat delivery, '
+          'joining the one in flight');
       final completion = await inFlight;
       return completion.toMap(commandId: command.id);
     }
 
     final handler = _commandHandler;
     if (handler == null) {
+      debugWarn('[SIRI] ${command.kind.name} $shortId: refused, no handler '
+          'attached yet');
       return _refusal('App not ready').toMap(commandId: command.id);
     }
+
+    final received = DateTime.now();
+    final budget = command.expiresAt?.difference(received).inMilliseconds;
+    debugLog('[SIRI] ${command.kind.name} $shortId: received, '
+        '${budget == null ? 'no deadline' : '${budget}ms to answer'}');
 
     // Normalize handler failures inside the shared future so every concurrent
     // delivery of this UUID receives the same refusal instead of the owner
@@ -111,6 +126,9 @@ class AppIntentBridgeService {
     try {
       final completion = await execution;
       _remember(command.id, completion);
+      debugLog('[SIRI] ${command.kind.name} $shortId: answered in '
+          '${DateTime.now().difference(received).inMilliseconds}ms, '
+          '${completion.disposition.name} success=${completion.success}');
       return completion.toMap(commandId: command.id);
     } finally {
       if (identical(_inFlightCommands[command.id], execution)) {

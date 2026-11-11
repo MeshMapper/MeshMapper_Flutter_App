@@ -5,6 +5,11 @@
 
 set -e  # Exit on any error
 
+# The Flutter SDK every release is built with. Bump this when Flutter is
+# upgraded, together with flutter-version in .github/workflows/ci.yml, so the
+# store builds and CI never drift onto different SDKs.
+REQUIRED_FLUTTER_VERSION="3.47.5"
+
 # CLI flags for scripted use: ./Build.sh [--type dev|prod] [--version X.Y.Z] [--dry-run]
 # With no flags the script behaves exactly as before (interactive prompts).
 CLI_TYPE=""
@@ -224,6 +229,22 @@ fi
 ANDROID_DIR="$HOME/Documents/MeshMapper_Apps/Andriod"
 IOS_DIR="$HOME/Documents/MeshMapper_Apps/IOS"
 
+# The Flutter SDK on PATH builds everything, and regenerates code with it too
+FLUTTER_BIN="$(command -v flutter || true)"
+if [ -z "$FLUTTER_BIN" ]; then
+    echo "Error: flutter not found on PATH"
+    exit 1
+fi
+FLUTTER_VERSION_LINE="$(flutter --version 2>/dev/null | head -1)"
+FLUTTER_FRAMEWORK_VERSION="$(flutter --version --machine 2>/dev/null | sed -n 's/.*"frameworkVersion": *"\([^"]*\)".*/\1/p' | head -1)"
+if [ "$FLUTTER_FRAMEWORK_VERSION" != "$REQUIRED_FLUTTER_VERSION" ]; then
+    echo "Error: Flutter $REQUIRED_FLUTTER_VERSION is required, but the flutter on PATH"
+    echo "($FLUTTER_BIN) is ${FLUTTER_FRAMEWORK_VERSION:-unknown}."
+    echo "Install or switch to $REQUIRED_FLUTTER_VERSION, or bump REQUIRED_FLUTTER_VERSION"
+    echo "at the top of Build.sh (and ci.yml) if you are upgrading on purpose."
+    exit 1
+fi
+
 # Dry run: everything is resolved and validated - print the plan and stop
 if [ "$DRY_RUN" = "1" ]; then
     echo ""
@@ -234,6 +255,11 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "Build name: $VERSION_NUMBER"
     echo "Build number: $EPOCH"
     echo "Secrets: present (API key + signing passwords)"
+    echo "Flutter SDK: $FLUTTER_VERSION_LINE ($FLUTTER_BIN)"
+    echo ""
+    echo "Would run first:"
+    echo "  flutter pub run build_runner build --delete-conflicting-outputs"
+    echo "  (fails the build if it fails or rewrites pubspec.lock)"
     echo ""
     echo "Would produce:"
     echo "  APK: $ANDROID_DIR/MeshMapper-$FILE_TAG.apk"
@@ -250,7 +276,26 @@ echo "============================================"
 echo "MeshMapper Build Script"
 echo "Version: $APP_VERSION"
 echo "Build number: $EPOCH"
+echo "Flutter SDK: $FLUTTER_VERSION_LINE ($FLUTTER_BIN)"
 echo "============================================"
+echo ""
+
+# Regenerate generated code (Hive adapters). *.g.dart is gitignored, so a
+# stale local copy would otherwise ship and silently drop newer Hive fields.
+echo "[0/3] Regenerating generated code (build_runner)..."
+LOCK_BEFORE="$(shasum pubspec.lock 2>/dev/null || true)"
+if ! flutter pub run build_runner build --delete-conflicting-outputs; then
+    echo "Error: build_runner failed, not building"
+    exit 1
+fi
+LOCK_AFTER="$(shasum pubspec.lock 2>/dev/null || true)"
+if [ "$LOCK_BEFORE" != "$LOCK_AFTER" ]; then
+    echo "Error: build_runner rewrote pubspec.lock. The Flutter SDK on PATH"
+    echo "($FLUTTER_VERSION_LINE) is likely not the one the lock was resolved"
+    echo "with. Restore pubspec.lock and put the right SDK first on PATH."
+    exit 1
+fi
+echo "✓ Generated code is up to date"
 echo ""
 
 # Ensure output directories exist

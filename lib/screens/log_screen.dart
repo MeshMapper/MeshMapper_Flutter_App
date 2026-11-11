@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models/log_entry.dart';
 import '../models/repeater.dart';
+import '../models/scope_log_entry.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/ping_colors.dart';
 import '../widgets/log_table_cell_fit.dart';
@@ -12,7 +13,10 @@ import '../widgets/rx_path_chain.dart';
 
 /// Log screen with two tabs: All Pings (unified TX+RX+DISC+TRC) and Errors
 class LogScreen extends StatefulWidget {
-  const LogScreen({super.key});
+  /// True while the Log tab is the one on screen.
+  final bool active;
+
+  const LogScreen({super.key, this.active = false});
 
   @override
   State<LogScreen> createState() => _LogScreenState();
@@ -27,12 +31,33 @@ class _LogScreenState extends State<LogScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_reportErrorTabOnScreen);
+    _reportErrorTabOnScreen();
+  }
+
+  @override
+  void didUpdateWidget(LogScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active) _reportErrorTabOnScreen();
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_reportErrorTabOnScreen);
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// Tells the provider whether the Errors tab is on screen, which is what
+  /// clears the Log tab's dot. After the frame, because the scaffold's tab
+  /// change reaches here during a build.
+  void _reportErrorTabOnScreen() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context
+          .read<AppStateProvider>()
+          .setErrorLogOnScreen(widget.active && _tabController.index == 1);
+    });
   }
 
   @override
@@ -53,7 +78,8 @@ class _LogScreenState extends State<LogScreen>
     final totalPings = appState.txLogEntries.length +
         appState.rxLogEntries.length +
         appState.discLogEntries.length +
-        appState.traceLogEntries.length;
+        appState.traceLogEntries.length +
+        appState.scopeLogEntries.length;
 
     final errorCount = appState.errorLogEntries.length;
 
@@ -97,7 +123,7 @@ class _LogScreenState extends State<LogScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          _AllPingsTab(
+          AllPingsTab(
             key: _allPingsKey,
             allEntries: appState.unifiedPingLogEntries,
             repeaters: appState.repeaters,
@@ -105,6 +131,7 @@ class _LogScreenState extends State<LogScreen>
             rxCount: appState.rxLogEntries.length,
             discCount: appState.discLogEntries.length,
             traceCount: appState.traceLogEntries.length,
+            scopeCount: appState.scopeLogEntries.length,
           ),
           _ErrorLogTab(entries: appState.errorLogEntries),
         ],
@@ -153,8 +180,13 @@ class _LogScreenState extends State<LogScreen>
     final rx = appState.rxLogEntries;
     final disc = appState.discLogEntries;
     final trace = appState.traceLogEntries;
+    final scopes = appState.scopeLogEntries;
 
-    if (tx.isEmpty && rx.isEmpty && disc.isEmpty && trace.isEmpty) {
+    if (tx.isEmpty &&
+        rx.isEmpty &&
+        disc.isEmpty &&
+        trace.isEmpty &&
+        scopes.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content: Text('No ping log entries to copy'),
@@ -163,47 +195,9 @@ class _LogScreenState extends State<LogScreen>
       return;
     }
 
-    final buffer = StringBuffer();
-
-    if (tx.isNotEmpty) {
-      buffer.writeln('--- TX Log ---');
-      buffer.writeln('timestamp,latitude,longitude,power,events');
-      for (final entry in tx) {
-        buffer.writeln(entry.toCsv());
-      }
-      buffer.writeln();
-    }
-
-    if (rx.isNotEmpty) {
-      buffer.writeln('--- RX Log ---');
-      buffer.writeln(
-          'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude,path_hops');
-      for (final entry in rx) {
-        buffer.writeln(entry.toCsv());
-      }
-      buffer.writeln();
-    }
-
-    if (disc.isNotEmpty) {
-      buffer.writeln('--- DISC Log ---');
-      buffer
-          .writeln('timestamp,latitude,longitude,noisefloor,node_count,nodes');
-      for (final entry in disc) {
-        buffer.writeln(entry.toCsv());
-      }
-      buffer.writeln();
-    }
-
-    if (trace.isNotEmpty) {
-      buffer.writeln('--- TRC Log ---');
-      buffer.writeln(
-          'timestamp,target_repeater,local_snr,local_rssi,remote_snr,latitude,longitude,noisefloor,success');
-      for (final entry in trace) {
-        buffer.writeln(entry.toCsv());
-      }
-    }
-
-    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    final csv = buildAllPingsCsv(
+        tx: tx, rx: rx, disc: disc, trace: trace, scopes: scopes);
+    Clipboard.setData(ClipboardData(text: csv));
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
           content: Text('All ping logs copied to clipboard'),
@@ -239,8 +233,8 @@ class _LogScreenState extends State<LogScreen>
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Clear All Logs?'),
-        content:
-            const Text('This will clear TX, RX, DISC, TRC, and error logs.'),
+        content: const Text(
+            'This will clear TX, RX, DISC, TRC, SCP, and error logs.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -263,15 +257,24 @@ class _LogScreenState extends State<LogScreen>
 // All Pings Tab — unified chronological view with type filters
 // =============================================================================
 
-class _AllPingsTab extends StatefulWidget {
+/// The unified TX/RX/DISC/TRC/SCP list, its type filters and its search
+/// field. Public (unlike its sibling `_ErrorLogTab`) so a test can pump it
+/// directly with a fixed `allEntries`/`repeaters`/counts, without going
+/// through `LogScreen` (which needs a live `AppStateProvider` just to reach
+/// this widget). Per-type card rendering may still need a `Provider<AppStateProvider>`
+/// ancestor for its tap-to-map action (see `_buildScopeCard`'s lazy read), so
+/// a test that only ever taps the filter row or the search field, and never a
+/// card body, needs no provider at all.
+class AllPingsTab extends StatefulWidget {
   final List<UnifiedPingLogEntry> allEntries;
   final List<Repeater> repeaters;
   final int txCount;
   final int rxCount;
   final int discCount;
   final int traceCount;
+  final int scopeCount;
 
-  const _AllPingsTab({
+  const AllPingsTab({
     super.key,
     required this.allEntries,
     required this.repeaters,
@@ -279,22 +282,28 @@ class _AllPingsTab extends StatefulWidget {
     required this.rxCount,
     required this.discCount,
     required this.traceCount,
+    required this.scopeCount,
   });
 
   @override
-  State<_AllPingsTab> createState() => _AllPingsTabState();
+  State<AllPingsTab> createState() => _AllPingsTabState();
 }
 
-class _AllPingsTabState extends State<_AllPingsTab> {
+class _AllPingsTabState extends State<AllPingsTab> {
   final Set<PingLogType> _activeFilters = {
     PingLogType.tx,
     PingLogType.rx,
     PingLogType.disc,
     PingLogType.trace,
+    PingLogType.scopes,
   };
 
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
+
+  /// Its own controller, not the inherited primary one: both log tabs sit in
+  /// one TabBarView and would share it, which a Scrollbar refuses.
+  final ScrollController _scrollController = ScrollController();
 
   /// Current filtered entries (used by CSV export)
   List<UnifiedPingLogEntry> _filteredEntries = [];
@@ -302,6 +311,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -389,6 +399,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         final resolved =
             _resolveRepeaterNames(trace.targetRepeaterId, repeaters);
         return resolved.names.any((n) => n.toLowerCase().contains(query));
+      case PingLogType.scopes:
+        return scopeEntryMatchesSearch(entry.asScopes, _searchQuery);
     }
   }
 
@@ -409,13 +421,14 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             .any((n) => _isAmbiguousId(n.repeaterId, repeaters));
       case PingLogType.trace:
         return _isAmbiguousId(entry.asTrace.targetRepeaterId, repeaters);
+      case PingLogType.scopes:
+        return false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final filtered = widget.allEntries
-        .where((e) => _activeFilters.contains(e.type))
+    final filtered = filterUnifiedPingLog(widget.allEntries, _activeFilters)
         .where((e) => _matchesSearch(e, widget.repeaters))
         .toList();
     _filteredEntries = filtered;
@@ -498,7 +511,11 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                       widget.discCount, PingColors.discSuccess),
                   _segmentDivider(context),
                   _buildFilterSegment(PingLogType.trace, 'TRC',
-                      widget.traceCount, PingColors.traceSuccess,
+                      widget.traceCount, PingColors.traceSuccess),
+                  _segmentDivider(context),
+                  _buildFilterSegment(PingLogType.scopes, 'SCP',
+                      widget.scopeCount,
+                      PingColors.scopesFor(Theme.of(context).brightness),
                       isLast: true),
                 ],
               ),
@@ -529,26 +546,34 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                     ],
                   ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                  itemCount: filtered.length,
-                  itemBuilder: (context, index) {
-                    final unified = filtered[index];
-                    final showAmbiguity =
-                        _shouldShowAmbiguity(unified, widget.repeaters);
-                    return switch (unified.type) {
-                      PingLogType.tx => _buildTxCard(context, unified.asTx,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.rx => _buildRxCard(context, unified.asRx,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.disc => _buildDiscCard(
-                          context, unified.asDisc,
-                          showAmbiguity: showAmbiguity),
-                      PingLogType.trace => _buildTraceCard(
-                          context, unified.asTrace,
-                          showAmbiguity: showAmbiguity),
-                    };
-                  },
+              : Scrollbar(
+                  controller: _scrollController,
+                  interactive: true,
+                  child: ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                    itemCount: filtered.length,
+                    itemBuilder: (context, index) {
+                      final unified = filtered[index];
+                      final showAmbiguity =
+                          _shouldShowAmbiguity(unified, widget.repeaters);
+                      return switch (unified.type) {
+                        PingLogType.tx => _buildTxCard(context, unified.asTx,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.rx => _buildRxCard(context, unified.asRx,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.disc => _buildDiscCard(
+                            context, unified.asDisc,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.trace => _buildTraceCard(
+                            context, unified.asTrace,
+                            showAmbiguity: showAmbiguity),
+                        PingLogType.scopes => _buildScopeCard(
+                            context, unified.asScopes,
+                            showAmbiguity: showAmbiguity),
+                      };
+                    },
+                  ),
                 ),
         ),
       ],
@@ -558,61 +583,15 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   Widget _buildFilterSegment(
       PingLogType type, String label, int count, Color color,
       {bool isFirst = false, bool isLast = false}) {
-    final active = _activeFilters.contains(type);
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => _toggleFilter(type),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 7),
-          color: active ? color.withValues(alpha: 0.12) : Colors.transparent,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                  color: active
-                      ? color
-                      : Theme.of(context)
-                          .colorScheme
-                          .onSurfaceVariant
-                          .withValues(alpha: 0.6),
-                ),
-              ),
-              if (count > 0) ...[
-                const SizedBox(width: 4),
-                Container(
-                  constraints:
-                      const BoxConstraints(minWidth: 18, minHeight: 16),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: active
-                        ? color
-                        : Theme.of(context)
-                            .colorScheme
-                            .onSurfaceVariant
-                            .withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    count > 99 ? '99+' : count.toString(),
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      height: 1.0,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
+    return LogFilterSegment(
+      type: type,
+      label: label,
+      count: count,
+      color: color,
+      active: _activeFilters.contains(type),
+      onTap: () => _toggleFilter(type),
+      isFirst: isFirst,
+      isLast: isLast,
     );
   }
 
@@ -628,12 +607,13 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // Type badge
   // ---------------------------------------------------------------------------
 
-  static Widget _buildTypeBadge(PingLogType type) {
+  static Widget _buildTypeBadge(PingLogType type, Brightness brightness) {
     final (label, color) = switch (type) {
       PingLogType.tx => ('TX', PingColors.txSuccess),
       PingLogType.rx => ('RX', PingColors.rx),
       PingLogType.disc => ('DISC', PingColors.discSuccess),
       PingLogType.trace => ('TRC', PingColors.traceSuccess),
+      PingLogType.scopes => ('SCP', PingColors.scopesFor(brightness)),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -1329,6 +1309,25 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   }
 
   // ---------------------------------------------------------------------------
+  // SCP Card
+  // ---------------------------------------------------------------------------
+
+  // The AppStateProvider read is deferred into the onTap closure (unlike the
+  // other card builders' eager `context.read` at the top of the method) so a
+  // widget test that renders only scope entries and never taps a card body
+  // needs no Provider ancestor at all.
+  Widget _buildScopeCard(BuildContext context, ScopeLogEntry entry,
+      {bool showAmbiguity = false}) {
+    return ScopeLogCard(
+      entry: entry,
+      showAmbiguity: showAmbiguity,
+      onTap: () => context
+          .read<AppStateProvider>()
+          .navigateToMapCoordinates(entry.latitude, entry.longitude),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Shared helpers
   // ---------------------------------------------------------------------------
 
@@ -1337,7 +1336,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       {bool showAmbiguity = false}) {
     return Row(
       children: [
-        _buildTypeBadge(type),
+        _buildTypeBadge(type, Theme.of(context).brightness),
         if (showAmbiguity) ...[
           const SizedBox(width: 2),
           Tooltip(
@@ -1408,16 +1407,290 @@ class _AllPingsTabState extends State<_AllPingsTab> {
 }
 
 // =============================================================================
+// Filter/search helpers usable without a live AppStateProvider
+// =============================================================================
+
+/// The entries in [entries] whose type is in [activeFilters], in the same
+/// order. What toggling a segment on the filter row does to the list.
+List<UnifiedPingLogEntry> filterUnifiedPingLog(
+        List<UnifiedPingLogEntry> entries, Set<PingLogType> activeFilters) =>
+    entries.where((e) => activeFilters.contains(e.type)).toList();
+
+/// Whether a logged scope request matches [query]: the repeater id and the
+/// outcome words case-insensitively, a scope name case-sensitively (scope
+/// names are case-sensitive on the mesh). An empty query always matches.
+bool scopeEntryMatchesSearch(ScopeLogEntry entry, String query) {
+  if (query.isEmpty) return true;
+  final lower = query.toLowerCase();
+  if (entry.repeaterId.toLowerCase().startsWith(lower)) return true;
+  if ((entry.scopes ?? const <String>[]).any((name) => name.contains(query))) {
+    return true;
+  }
+  return entry.outcome.label.toLowerCase().contains(lower);
+}
+
+/// Assembles the full "Copy CSV" export (the unfiltered path taken when no
+/// search is active): one `--- X Log ---` section per non-empty list,
+/// blank-line separated. TX/RX/DISC/TRC rows are the bare `LogEntry.toCsv()`
+/// (the section header already names the type); SCP rows carry the `SCOPES,`
+/// prefix so they read identically to what the searched/filtered export
+/// produces through `UnifiedPingLogEntry.toCsv()` for the same entry. Pure
+/// and Provider-free so the export format is unit-testable without a live
+/// AppStateProvider.
+String buildAllPingsCsv({
+  required List<TxLogEntry> tx,
+  required List<RxLogEntry> rx,
+  required List<DiscLogEntry> disc,
+  required List<TraceLogEntry> trace,
+  required List<ScopeLogEntry> scopes,
+}) {
+  final buffer = StringBuffer();
+
+  if (tx.isNotEmpty) {
+    buffer.writeln('--- TX Log ---');
+    buffer.writeln('timestamp,latitude,longitude,power,events');
+    for (final entry in tx) {
+      buffer.writeln(entry.toCsv());
+    }
+    buffer.writeln();
+  }
+
+  if (rx.isNotEmpty) {
+    buffer.writeln('--- RX Log ---');
+    buffer.writeln(
+        'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude,path_hops');
+    for (final entry in rx) {
+      buffer.writeln(entry.toCsv());
+    }
+    buffer.writeln();
+  }
+
+  if (disc.isNotEmpty) {
+    buffer.writeln('--- DISC Log ---');
+    buffer.writeln('timestamp,latitude,longitude,noisefloor,node_count,nodes');
+    for (final entry in disc) {
+      buffer.writeln(entry.toCsv());
+    }
+    buffer.writeln();
+  }
+
+  if (trace.isNotEmpty) {
+    buffer.writeln('--- TRC Log ---');
+    buffer.writeln(
+        'timestamp,target_repeater,local_snr,local_rssi,remote_snr,latitude,longitude,noisefloor,success');
+    for (final entry in trace) {
+      buffer.writeln(entry.toCsv());
+    }
+    buffer.writeln();
+  }
+
+  if (scopes.isNotEmpty) {
+    buffer.writeln('--- SCP Log ---');
+    buffer.writeln(
+        'type,timestamp,latitude,longitude,repeater_id,outcome,scopes');
+    for (final entry in scopes) {
+      buffer.writeln('SCOPES,${entry.toCsv()}');
+    }
+  }
+
+  return buffer.toString();
+}
+
+// =============================================================================
+// SCP filter segment and card, Provider-free
+// =============================================================================
+
+/// One segment of the TX/RX/DISC/TRC/SCP filter row. Presentational only:
+/// [active] and [onTap] are owned by `_AllPingsTabState`, so this renders (and
+/// is testable) without a live `AppStateProvider`.
+class LogFilterSegment extends StatelessWidget {
+  final PingLogType type;
+  final String label;
+  final int count;
+  final Color color;
+  final bool active;
+  final VoidCallback onTap;
+  final bool isFirst;
+  final bool isLast;
+
+  const LogFilterSegment({
+    super.key,
+    required this.type,
+    required this.label,
+    required this.count,
+    required this.color,
+    required this.active,
+    required this.onTap,
+    this.isFirst = false,
+    this.isLast = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 7),
+          color: active ? color.withValues(alpha: 0.12) : Colors.transparent,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                  color: active
+                      ? color
+                      : Theme.of(context)
+                          .colorScheme
+                          .onSurfaceVariant
+                          .withValues(alpha: 0.6),
+                ),
+              ),
+              if (count > 0) ...[
+                const SizedBox(width: 4),
+                Container(
+                  constraints:
+                      const BoxConstraints(minWidth: 18, minHeight: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: active
+                        ? color
+                        : Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant
+                            .withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    count > 99 ? '99+' : count.toString(),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      height: 1.0,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The SCP card for one logged scope request. Provider-free (unlike the other
+/// per-type card builders, which are private methods on `_AllPingsTabState`
+/// that read `context.read<AppStateProvider>()` themselves): the whole-card
+/// tap is handed in as [onTap] so this renders in a widget test without a
+/// live `AppStateProvider`. `_AllPingsTabState._buildScopeCard` supplies the
+/// same `navigateToMapCoordinates` tap every other card uses.
+class ScopeLogCard extends StatelessWidget {
+  final ScopeLogEntry entry;
+  final bool showAmbiguity;
+  final VoidCallback onTap;
+
+  const ScopeLogCard({
+    super.key,
+    required this.entry,
+    this.showAmbiguity = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scopes = entry.scopes;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: colorScheme.surfaceContainerHigh,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _AllPingsTabState._buildCardHeader(context, PingLogType.scopes,
+                  entry.timeString, entry.locationString,
+                  showAmbiguity: showAmbiguity),
+              const SizedBox(height: 10),
+              InkWell(
+                onTap: () => RepeaterIdChip.showRepeaterPopup(
+                    context, entry.repeaterId,
+                    fullHexId: entry.pubkeyHex),
+                child:
+                    RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 14),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                entry.outcome.label,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              if (scopes != null) ...[
+                const SizedBox(height: 8),
+                if (scopes.isEmpty)
+                  Text(
+                    'Carries no scopes',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  )
+                else
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: scopes
+                        .map((name) => _AllPingsTabState._buildChip(name,
+                            PingColors.scopesFor(Theme.of(context).brightness)))
+                        .toList(),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
 // Error Log Tab (unchanged)
 // =============================================================================
 
-class _ErrorLogTab extends StatelessWidget {
+class _ErrorLogTab extends StatefulWidget {
   final List<UserErrorEntry> entries;
 
   const _ErrorLogTab({required this.entries});
 
   @override
+  State<_ErrorLogTab> createState() => _ErrorLogTabState();
+}
+
+class _ErrorLogTabState extends State<_ErrorLogTab> {
+  /// See [_AllPingsTabState._scrollController].
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final entries = widget.entries;
     if (entries.isEmpty) {
       return Center(
         child: Column(
@@ -1434,14 +1707,19 @@ class _ErrorLogTab extends StatelessWidget {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: entries.length,
-      itemBuilder: (context, index) {
-        // Most recent first
-        final entry = entries[entries.length - 1 - index];
-        return _buildErrorEntry(context, entry);
-      },
+    return Scrollbar(
+      controller: _scrollController,
+      interactive: true,
+      child: ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(16),
+        itemCount: entries.length,
+        itemBuilder: (context, index) {
+          // Most recent first
+          final entry = entries[entries.length - 1 - index];
+          return _buildErrorEntry(context, entry);
+        },
+      ),
     );
   }
 

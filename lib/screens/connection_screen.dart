@@ -11,13 +11,20 @@ import '../models/connection_state.dart';
 import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
+import '../services/precise_location_gate.dart';
+import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/slots_chip.dart';
+import '../utils/store_links.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../services/location_consent.dart';
+import '../services/permission_disclosure_service.dart';
 import '../services/transport/android_serial_service.dart';
 import '../services/transport/tcp_service.dart';
 import '../services/transport/web_serial_factory.dart';
 import '../widgets/offline_mode_toggle.dart';
 import '../widgets/regional_config_card.dart';
+import '../widgets/update_required_panel.dart';
 import 'onboarding/onboarding_prompt_gate.dart';
 
 /// BLE device selection and connection screen
@@ -71,18 +78,48 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
   }
 
-  /// Request location permission - tries to request first, opens settings if permanently denied
+  /// Request location permission. Tries the system prompt first and opens the
+  /// app settings when it is permanently denied, or when the request came back
+  /// denied without a dialog ever being shown (Android stops prompting after
+  /// two refusals but can still report plain `denied`).
   Future<void> _requestLocationPermission(AppStateProvider appState) async {
     // Check current permission status
     LocationPermission permission = await Geolocator.checkPermission();
 
+    // The disclosure comes before every system prompt and until it is agreed
+    // to, even with location granted (Google Play), except on web.
+    if (!kIsWeb &&
+        LocationConsent.needsDisclosure(
+          agreed: await LocationConsent.hasAgreed(),
+          aboutToRequest: permission == LocationPermission.denied,
+        )) {
+      if (!mounted) return;
+      final agreed =
+          await PermissionDisclosureService.showLocationDisclosure(context);
+      if (!agreed) return;
+    }
+
     // If denied (not permanently), try requesting again
     if (permission == LocationPermission.denied) {
+      final stopwatch = Stopwatch()..start();
       permission = await Geolocator.requestPermission();
+      stopwatch.stop();
+      debugLog('[GPS] Location permission request returned $permission '
+          'after ${stopwatch.elapsedMilliseconds}ms');
+      if (permission == LocationPermission.denied &&
+          PermissionDisclosureService.deniedWithoutDialog(stopwatch.elapsed)) {
+        // No dialog was shown, so a person cannot have just refused. Without
+        // this the button silently did nothing on every tap.
+        debugLog('[GPS] Location denied without a system dialog, '
+            'opening app settings');
+        await Geolocator.openAppSettings();
+        return;
+      }
     }
 
     // If permanently denied, open app settings
     if (permission == LocationPermission.deniedForever) {
+      debugLog('[GPS] Location permanently denied, opening app settings');
       await Geolocator.openAppSettings();
       return;
     }
@@ -191,6 +228,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       return _buildDeviceList(context, appState);
     }
 
+    // The server refused this build: an update panel, not an error card
+    final updateRequirement = appState.appUpdateRequirement;
+    if (updateRequirement != null) {
+      return UpdateRequiredPanel(
+        requirement: updateRequirement,
+        onUpdate: _openStoreLink,
+        onBack: () => appState.startScan(),
+      );
+    }
+
     // Show error
     if (appState.connectionError != null) {
       return _buildError(context, appState);
@@ -266,7 +313,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         icon: Icons.link_off,
         label: 'Disconnect',
         color: Colors.red,
-        onPressed: () async => await appState.disconnect(),
+        onPressed: () async => await appState.disconnect(flushQueue: true),
       );
     }
 
@@ -402,6 +449,20 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                 'Step ${step.stepNumber} of $totalSteps',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
+              // Only the wait for the radio can be cancelled. Past it the
+              // handshake has its own cleanup and finishes on its own.
+              if (appState.canCancelConnect ||
+                  appState.isCancellingConnect) ...[
+                SizedBox(height: isLandscape ? 16 : 24),
+                OutlinedButton(
+                  onPressed: appState.isCancellingConnect
+                      ? null
+                      : () => appState.cancelConnect(),
+                  child: Text(appState.isCancellingConnect
+                      ? 'Cancelling'
+                      : 'Cancel'),
+                ),
+              ],
             ],
           ),
         ),
@@ -738,6 +799,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     final channelsCard = RegionalConfigCard(
       zoneName: appState.offlineMode ? null : appState.zoneName,
       zoneCode: appState.offlineMode ? null : appState.zoneCode,
+      groupCode: appState.offlineMode ? null : appState.zoneGroupCode,
       channels: appState.offlineMode ? [] : appState.regionalChannels,
       scope: appState.offlineMode ? null : appState.scope,
       isOfflineMode: appState.offlineMode,
@@ -1417,6 +1479,18 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
   }
 
+  /// Opens the store (or release page) the update panel picked.
+  Future<void> _openStoreLink(StoreLink link) async {
+    debugLog('[UI] Opening update link ${link.uri}');
+    try {
+      final opened =
+          await launchUrl(link.uri, mode: LaunchMode.externalApplication);
+      if (!opened) debugWarn('[UI] Could not open update link ${link.uri}');
+    } catch (e) {
+      debugWarn('[UI] Opening update link failed: $e');
+    }
+  }
+
   Widget _buildError(BuildContext context, AppStateProvider appState) {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
@@ -1472,12 +1546,21 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     String locationText;
     String? iataCode;
     Color locationColor;
+    VoidCallback? locationTap;
 
     // Airborne block applies in every mode, so it comes first
     if (appState.isAirborne) {
       locationIcon = Icons.airplanemode_active;
       locationText = 'Airborne';
       locationColor = Colors.red;
+      // Location off (Not Now on the disclosure, or not granted). This bar is
+      // on every tab, so tapping it is the way back to the disclosure and the
+      // system prompt; Offline Mode needs location too.
+    } else if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      locationIcon = Icons.location_disabled;
+      locationText = 'Location Off';
+      locationColor = Colors.orange;
+      locationTap = () => _requestLocationPermission(appState);
       // Offline mode: show greyed out with "-"
     } else if (appState.offlineMode) {
       locationIcon = Icons.gps_off;
@@ -1511,8 +1594,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       locationColor = Colors.blue;
     } else if (appState.inZone == true) {
       locationIcon = Icons.location_on;
-      locationText = appState.zoneName ?? 'Unknown';
-      iataCode = appState.zoneCode;
+      locationText = appState.displayZoneName ?? 'Unknown';
+      iataCode = appState.shortZoneCode;
       locationColor = Colors.green;
     } else if (appState.inZone == false) {
       locationIcon = Icons.location_off;
@@ -1524,30 +1607,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       locationColor = Colors.grey;
     }
 
-    // Slots info
-    final slotsAvailable = appState.zoneSlotsAvailable;
-    final slotsMax = appState.zoneSlotsMax;
-    final hasSlots = slotsAvailable != null && slotsMax != null;
-
-    // A flood-disabled region hands out no TX slots at all. Before connecting
-    // the auth flag isn't known yet, so fall back to the shape of the zone: a
-    // 0-max zone isn't FULL, it simply offers no TX slots. Either way it's a
-    // regional setting, so show info blue and drop the misleading 0/0 count.
-    final passiveOnly = appState.floodDisabled || slotsMax == 0;
-
-    // Slots color based on availability
-    Color slotsColor;
-    if (passiveOnly) {
-      slotsColor = Colors.blue;
-    } else if (!hasSlots) {
-      slotsColor = Colors.grey;
-    } else if (slotsAvailable == 0) {
-      slotsColor = Colors.red;
-    } else if (slotsAvailable <= 2) {
-      slotsColor = Colors.orange;
-    } else {
-      slotsColor = Colors.green;
-    }
+    // Slots info. Flood is per radio preset and independent of the slot
+    // count, so a 0-slot preset with flood on reads "0 Slots", not "Flood Off".
+    final slotsChip = slotsChipState(
+      authFloodDisabled: appState.floodDisabled,
+      zoneFloodDisabled: appState.zoneFloodDisabled,
+      slotsAvailable: appState.zoneSlotsAvailable,
+      slotsMax: appState.zoneSlotsMax,
+    );
 
     return Container(
       width: double.infinity,
@@ -1578,6 +1645,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                       icon: locationIcon,
                       text: locationText,
                       color: locationColor,
+                      onTap: locationTap,
                     ),
                   ),
 
@@ -1598,14 +1666,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
             // Slots chip
             _buildChip(
-              icon: passiveOnly ? Icons.waves : Icons.people_outline,
-              text: passiveOnly
-                  ? 'Flood Off'
-                  : hasSlots
-                      ? '$slotsAvailable/$slotsMax Open'
-                      : '--',
-              color: slotsColor,
-              onTap: passiveOnly ? () => _showFloodDisabledInfo(context) : null,
+              icon: slotsChip.icon,
+              text: slotsChip.label,
+              color: slotsChip.color,
+              onTap: slotsChip.tappable
+                  ? () => _showFloodDisabledInfo(context)
+                  : null,
             ),
           ],
         ),
@@ -1653,12 +1719,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
   }
 
-  /// Explains a flood-disabled region.
+  /// Explains a flood veto for the radio's current preset.
   ///
   /// The chip has room for eight characters, which cannot say that Trace Mode
   /// still works, so the detail lives here. Layout mirrors
-  /// [_showAuthMethodInfo]; wording matches the region-veto dialog in
-  /// MainScaffold so users see one consistent explanation.
+  /// [_showAuthMethodInfo].
   void _showFloodDisabledInfo(BuildContext context) {
     final bodyStyle = TextStyle(
       fontSize: 14,
@@ -1720,9 +1785,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                     Text(
                       'This region has grown large enough that flood traffic '
                       'started hurting the mesh, so the regional mesh chose '
-                      'to turn it off. Active and Hybrid modes are '
-                      'unavailable across the whole MeshMapper region you '
-                      'are in. It is not a capacity limit.',
+                      'to turn it off for your radio\'s settings (frequency, '
+                      'bandwidth and spreading factor). Active and Hybrid '
+                      'modes are unavailable on these settings. It is not a '
+                      'capacity limit.',
                       style: bodyStyle,
                     ),
                     const SizedBox(height: 12),
@@ -1915,6 +1981,24 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
+    // Location not granted: no zone check can run, and Offline Mode needs
+    // location too.
+    if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.location_off,
+        iconColor: Colors.orange.withValues(alpha: 0.7),
+        title: 'Location Permission Required',
+        message: 'MeshMapper needs your location to check your zone and map '
+            'coverage.',
+        action: FilledButton.icon(
+          onPressed: () => _requestLocationPermission(appState),
+          icon: const Icon(Icons.location_on),
+          label: const Text('Enable Location'),
+        ),
+      );
+    }
+
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
       // Build message with nearest zone info if available
@@ -1982,7 +2066,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    countdown > 0
+                    countdown > 0 && !appState.isCheckingZone
                         ? 'Retrying in ${countdown}s...'
                         : 'Retrying...',
                     textAlign: TextAlign.center,
@@ -1991,7 +2075,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                       color: Colors.grey.shade500,
                     ),
                   ),
-                  const SizedBox(height: 32),
+                  // The automatic retry backs off to once a minute, so a
+                  // connection that comes back can be tried straight away.
+                  TextButton.icon(
+                    onPressed: appState.isCheckingZone
+                        ? null
+                        : () => appState.checkZoneStatus(),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Retry Now'),
+                  ),
+                  const SizedBox(height: 24),
                   FilledButton.icon(
                     onPressed: () => appState.setOfflineMode(true),
                     icon: const Icon(Icons.cloud_off),
@@ -2039,6 +2132,26 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
             appState.zoneCheckErrorReason == 'gps_stale') {
           final isStale = appState.zoneCheckErrorReason == 'gps_stale';
+          // Approximate-only location never gets under the accuracy limit,
+          // so moving somewhere else would not help: point at the setting.
+          if (!isStale && appState.locationAccuracyReduced) {
+            return _buildMessageContent(
+              context: context,
+              icon: Icons.location_disabled,
+              iconColor: Colors.orange.withValues(alpha: 0.7),
+              title: preciseLocationOffTitle,
+              message: preciseLocationOffBody,
+              action: FilledButton.icon(
+                onPressed: Geolocator.openAppSettings,
+                icon: const Icon(Icons.settings),
+                label: const Text('Open Settings'),
+                style: FilledButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+            );
+          }
           return _buildMessageContent(
             context: context,
             icon: isStale ? Icons.schedule : Icons.gps_off,
@@ -2222,22 +2335,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                   icon: const Icon(Icons.settings),
                   label: const Text('Open Location Settings'),
                 ),
-        );
-      }
-
-      if (appState.gpsStatus == GpsStatus.permissionDenied) {
-        return _buildMessageContent(
-          context: context,
-          icon: Icons.location_off,
-          iconColor: Colors.orange.withValues(alpha: 0.7),
-          title: 'GPS Permission Required',
-          message:
-              'Location access is needed to verify you\'re in an allowed zone.',
-          action: ElevatedButton.icon(
-            onPressed: () => _requestLocationPermission(appState),
-            icon: const Icon(Icons.location_on),
-            label: const Text('Enable Location'),
-          ),
         );
       }
 

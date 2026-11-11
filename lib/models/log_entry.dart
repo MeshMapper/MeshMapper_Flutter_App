@@ -1,3 +1,5 @@
+import 'scope_log_entry.dart';
+
 /// TX Log Entry
 /// Reference: txLogState in wardrive.js
 class TxLogEntry {
@@ -221,7 +223,7 @@ enum SnrSeverity {
 }
 
 /// Ping type for unified log view
-enum PingLogType { tx, rx, disc, trace }
+enum PingLogType { tx, rx, disc, trace, scopes }
 
 /// Wrapper for unified chronological ping log view
 class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
@@ -236,6 +238,7 @@ class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
   RxLogEntry get asRx => entry as RxLogEntry;
   DiscLogEntry get asDisc => entry as DiscLogEntry;
   TraceLogEntry get asTrace => entry as TraceLogEntry;
+  ScopeLogEntry get asScopes => entry as ScopeLogEntry;
 
   @override
   int compareTo(UnifiedPingLogEntry other) =>
@@ -246,6 +249,7 @@ class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
         PingLogType.rx => asRx.timeString,
         PingLogType.disc => asDisc.timeString,
         PingLogType.trace => asTrace.timeString,
+        PingLogType.scopes => asScopes.timeString,
       };
 
   String get locationString => switch (type) {
@@ -253,6 +257,7 @@ class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
         PingLogType.rx => asRx.locationString,
         PingLogType.disc => asDisc.locationString,
         PingLogType.trace => asTrace.locationString,
+        PingLogType.scopes => asScopes.locationString,
       };
 
   String toCsv() => switch (type) {
@@ -260,7 +265,34 @@ class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
         PingLogType.rx => 'RX,${asRx.toCsv()}',
         PingLogType.disc => 'DISC,${asDisc.toCsv()}',
         PingLogType.trace => 'TRC,${asTrace.toCsv()}',
+        PingLogType.scopes => 'SCOPES,${asScopes.toCsv()}',
       };
+}
+
+/// Merges every per-type log list into one chronological (newest first) view.
+/// The single place `AppStateProvider.unifiedPingLogEntries` builds from, so
+/// the merge order is testable without the provider.
+List<UnifiedPingLogEntry> mergeUnifiedPingLog({
+  required List<TxLogEntry> tx,
+  required List<RxLogEntry> rx,
+  required List<DiscLogEntry> disc,
+  required List<TraceLogEntry> trace,
+  required List<ScopeLogEntry> scopes,
+}) {
+  final merged = <UnifiedPingLogEntry>[
+    ...tx.map((e) => UnifiedPingLogEntry(
+        type: PingLogType.tx, timestamp: e.timestamp, entry: e)),
+    ...rx.map((e) => UnifiedPingLogEntry(
+        type: PingLogType.rx, timestamp: e.timestamp, entry: e)),
+    ...disc.map((e) => UnifiedPingLogEntry(
+        type: PingLogType.disc, timestamp: e.timestamp, entry: e)),
+    ...trace.map((e) => UnifiedPingLogEntry(
+        type: PingLogType.trace, timestamp: e.timestamp, entry: e)),
+    ...scopes.map((e) => UnifiedPingLogEntry(
+        type: PingLogType.scopes, timestamp: e.timestamp, entry: e)),
+  ];
+  merged.sort();
+  return merged;
 }
 
 /// User Error Entry for error log

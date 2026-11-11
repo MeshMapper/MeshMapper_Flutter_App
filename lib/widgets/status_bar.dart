@@ -3,8 +3,35 @@ import 'package:provider/provider.dart';
 
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/compact_count.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
+
+/// What the status bar's shared Trace/Scope slot shows.
+enum StatusBarSlot { trace, scope, hidden }
+
+/// The one slot Trace and Scope share. Trace mode and scope discovery never
+/// run together (scope discovery only follows a Passive or Hybrid discovery),
+/// so one chip is enough: Trace while Trace is the session's mode, else Scope
+/// while scope discovery can run or once this session has counted a scope,
+/// else nothing. Each count lives on in [PingStats] across a swap.
+StatusBarSlot statusBarSharedSlot({
+  required bool targetedMode,
+  required bool scopeDiscoveryOn,
+  required int scopeCount,
+}) {
+  if (targetedMode) return StatusBarSlot.trace;
+  if (scopeDiscoveryOn || scopeCount > 0) return StatusBarSlot.scope;
+  return StatusBarSlot.hidden;
+}
+
+// Chip spacing, kept tight so five chips and the region chip fit a 375 pt
+// phone with 4-digit counts. The vertical padding sets the tap height and is
+// left alone.
+const double _chipPadH = 5;
+const double _chipPadV = 4;
+const double _chipIconGap = 2;
+const double _chipGap = 5;
 
 /// Status bar showing GPS, connection, and queue status
 class StatusBar extends StatefulWidget {
@@ -20,7 +47,7 @@ class _StatusBarState extends State<StatusBar> {
     final appState = context.watch<AppStateProvider>();
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         boxShadow: [
@@ -36,10 +63,21 @@ class _StatusBarState extends State<StatusBar> {
           // GPS region indicator (chip style)
           _buildGpsRegionChip(context, appState),
 
-          const Spacer(),
+          const SizedBox(width: _chipGap),
 
-          // Stats summary
-          _buildStatsIndicator(context, appState),
+          // Stats summary. Takes the rest of the row and, when the chips
+          // still do not fit (large Accessibility text, a very narrow
+          // screen), scales the whole group down rather than clip a chip.
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: _buildStatsIndicator(context, appState),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -48,7 +86,8 @@ class _StatusBarState extends State<StatusBar> {
   /// Show info popup as bottom sheet
   void _showInfoPopup(BuildContext context, String id) {
     final appState = context.read<AppStateProvider>();
-    final (title, description, icon, color) = _getPopupContent(id, appState);
+    final (title, description, icon, color) =
+        _getPopupContent(context, id, appState);
 
     showModalBottomSheet(
       context: context,
@@ -121,7 +160,7 @@ class _StatusBarState extends State<StatusBar> {
 
   /// Get content for the popup based on ID
   (String, String, IconData, Color) _getPopupContent(
-      String id, AppStateProvider appState) {
+      BuildContext context, String id, AppStateProvider appState) {
     switch (id) {
       case 'gps':
         if (appState.offlineMode) {
@@ -135,7 +174,7 @@ class _StatusBarState extends State<StatusBar> {
         if (appState.inZone == true && appState.zoneCode != null) {
           if (!appState.isConnected) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'You\'re in an authorized zone. Connect to a device to start wardriving.',
               Icons.flight,
               Colors.grey
@@ -146,7 +185,7 @@ class _StatusBarState extends State<StatusBar> {
           // deliberate regional setting (blue).
           if (appState.floodDisabled) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'Your regional admin has turned off flood traffic here, so Active and Hybrid modes are unavailable. The zone is not full. Passive and Trace modes still work.',
               Icons.flight,
               Colors.blue
@@ -154,14 +193,14 @@ class _StatusBarState extends State<StatusBar> {
           }
           if (!appState.txAllowed) {
             return (
-              '${appState.zoneName ?? appState.zoneCode} Zone',
+              '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
               'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive mode works.',
               Icons.flight,
               Colors.red
             );
           }
           return (
-            '${appState.zoneName ?? appState.zoneCode} Zone',
+            '${appState.displayZoneName ?? appState.shortZoneCode} Zone',
             'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
             Icons.flight,
             Colors.green
@@ -220,6 +259,15 @@ class _StatusBarState extends State<StatusBar> {
           PingColors.traceSuccess
         );
 
+      case 'scope':
+        return (
+          'Scopes',
+          'Repeaters that answered a scope request this session, one per answer, as listed under SCP in the Log tab. '
+              'Scope discovery asks the strongest repeaters a Passive or Hybrid discovery found which scopes they carry.',
+          Icons.travel_explore,
+          PingColors.scopesFor(Theme.of(context).brightness)
+        );
+
       case 'upload':
         return (
           'Uploaded',
@@ -264,7 +312,7 @@ class _StatusBarState extends State<StatusBar> {
                       : Colors.red)
               : Colors
                   .grey; // Grey when not connected, red when zone is at TX capacity
-          text = appState.zoneCode!;
+          text = appState.shortZoneCode!;
         } else if (appState.inZone == false) {
           // GPS locked but outside any zone
           icon = Icons.flight;
@@ -309,53 +357,72 @@ class _StatusBarState extends State<StatusBar> {
   }
 
   Widget _buildStatsIndicator(BuildContext context, AppStateProvider appState) {
+    final stats = appState.pingStats;
+    final slot = statusBarSharedSlot(
+      targetedMode: appState.autoMode == AutoMode.targeted,
+      scopeDiscoveryOn: appState.scopeDiscoveryActive,
+      scopeCount: stats.scopeCount,
+    );
     return Row(
+      key: const ValueKey('status-bar-stats'),
       mainAxisSize: MainAxisSize.min,
       children: [
         // TX count chip (animated)
         _AnimatedStatChip(
           icon: Icons.arrow_upward,
-          value: appState.pingStats.txCount,
+          value: stats.txCount,
           color: PingColors.txSuccess,
           onTap: () => _showInfoPopup(context, 'tx'),
         ),
 
-        const SizedBox(width: 8),
+        const SizedBox(width: _chipGap),
 
         // RX count chip (animated)
         _AnimatedStatChip(
           icon: Icons.arrow_downward,
-          value: appState.pingStats.rxCount,
+          value: stats.rxCount,
           color: PingColors.rx,
           onTap: () => _showInfoPopup(context, 'rx'),
         ),
 
-        const SizedBox(width: 8),
+        const SizedBox(width: _chipGap),
 
         // DISC count chip (animated)
         _AnimatedStatChip(
           icon: Icons.radar,
-          value: appState.pingStats.discCount,
+          value: stats.discCount,
           color: PingColors.discSuccess,
           onTap: () => _showInfoPopup(context, 'disc'),
         ),
 
-        const SizedBox(width: 8),
+        // Shared Trace / Scope slot. Keyed per kind so a swap starts a fresh
+        // chip instead of animating one count into the other.
+        if (slot == StatusBarSlot.trace) ...[
+          const SizedBox(width: _chipGap),
+          _AnimatedStatChip(
+            key: const ValueKey('status-bar-trace'),
+            icon: Icons.route,
+            value: stats.traceCount,
+            color: PingColors.traceSuccess,
+            onTap: () => _showInfoPopup(context, 'trace'),
+          ),
+        ] else if (slot == StatusBarSlot.scope) ...[
+          const SizedBox(width: _chipGap),
+          _AnimatedStatChip(
+            key: const ValueKey('status-bar-scope'),
+            icon: Icons.travel_explore,
+            value: stats.scopeCount,
+            color: PingColors.scopesFor(Theme.of(context).brightness),
+            onTap: () => _showInfoPopup(context, 'scope'),
+          ),
+        ],
 
-        // Trace count chip (animated)
-        _AnimatedStatChip(
-          icon: Icons.route,
-          value: appState.pingStats.traceCount,
-          color: PingColors.traceSuccess,
-          onTap: () => _showInfoPopup(context, 'trace'),
-        ),
-
-        const SizedBox(width: 8),
+        const SizedBox(width: _chipGap),
 
         // Uploaded count chip (animated)
         _AnimatedStatChip(
           icon: Icons.cloud_done,
-          value: appState.pingStats.successfulUploads,
+          value: stats.successfulUploads,
           color: Colors.teal[400]!,
           onTap: () => _showInfoPopup(context, 'upload'),
         ),
@@ -372,7 +439,8 @@ class _StatusBarState extends State<StatusBar> {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(
+            horizontal: _chipPadH, vertical: _chipPadV),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(8),
@@ -382,7 +450,7 @@ class _StatusBarState extends State<StatusBar> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, size: 14, color: color),
-            const SizedBox(width: 4),
+            const SizedBox(width: _chipIconGap),
             Text(
               value,
               style: TextStyle(
@@ -398,7 +466,9 @@ class _StatusBarState extends State<StatusBar> {
   }
 }
 
-/// Animated stat chip that bounces and highlights when value increments
+/// Animated stat chip that bounces and highlights when value increments.
+/// [value] stays the raw count so the increment check is exact; only the
+/// text is shortened (`formatCompactCount`).
 class _AnimatedStatChip extends StatefulWidget {
   final IconData icon;
   final int value;
@@ -406,6 +476,7 @@ class _AnimatedStatChip extends StatefulWidget {
   final VoidCallback? onTap;
 
   const _AnimatedStatChip({
+    super.key,
     required this.icon,
     required this.value,
     required this.color,
@@ -466,7 +537,8 @@ class _AnimatedStatChipState extends State<_AnimatedStatChip>
           return Transform.scale(
             scale: _scaleAnimation.value,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: _chipPadH, vertical: _chipPadV),
               decoration: BoxDecoration(
                 color:
                     widget.color.withValues(alpha: _highlightAnimation.value),
@@ -477,9 +549,9 @@ class _AnimatedStatChipState extends State<_AnimatedStatChip>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(widget.icon, size: 14, color: widget.color),
-                  const SizedBox(width: 4),
+                  const SizedBox(width: _chipIconGap),
                   Text(
-                    '${widget.value}',
+                    formatCompactCount(widget.value),
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,

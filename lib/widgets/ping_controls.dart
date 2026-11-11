@@ -9,6 +9,7 @@ import '../services/repeater_admin/manage_target.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
 import '../services/status/ping_control_labels.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/ping_colors.dart';
 import 'repeater_admin_sheet.dart';
 import 'repeater_picker_sheet.dart';
 
@@ -66,6 +67,64 @@ Color _hintColor(StatusHint hint) => switch (hint) {
       StatusHint.outsideServiceArea => Colors.red,
     };
 
+/// Whether [mode]'s button should show the "Scopes" badge (owner ruling 15):
+/// a small pill at the corner of the running mode's button while the app is
+/// asking a discovered repeater for its scopes
+/// ([AppStateProvider.isScopeRequestActive]). Only Passive and Hybrid ever
+/// send a scope request. Active broadcasts on the shared channel and Trace
+/// targets one repeater's zero-hop path, so both always answer false here,
+/// regardless of [isScopeRequestActive].
+bool showsScopesBadge(
+  AutoMode mode, {
+  required bool isModeRunning,
+  required bool isScopeRequestActive,
+}) {
+  switch (mode) {
+    case AutoMode.passive:
+    case AutoMode.hybrid:
+      return isModeRunning && isScopeRequestActive;
+    case AutoMode.active:
+    case AutoMode.targeted:
+      return false;
+  }
+}
+
+/// The phrase a screen reader adds to a mode button's label while its
+/// [ScopesBadge] shows, so the pill is not a purely visual affordance.
+const String scopesBadgeSemanticsSuffix = ', asking repeaters for scopes';
+
+/// [label] with [scopesBadgeSemanticsSuffix] appended while [active], else
+/// [label] unchanged.
+String scopesBadgeSemanticsLabel(String label, bool active) =>
+    active ? '$label$scopesBadgeSemanticsSuffix' : label;
+
+/// The small "Scopes" pill itself. Purely presentational: every caller
+/// decides whether to show it and where to position it (each button's own
+/// corner). Colour is `PingColors.scopes`, the same accent the log tab's SCP
+/// entries use.
+class ScopesBadge extends StatelessWidget {
+  const ScopesBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: PingColors.scopes,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Text(
+        'Scopes',
+        style: TextStyle(
+          fontSize: 8,
+          fontWeight: FontWeight.w600,
+          color: Colors.black87,
+        ),
+      ),
+    );
+  }
+}
+
 /// Fields the ping-control widgets depend on for their enabled/label state.
 /// Used with `context.select` so the controls rebuild ONLY when one of these
 /// changes — not on every GPS / noise-floor / battery `notifyListeners()`
@@ -94,6 +153,7 @@ typedef _ControlsDeps = ({
   bool floodTrafficEnabled,
   bool hasTargetRepeaterId,
   bool isRepeaterAdminActive,
+  bool isScopeRequestActive,
 });
 
 _ControlsDeps _controlsDepsOf(AppStateProvider s) {
@@ -121,6 +181,7 @@ _ControlsDeps _controlsDepsOf(AppStateProvider s) {
     floodTrafficEnabled: s.floodTrafficEnabled,
     hasTargetRepeaterId: targetId != null && targetId.isNotEmpty,
     isRepeaterAdminActive: s.isRepeaterAdminActive,
+    isScopeRequestActive: s.isScopeRequestActive,
   );
 }
 
@@ -143,7 +204,14 @@ typedef _TargetedDeps = ({
   bool isAutoReconnecting,
   int repeaterCount,
   int? companionFirmwareVersionCode,
+  // Manage waits on it; the provider notifies when it flips.
+  bool isScopeRadioBusy,
 });
+
+/// The Trace row's Selector record, public so a test can drive the real
+/// selector against a fake provider.
+@visibleForTesting
+Object targetedDepsOf(AppStateProvider s) => _targetedDepsOf(s);
 
 _TargetedDeps _targetedDepsOf(AppStateProvider s) {
   final prefs = s.preferences;
@@ -162,6 +230,7 @@ _TargetedDeps _targetedDepsOf(AppStateProvider s) {
     isAutoReconnecting: s.isAutoReconnecting,
     repeaterCount: s.repeaterCount,
     companionFirmwareVersionCode: s.companionFirmwareVersionCode,
+    isScopeRadioBusy: s.isScopeRadioBusy,
   );
 }
 
@@ -251,7 +320,7 @@ class PingControls extends StatelessWidget {
                   // Manual pings use 15-second cooldown, no distance requirement
                   // When Active/Passive Mode is running, just shows "Send Ping" (disabled)
                   Expanded(
-                    child: _ActionButton(
+                    child: PingActionButton(
                       icon: Icons.cell_tower,
                       label: portraitSendPingLabel(status, rf),
                       color: const Color(0xFF0EA5E9), // sky-500
@@ -296,7 +365,7 @@ class PingControls extends StatelessWidget {
                   // When OFF after being ON: shows "Cooldown Xs" like other buttons
                   // During manual ping: shows "Cooldown Xs" (disabled)
                   Expanded(
-                    child: _ActionButton(
+                    child: PingActionButton(
                       icon:
                           hybridEnabled ? Icons.compare_arrows : Icons.sensors,
                       label: portraitActiveModeLabel(status, rf),
@@ -332,6 +401,9 @@ class PingControls extends StatelessWidget {
                           : txNotAllowed
                               ? Colors.red
                               : Colors.orange,
+                      showScopesBadge: showsScopesBadge(AutoMode.hybrid,
+                          isModeRunning: isHybridModeRunning,
+                          isScopeRequestActive: appState.isScopeRequestActive),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -343,7 +415,7 @@ class PingControls extends StatelessWidget {
                 // Disabled during manual ping countdown phases, shows "Cooldown Xs"
                 // When Active/Hybrid Mode is running, just shows "Passive Mode" (disabled, no countdown)
                 Expanded(
-                  child: _ActionButton(
+                  child: PingActionButton(
                     icon: Icons.hearing,
                     label: portraitPassiveModeLabel(status, rf),
                     color: passiveStopping
@@ -369,6 +441,9 @@ class PingControls extends StatelessWidget {
                                 autoPingWaiting)), // Active during listening/waiting phases
                     subtitle: passiveStopping ? 'Stopping' : null,
                     subtitleColor: Colors.orange,
+                    showScopesBadge: showsScopesBadge(AutoMode.passive,
+                        isModeRunning: isPassiveModeRunning,
+                        isScopeRequestActive: appState.isScopeRequestActive),
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),
                 ),
@@ -440,8 +515,10 @@ class PingControls extends StatelessWidget {
   }
 }
 
-/// Icon-based action button with animated active state
-class _ActionButton extends StatefulWidget {
+/// Icon-based action button with animated active state (portrait layout).
+/// Public only so widget tests can render the real button.
+@visibleForTesting
+class PingActionButton extends StatefulWidget {
   final IconData icon;
   final String label;
   final Color color;
@@ -451,8 +528,10 @@ class _ActionButton extends StatefulWidget {
   final VoidCallback onPressed;
   final String? subtitle; // Optional subtitle text (e.g., "Move 5m")
   final Color? subtitleColor; // Optional subtitle color
+  final bool showScopesBadge; // Show "Scopes" badge while requesting
 
-  const _ActionButton({
+  const PingActionButton({
+    super.key,
     required this.icon,
     required this.label,
     required this.color,
@@ -462,13 +541,14 @@ class _ActionButton extends StatefulWidget {
     this.showCooldown = false,
     this.subtitle,
     this.subtitleColor,
+    this.showScopesBadge = false,
   });
 
   @override
-  State<_ActionButton> createState() => _ActionButtonState();
+  State<PingActionButton> createState() => _PingActionButtonState();
 }
 
-class _ActionButtonState extends State<_ActionButton> {
+class _PingActionButtonState extends State<PingActionButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -484,7 +564,7 @@ class _ActionButtonState extends State<_ActionButton> {
     // The button still reads as "active" via color, the dot, and the text.
     final bgOpacity = widget.isActive ? 0.25 : 0.12;
 
-    return Material(
+    final button = Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: widget.enabled ? widget.onPressed : null,
@@ -538,22 +618,33 @@ class _ActionButtonState extends State<_ActionButton> {
                           ),
                         ),
                       ),
+                    // Scopes badge while asking for scopes. Read through the
+                    // wrapper's label instead, so not read on its own.
+                    if (widget.showScopesBadge)
+                      const Positioned(
+                        top: -4,
+                        right: -8,
+                        child: ExcludeSemantics(child: ScopesBadge()),
+                      ),
                   ],
                 ),
               ),
               const SizedBox(height: 4),
-              // Label - always same height
-              Text(
-                widget.label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight:
-                      widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                  color: showColor
-                      ? (widget.isActive
-                          ? effectiveColor
-                          : colorScheme.onSurface)
-                      : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+              // Label - always same height. The wrapper's Semantics already
+              // reads it, so it is excluded here to stop it reading twice.
+              ExcludeSemantics(
+                child: Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight:
+                        widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                    color: showColor
+                        ? (widget.isActive
+                            ? effectiveColor
+                            : colorScheme.onSurface)
+                        : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                  ),
                 ),
               ),
               // Subtitle OR the "Active" status text - always reserve space.
@@ -589,6 +680,13 @@ class _ActionButtonState extends State<_ActionButton> {
           ),
         ),
       ),
+    );
+
+    return Semantics(
+      button: true,
+      enabled: widget.enabled,
+      label: scopesBadgeSemanticsLabel(widget.label, widget.showScopesBadge),
+      child: button,
     );
   }
 }
@@ -718,6 +816,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
           isAutoReconnecting: appState.isAutoReconnecting,
           companionFirmwareSupported: companionSupportsRepeaterAdmin(
               appState.companionFirmwareVersionCode),
+          scopeRadioBusy: appState.isScopeRadioBusy,
         );
         final manageHint = manageBlock ??
             (manageTarget == null ? kChooseFromListHint : 'Manage repeater');
@@ -1175,7 +1274,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             (!hasTargetRepeaterId || !traceModeShowColor);
 
         // Build the buttons
-        final sendPingButton = _CompactActionButton(
+        final sendPingButton = CompactPingActionButton(
           icon: Icons.cell_tower,
           label: compactSendPingLabel(status, rf, showFullText: sendPingExpanded),
           color: const Color(0xFF0EA5E9), // sky-500
@@ -1194,7 +1293,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           onPressed: () => _sendPing(context, appState),
         );
 
-        final activeModeButton = _CompactActionButton(
+        final activeModeButton = CompactPingActionButton(
           icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
           label: compactActiveModeLabel(status, rf,
               showFullText: activeModeExpanded,
@@ -1217,12 +1316,15 @@ class _CompactPingControlsState extends State<CompactPingControls> {
                           _lastActiveButton == _LastActiveButton.activeMode
                       ? appState.cooldownTimer.progress
                       : null,
+          showScopesBadge: showsScopesBadge(AutoMode.hybrid,
+              isModeRunning: isHybridModeRunning,
+              isScopeRequestActive: appState.isScopeRequestActive),
           onPressed: () => hybridEnabled
               ? _toggleHybridAuto(context, appState)
               : _toggleTxRxAuto(context, appState),
         );
 
-        final passiveModeButton = _CompactActionButton(
+        final passiveModeButton = CompactPingActionButton(
           icon: Icons.hearing,
           label: compactPassiveModeLabel(status, rf,
               showFullText: passiveModeExpanded,
@@ -1251,11 +1353,14 @@ class _CompactPingControlsState extends State<CompactPingControls> {
                               _lastActiveButton == _LastActiveButton.passiveMode
                           ? appState.cooldownTimer.progress
                           : null,
+          showScopesBadge: showsScopesBadge(AutoMode.passive,
+              isModeRunning: isPassiveModeRunning,
+              isScopeRequestActive: appState.isScopeRequestActive),
           onPressed: () => _toggleRxAuto(context, appState),
         );
 
         // Build trace mode button (only used when hasTargetRepeaterId)
-        final traceModeButton = _CompactActionButton(
+        final traceModeButton = CompactPingActionButton(
           icon: Icons.route,
           label: compactTraceModeLabel(status, rf,
               showFullText: traceModeExpanded,
@@ -1444,7 +1549,7 @@ class LandscapePingControls extends StatelessWidget {
                 if (!txNotAllowed && floodTrafficVisible) ...[
                   // TX Ping button
                   Expanded(
-                    child: _LandscapeIconButton(
+                    child: LandscapePingIconButton(
                       icon: Icons.cell_tower,
                       tooltip: txNotAllowed
                           ? 'Passive only (zone full)'
@@ -1476,7 +1581,7 @@ class LandscapePingControls extends StatelessWidget {
 
                   // Active/Hybrid Mode button
                   Expanded(
-                    child: _LandscapeIconButton(
+                    child: LandscapePingIconButton(
                       icon:
                           hybridEnabled ? Icons.compare_arrows : Icons.sensors,
                       tooltip: txNotAllowed
@@ -1502,6 +1607,9 @@ class LandscapePingControls extends StatelessWidget {
                       isActive: txStopping || isTxModeRunning,
                       stopping: txStopping,
                       countdown: landscapeActiveModeCountdown(status, rf),
+                      showScopesBadge: showsScopesBadge(AutoMode.hybrid,
+                          isModeRunning: isHybridModeRunning,
+                          isScopeRequestActive: appState.isScopeRequestActive),
                       onPressed: () => hybridEnabled
                           ? _toggleHybridAuto(context, appState)
                           : _toggleTxRxAuto(context, appState),
@@ -1512,7 +1620,7 @@ class LandscapePingControls extends StatelessWidget {
 
                 // Passive Mode button
                 Expanded(
-                  child: _LandscapeIconButton(
+                  child: LandscapePingIconButton(
                     icon: Icons.hearing,
                     tooltip: 'Passive Mode',
                     color: passiveStopping
@@ -1537,6 +1645,9 @@ class LandscapePingControls extends StatelessWidget {
                             (discoveryWindowActive || autoPingWaiting)),
                     stopping: passiveStopping,
                     countdown: landscapePassiveModeCountdown(status, rf),
+                    showScopesBadge: showsScopesBadge(AutoMode.passive,
+                        isModeRunning: isPassiveModeRunning,
+                        isScopeRequestActive: appState.isScopeRequestActive),
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),
                 ),
@@ -1670,16 +1781,35 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                           left: Radius.circular(7)),
                     ),
                     alignment: Alignment.center,
-                    child: Text(
-                      'Internal',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: (!externalAntenna && externalAntennaSet)
-                            ? FontWeight.w600
-                            : FontWeight.w500,
-                        color: (!externalAntenna && externalAntennaSet)
-                            ? Colors.orange
-                            : colorScheme.onSurfaceVariant,
+                    // The quick guide's icon for this choice; scales down
+                    // rather than overflow the narrow landscape panel.
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.directions_car,
+                            size: 13,
+                            color: (!externalAntenna && externalAntennaSet)
+                                ? Colors.orange
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'Internal',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight:
+                                  (!externalAntenna && externalAntennaSet)
+                                      ? FontWeight.w600
+                                      : FontWeight.w500,
+                              color: (!externalAntenna && externalAntennaSet)
+                                  ? Colors.orange
+                                  : colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -1704,16 +1834,35 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                           right: Radius.circular(7)),
                     ),
                     alignment: Alignment.center,
-                    child: Text(
-                      'External',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: (externalAntenna && externalAntennaSet)
-                            ? FontWeight.w600
-                            : FontWeight.w500,
-                        color: (externalAntenna && externalAntennaSet)
-                            ? Colors.orange
-                            : colorScheme.onSurfaceVariant,
+                    // The quick guide's icon for this choice; scales down
+                    // rather than overflow the narrow landscape panel.
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.cell_tower,
+                            size: 13,
+                            color: (externalAntenna && externalAntennaSet)
+                                ? Colors.orange
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'External',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight:
+                                  (externalAntenna && externalAntennaSet)
+                                      ? FontWeight.w600
+                                      : FontWeight.w500,
+                              color: (externalAntenna && externalAntennaSet)
+                                  ? Colors.orange
+                                  : colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -1727,8 +1876,10 @@ class _LandscapeAntennaSelector extends StatelessWidget {
   }
 }
 
-/// Icon-only action button for landscape panel
-class _LandscapeIconButton extends StatefulWidget {
+/// Icon-only action button for landscape panel.
+/// Public only so widget tests can render the real button.
+@visibleForTesting
+class LandscapePingIconButton extends StatefulWidget {
   final IconData icon;
   final String tooltip;
   final Color color;
@@ -1740,8 +1891,10 @@ class _LandscapeIconButton extends StatefulWidget {
   // so the caller says so directly.
   final bool stopping;
   final VoidCallback onPressed;
+  final bool showScopesBadge; // Show "Scopes" badge while requesting
 
-  const _LandscapeIconButton({
+  const LandscapePingIconButton({
+    super.key,
     required this.icon,
     required this.tooltip,
     required this.color,
@@ -1750,28 +1903,29 @@ class _LandscapeIconButton extends StatefulWidget {
     this.isActive = false,
     this.countdown,
     this.stopping = false,
+    this.showScopesBadge = false,
   });
 
   @override
-  State<_LandscapeIconButton> createState() => _LandscapeIconButtonState();
+  State<LandscapePingIconButton> createState() => _LandscapePingIconButtonState();
 }
 
-class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
+class _LandscapePingIconButtonState extends State<LandscapePingIconButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     // Keep the button's color (not grey) whenever the countdown badge is shown,
-    // mirroring portrait's `_ActionButton` showCooldown handling. Otherwise the
+    // mirroring portrait's `PingActionButton` showCooldown handling. Otherwise the
     // badge renders white text on grey (onSurfaceVariant) during cooldown.
     final showColor =
         widget.enabled || widget.isActive || widget.countdown != null;
     final effectiveColor =
         showColor ? widget.color : colorScheme.onSurfaceVariant;
     // Static active-state opacity (continuous pulse animation removed — see
-    // _ActionButton; it kept the GPU rendering all session).
+    // PingActionButton; it kept the GPU rendering all session).
     final bgOpacity = widget.isActive ? 0.25 : 0.10;
 
-    return Tooltip(
+    final button = Tooltip(
       message: widget.tooltip,
       child: Material(
         color: Colors.transparent,
@@ -1791,6 +1945,7 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
             ),
             child: Stack(
               alignment: Alignment.center,
+              clipBehavior: Clip.none,
               children: [
                 // Main icon
                 Icon(
@@ -1844,19 +1999,35 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
                       ),
                     ),
                   ),
+                // Scopes badge while asking for scopes. Top-left, since the
+                // active dot and countdown already own the right-hand
+                // corners on this narrow icon-only button.
+                if (widget.showScopesBadge)
+                  const Positioned(
+                    top: -4,
+                    left: -4,
+                    child: ScopesBadge(),
+                  ),
               ],
             ),
           ),
         ),
       ),
     );
+
+    return Semantics(
+      label: scopesBadgeSemanticsLabel(widget.tooltip, widget.showScopesBadge),
+      child: button,
+    );
   }
 }
 
 /// Compact toggle button for landscape panel
 /// Compact action button for minimized panel - horizontal pill layout
-/// Supports expanding to show label when active
-class _CompactActionButton extends StatefulWidget {
+/// Supports expanding to show label when active.
+/// Public only so widget tests can render the real button.
+@visibleForTesting
+class CompactPingActionButton extends StatefulWidget {
   final IconData icon;
   final String? label; // Label text (shown when expanded)
   final Color color;
@@ -1866,8 +2037,10 @@ class _CompactActionButton extends StatefulWidget {
   final VoidCallback onPressed;
   final double?
       progress; // 0.0 to 1.0 for progress bar fill, null = no progress bar
+  final bool showScopesBadge; // Show "Scopes" badge while requesting
 
-  const _CompactActionButton({
+  const CompactPingActionButton({
+    super.key,
     required this.icon,
     this.label,
     required this.color,
@@ -1876,13 +2049,14 @@ class _CompactActionButton extends StatefulWidget {
     this.isActive = false,
     this.isExpanded = false,
     this.progress,
+    this.showScopesBadge = false,
   });
 
   @override
-  State<_CompactActionButton> createState() => _CompactActionButtonState();
+  State<CompactPingActionButton> createState() => _CompactPingActionButtonState();
 }
 
-class _CompactActionButtonState extends State<_CompactActionButton> {
+class _CompactPingActionButtonState extends State<CompactPingActionButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1892,10 +2066,10 @@ class _CompactActionButtonState extends State<_CompactActionButton> {
     // Show label if colored OR if expanded (shows countdown on grey button during cooldown)
     final hasLabel = widget.label != null && (showColor || widget.isExpanded);
     // Static active-state opacity (continuous pulse animation removed — see
-    // _ActionButton; it kept the GPU rendering all session).
+    // PingActionButton; it kept the GPU rendering all session).
     final bgOpacity = widget.isActive ? 0.25 : 0.12;
 
-    return Material(
+    final button = Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: widget.enabled ? widget.onPressed : null,
@@ -1914,6 +2088,7 @@ class _CompactActionButtonState extends State<_CompactActionButton> {
             ),
           ),
           child: Stack(
+            clipBehavior: Clip.none,
             children: [
               // Progress fill (behind content)
               if (widget.progress != null && widget.progress! > 0)
@@ -1959,17 +2134,20 @@ class _CompactActionButtonState extends State<_CompactActionButton> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     const SizedBox(width: 5),
-                                    Text(
-                                      widget.label!,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: widget.isActive
-                                            ? FontWeight.w600
-                                            : FontWeight.w500,
-                                        color: showColor
-                                            ? effectiveColor
-                                            : colorScheme.onSurfaceVariant
-                                                .withValues(alpha: 0.5),
+                                    // Read by the wrapper's Semantics.
+                                    ExcludeSemantics(
+                                      child: Text(
+                                        widget.label!,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: widget.isActive
+                                              ? FontWeight.w600
+                                              : FontWeight.w500,
+                                          color: showColor
+                                              ? effectiveColor
+                                              : colorScheme.onSurfaceVariant
+                                                  .withValues(alpha: 0.5),
+                                        ),
                                       ),
                                     ),
                                   ],
@@ -1981,10 +2159,26 @@ class _CompactActionButtonState extends State<_CompactActionButton> {
                   ),
                 ),
               ),
+              // Scopes badge while asking for scopes. Read through the
+              // wrapper's label instead, so not read on its own.
+              if (widget.showScopesBadge)
+                const Positioned(
+                  top: -6,
+                  right: -6,
+                  child: ExcludeSemantics(child: ScopesBadge()),
+                ),
             ],
           ),
         ),
       ),
+    );
+
+    return Semantics(
+      button: true,
+      enabled: widget.enabled,
+      label: scopesBadgeSemanticsLabel(
+          widget.label ?? '', widget.showScopesBadge),
+      child: button,
     );
   }
 }

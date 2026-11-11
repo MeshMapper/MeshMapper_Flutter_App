@@ -1,3 +1,4 @@
+import '../utils/gps_marker_colors.dart';
 import '../utils/public_key.dart';
 
 /// User preferences for wardriving configuration
@@ -65,8 +66,22 @@ class UserPreferences {
   /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
   final int smartPingDays;
 
+  /// Smart Pinging holds a flood (TX) ping back only for a green square (a
+  /// heard echo), and never holds a discovery request. Off, a green or cyan
+  /// square holds both. The region's value wins while it enforces Smart
+  /// Pinging.
+  final bool smartPingFloodOnly;
+
   /// Limit the map overlay to the effective Smart Pinging coverage window.
   final bool smartPingRecentCoverageOnly;
+
+  /// Scope discovery: after each discovery sweep, ask the repeaters found for
+  /// the scopes they carry. See DEVELOPMENT.md "Scope Discovery".
+  final bool scopeDiscoveryEnabled;
+
+  /// Scope discovery refresh window in days ([ScopeDiscoveryDays.min] to
+  /// [ScopeDiscoveryDays.max]).
+  final int scopeDiscoveryDays;
 
   /// Show hollow circle markers on the map where pings were deferred by
   /// Smart Pinging.
@@ -108,11 +123,25 @@ class UserPreferences {
   /// Auto-stop auto-ping after 30 minutes of idle (no movement)
   final bool autoStopAfterIdle;
 
-  /// Show top 3 repeaters by SNR on the map during wardriving
+  /// Show the Top Heard repeaters overlay (best SNR first) on the map during
+  /// wardriving
   final bool showTopRepeaters;
 
-  /// Double the size of the Top 3 repeaters overlay for easier reading
+  /// Double the size of the Top Heard overlay for easier reading
   final bool largerTopRepeaters;
+
+  /// Fewest and most rows the Top Heard overlay can show, and the default.
+  static const int topHeardRowsMin = 3;
+  static const int topHeardRowsMax = 8;
+  static const int topHeardRowsDefault = 3;
+
+  /// Rows the in-app Top Heard overlay shows (the RX row is extra). The Live
+  /// Activity, CarPlay and watch always show 3.
+  final int topHeardRows;
+
+  /// Top Heard rows with no nickname show the repeater's server name instead
+  /// of its hex ID.
+  final bool topHeardShowNames;
 
   /// Live Activity heard rows show resolved repeater names (fewer, named
   /// rows). When false the card packs a two-column hex grid instead.
@@ -123,6 +152,10 @@ class UserPreferences {
 
   /// GPS position marker style (arrow, car, bike, boat, walk)
   final String gpsMarkerStyle;
+
+  /// GPS position marker colour, for every style ('default', 'green').
+  /// See [GpsMarkerColors].
+  final String gpsMarkerColor;
 
   /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
   final String colorVisionType;
@@ -139,6 +172,11 @@ class UserPreferences {
   /// (300 m cells, the default), 100 = Detailed (100 m cells + 3×3 blob,
   /// applied server-side). Only these two values are valid.
   final int coverageGridSize;
+
+  /// Draw a dashed line from a selected repeater to each coverage square that
+  /// heard it. Off by default: near a busy repeater the lines hide the squares,
+  /// which already show the coverage. The web keeps them on (`mm_std_repcov`).
+  final bool showRepeaterCoverageLines;
 
   /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
   final bool disconnectAlertEnabled;
@@ -179,7 +217,10 @@ class UserPreferences {
     this.hybridModeEnabled = true,
     this.smartPingEnabled = true,
     this.smartPingDays = SmartPingDays.defaultDays,
+    this.smartPingFloodOnly = true,
     this.smartPingRecentCoverageOnly = false,
+    this.scopeDiscoveryEnabled = false,
+    this.scopeDiscoveryDays = ScopeDiscoveryDays.defaultDays,
     this.showDeferredMarkers = true,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
@@ -194,13 +235,17 @@ class UserPreferences {
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
     this.largerTopRepeaters = false,
+    this.topHeardRows = topHeardRowsDefault,
+    this.topHeardShowNames = false,
     this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
+    this.gpsMarkerColor = GpsMarkerColors.defaultChoice,
     this.colorVisionType = 'none',
     this.mapTilesEnabled = true,
     this.coverageOverlayOpacity = 0.7,
     this.coverageGridSize = 300,
+    this.showRepeaterCoverageLines = false,
     this.disconnectAlertEnabled = false,
     this.customApiEnabled = false,
     this.customApiUrl,
@@ -233,12 +278,20 @@ class UserPreferences {
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
+      smartPingFloodOnly: (json['smartPingFloodOnly'] as bool?) ?? true,
       smartPingRecentCoverageOnly:
           (json['smartPingRecentCoverageOnly'] as bool?) ?? false,
       showDeferredMarkers: (json['showDeferredMarkers'] as bool?) ?? true,
       smartPingDays: switch ((json['smartPingDays'] as num?)?.toInt()) {
         final int d when d >= SmartPingDays.min && d <= SmartPingDays.max => d,
         _ => SmartPingDays.defaultDays,
+      },
+      scopeDiscoveryEnabled: (json['scopeDiscoveryEnabled'] as bool?) ?? false,
+      scopeDiscoveryDays: switch ((json['scopeDiscoveryDays'] as num?)?.toInt()) {
+        null => ScopeDiscoveryDays.defaultDays,
+        final int d when d < ScopeDiscoveryDays.min => ScopeDiscoveryDays.min,
+        final int d when d > ScopeDiscoveryDays.max => ScopeDiscoveryDays.max,
+        final int d => d,
       },
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
@@ -254,9 +307,13 @@ class UserPreferences {
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
       largerTopRepeaters: (json['largerTopRepeaters'] as bool?) ?? false,
+      topHeardRows: _topHeardRowsFromJson(json['topHeardRows']),
+      topHeardShowNames: (json['topHeardShowNames'] as bool?) ?? false,
       liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
+      gpsMarkerColor: GpsMarkerColors.normalize(
+          json['gpsMarkerColor'] is String ? json['gpsMarkerColor'] : null),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
       coverageOverlayOpacity:
@@ -265,6 +322,8 @@ class UserPreferences {
         100 => 100,
         _ => 300,
       },
+      showRepeaterCoverageLines:
+          (json['showRepeaterCoverageLines'] as bool?) ?? false,
       disconnectAlertEnabled:
           (json['disconnectAlertEnabled'] as bool?) ?? false,
       customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
@@ -306,6 +365,14 @@ class UserPreferences {
     return value;
   }
 
+  /// A stored Top Heard row count, clamped to the supported range. A missing
+  /// or non-numeric value (or NaN/infinity) gives [topHeardRowsDefault], so a
+  /// bad stored value never reaches the UI.
+  static int _topHeardRowsFromJson(Object? value) {
+    if (value is! num || !value.isFinite) return topHeardRowsDefault;
+    return value.toInt().clamp(topHeardRowsMin, topHeardRowsMax);
+  }
+
   /// Convert to JSON (for persistence)
   Map<String, dynamic> toJson() {
     return {
@@ -329,7 +396,10 @@ class UserPreferences {
       'hybridModeEnabled': hybridModeEnabled,
       'smartPingEnabled': smartPingEnabled,
       'smartPingDays': smartPingDays,
+      'smartPingFloodOnly': smartPingFloodOnly,
       'smartPingRecentCoverageOnly': smartPingRecentCoverageOnly,
+      'scopeDiscoveryEnabled': scopeDiscoveryEnabled,
+      'scopeDiscoveryDays': scopeDiscoveryDays,
       'showDeferredMarkers': showDeferredMarkers,
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
@@ -344,13 +414,17 @@ class UserPreferences {
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
       'largerTopRepeaters': largerTopRepeaters,
+      'topHeardRows': topHeardRows,
+      'topHeardShowNames': topHeardShowNames,
       'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
+      'gpsMarkerColor': gpsMarkerColor,
       'colorVisionType': colorVisionType,
       'mapTilesEnabled': mapTilesEnabled,
       'coverageOverlayOpacity': coverageOverlayOpacity,
       'coverageGridSize': coverageGridSize,
+      'showRepeaterCoverageLines': showRepeaterCoverageLines,
       'disconnectAlertEnabled': disconnectAlertEnabled,
       'customApiEnabled': customApiEnabled,
       'customApiUrl': customApiUrl,
@@ -383,7 +457,10 @@ class UserPreferences {
     bool? hybridModeEnabled,
     bool? smartPingEnabled,
     int? smartPingDays,
+    bool? smartPingFloodOnly,
     bool? smartPingRecentCoverageOnly,
+    bool? scopeDiscoveryEnabled,
+    int? scopeDiscoveryDays,
     bool? showDeferredMarkers,
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
@@ -398,13 +475,17 @@ class UserPreferences {
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
     bool? largerTopRepeaters,
+    int? topHeardRows,
+    bool? topHeardShowNames,
     bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
+    String? gpsMarkerColor,
     String? colorVisionType,
     bool? mapTilesEnabled,
     double? coverageOverlayOpacity,
     int? coverageGridSize,
+    bool? showRepeaterCoverageLines,
     bool? disconnectAlertEnabled,
     bool? customApiEnabled,
     String? customApiUrl,
@@ -437,8 +518,11 @@ class UserPreferences {
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
       smartPingEnabled: smartPingEnabled ?? this.smartPingEnabled,
       smartPingDays: smartPingDays ?? this.smartPingDays,
+      smartPingFloodOnly: smartPingFloodOnly ?? this.smartPingFloodOnly,
       smartPingRecentCoverageOnly:
           smartPingRecentCoverageOnly ?? this.smartPingRecentCoverageOnly,
+      scopeDiscoveryEnabled: scopeDiscoveryEnabled ?? this.scopeDiscoveryEnabled,
+      scopeDiscoveryDays: scopeDiscoveryDays ?? this.scopeDiscoveryDays,
       showDeferredMarkers: showDeferredMarkers ?? this.showDeferredMarkers,
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
@@ -455,15 +539,20 @@ class UserPreferences {
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
       largerTopRepeaters: largerTopRepeaters ?? this.largerTopRepeaters,
+      topHeardRows: topHeardRows ?? this.topHeardRows,
+      topHeardShowNames: topHeardShowNames ?? this.topHeardShowNames,
       liveActivityShowNames:
           liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
+      gpsMarkerColor: gpsMarkerColor ?? this.gpsMarkerColor,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
       coverageOverlayOpacity:
           coverageOverlayOpacity ?? this.coverageOverlayOpacity,
       coverageGridSize: coverageGridSize ?? this.coverageGridSize,
+      showRepeaterCoverageLines:
+          showRepeaterCoverageLines ?? this.showRepeaterCoverageLines,
       disconnectAlertEnabled:
           disconnectAlertEnabled ?? this.disconnectAlertEnabled,
       customApiEnabled: customApiEnabled ?? this.customApiEnabled,
@@ -524,7 +613,10 @@ class UserPreferences {
         other.hybridModeEnabled == hybridModeEnabled &&
         other.smartPingEnabled == smartPingEnabled &&
         other.smartPingDays == smartPingDays &&
+        other.smartPingFloodOnly == smartPingFloodOnly &&
         other.smartPingRecentCoverageOnly == smartPingRecentCoverageOnly &&
+        other.scopeDiscoveryEnabled == scopeDiscoveryEnabled &&
+        other.scopeDiscoveryDays == scopeDiscoveryDays &&
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
         other.mapRotationLocked == mapRotationLocked &&
@@ -537,12 +629,16 @@ class UserPreferences {
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
         other.showTopRepeaters == showTopRepeaters &&
+        other.topHeardRows == topHeardRows &&
+        other.topHeardShowNames == topHeardShowNames &&
         other.liveActivityShowNames == liveActivityShowNames &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
+        other.gpsMarkerColor == gpsMarkerColor &&
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
         other.coverageOverlayOpacity == coverageOverlayOpacity &&
+        other.showRepeaterCoverageLines == showRepeaterCoverageLines &&
         other.disconnectAlertEnabled == disconnectAlertEnabled &&
         other.customApiEnabled == customApiEnabled &&
         other.customApiUrl == customApiUrl &&
@@ -573,7 +669,10 @@ class UserPreferences {
       hybridModeEnabled,
       smartPingEnabled,
       smartPingDays,
+      smartPingFloodOnly,
       smartPingRecentCoverageOnly,
+      scopeDiscoveryEnabled,
+      scopeDiscoveryDays,
       mapAutoFollow,
       mapAlwaysNorth,
       mapRotationLocked,
@@ -586,12 +685,16 @@ class UserPreferences {
       minPingDistanceMeters,
       autoStopAfterIdle,
       showTopRepeaters,
+      topHeardRows,
+      topHeardShowNames,
       liveActivityShowNames,
       markerStyle,
       gpsMarkerStyle,
+      gpsMarkerColor,
       colorVisionType,
       mapTilesEnabled,
       coverageOverlayOpacity,
+      showRepeaterCoverageLines,
       disconnectAlertEnabled,
       customApiEnabled,
       customApiUrl,
@@ -642,6 +745,15 @@ class MinPingDistance {
 /// accepted; an enforced window from the regional admin uses the same range.
 class SmartPingDays {
   static const int min = 1;
+  static const int max = 365;
+  static const int defaultDays = 14;
+}
+
+/// Scope discovery refresh window bounds (days). Stored values are clamped
+/// into range rather than falling back to the default, so an admin-set
+/// window that briefly went out of bounds is never silently discarded.
+class ScopeDiscoveryDays {
+  static const int min = 7;
   static const int max = 365;
   static const int defaultDays = 14;
 }

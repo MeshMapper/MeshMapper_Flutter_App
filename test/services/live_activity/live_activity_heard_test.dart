@@ -16,7 +16,7 @@ void main() {
           (repeaterId: 'A1', snr: 8.5, type: OverlayPingType.tx),
           (repeaterId: 'B2', snr: 2.25, type: OverlayPingType.disc),
         ],
-        topTotalCount: 2,
+        topHeardIds: const {'A1', 'B2'},
         rxSlot: (repeaterId: 'C3', snr: 9.9),
         topAt: t0,
         rxAt: t0,
@@ -44,7 +44,7 @@ void main() {
     test('a silent ping clears the rows instead of dimming them', () {
       final result = buildLiveActivityHeard(
         top: const [(repeaterId: 'A1', snr: 8.5, type: OverlayPingType.tx)],
-        topTotalCount: 1,
+        topHeardIds: const {'A1'},
         rxSlot: null,
         topAt: t0,
         rxAt: null,
@@ -63,7 +63,7 @@ void main() {
       // The SwiftUI ForEach identifies rows by id and cannot draw one twice.
       final result = buildLiveActivityHeard(
         top: const [(repeaterId: 'a1', snr: 5, type: OverlayPingType.tx)],
-        topTotalCount: 1,
+        topHeardIds: const {'A1'},
         rxSlot: (repeaterId: 'A1', snr: 9),
         topAt: t0,
         rxAt: t0,
@@ -87,7 +87,7 @@ void main() {
           (repeaterId: 'B2', snr: 7, type: OverlayPingType.disc),
           (repeaterId: 'C3', snr: 6, type: OverlayPingType.disc),
         ],
-        topTotalCount: 5,
+        topHeardIds: const {'A1', 'B2', 'C3', 'E5', 'F6'},
         rxSlot: (repeaterId: 'D4', snr: 1),
         topAt: t0,
         rxAt: t0,
@@ -101,10 +101,31 @@ void main() {
               'only the three the box shows, plus the RX row');
     });
 
+    test('an RX repeater the ping heard below the shown rows counts once', () {
+      final result = buildLiveActivityHeard(
+        top: const [
+          (repeaterId: 'A1', snr: 8, type: OverlayPingType.disc),
+          (repeaterId: 'B2', snr: 7, type: OverlayPingType.disc),
+          (repeaterId: 'C3', snr: 6, type: OverlayPingType.disc),
+        ],
+        topHeardIds: const {'A1', 'B2', 'C3', 'D4', 'E5'},
+        rxSlot: (repeaterId: 'D4', snr: 1),
+        topAt: t0,
+        rxAt: t0,
+        cycleStartedAt: beforeT0,
+        nameFor: nameFor,
+      );
+
+      expect(result.repeaters.map((r) => r.id), ['A1', 'B2', 'C3', 'D4'],
+          reason: 'D4 is not one of the shown ping rows, so its RX row stays');
+      expect(result.totalCount, 5,
+          reason: 'the ping already counted D4 as its 4th repeater');
+    });
+
     test('a fresh RX during a silent cycle shows only the RX row', () {
       final result = buildLiveActivityHeard(
         top: const [(repeaterId: 'A1', snr: 8.5, type: OverlayPingType.tx)],
-        topTotalCount: 1,
+        topHeardIds: const {'A1'},
         rxSlot: (repeaterId: 'D4', snr: 1.5),
         topAt: t0,
         rxAt: t0.add(const Duration(seconds: 12)),
@@ -123,7 +144,7 @@ void main() {
           (repeaterId: 'a1', snr: 8.5, type: OverlayPingType.tx),
           (repeaterId: 'b2', snr: -3, type: OverlayPingType.tx),
         ],
-        topTotalCount: 2,
+        topHeardIds: const {'A1', 'B2'},
         rxSlot: null,
         topAt: t0,
         rxAt: null,
@@ -146,7 +167,7 @@ void main() {
           (repeaterId: 'A1', snr: double.nan, type: OverlayPingType.tx),
           (repeaterId: 'B2', snr: 2, type: OverlayPingType.tx),
         ],
-        topTotalCount: 2,
+        topHeardIds: const {'A1', 'B2'},
         rxSlot: (repeaterId: 'C3', snr: double.infinity),
         topAt: t0,
         rxAt: t0,

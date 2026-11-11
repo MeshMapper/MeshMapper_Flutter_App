@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../models/connection_state.dart';
 import '../../models/device_model.dart';
 import '../../utils/debug_logger_io.dart';
@@ -12,6 +15,7 @@ import 'channel_service.dart';
 import 'crypto_service.dart';
 import 'packet_parser.dart';
 import 'protocol_constants.dart';
+import 'scope_lease.dart';
 
 /// How long a repeater-admin command waits for an in-flight noise floor or
 /// battery poll to settle before it writes anyway.
@@ -21,12 +25,27 @@ import 'protocol_constants.dart';
 /// never trips it.
 const Duration kPollDrainTimeout = Duration(seconds: 6);
 
+/// How long a reply stays owed in the reply ledger after its write returns.
+const Duration kReplyOwedExpiry = Duration(seconds: 10);
+
+/// How long a contact stream may go without a frame before scope discovery
+/// is suspended for the rest of the connection.
+const Duration kContactsStreamSilence = Duration(seconds: 60);
+
+/// How long [MeshCoreConnection.sign] waits for scope discovery to let go of
+/// the radio before it fails with `busy`.
+const Duration kSignScopeWait = Duration(seconds: 15);
+
 /// Response from device query command
 class DeviceQueryResponse {
   /// Companion FIRMWARE_VER_CODE (byte 1 of RESP_CODE_DEVICE_INFO).
   /// Describes companion API capabilities, independent of the release string.
   final int protocolVersion;
   final String manufacturer;
+
+  /// Number of channel slots advertised in device-info byte 3.
+  /// Null when the parsed format has no capacity or reports zero.
+  final int? maxChannels;
   final String? firmwareBuildDate; // Added in protocol v8
   final String?
       firmwareVersionString; // e.g. "v1.14.0-9f1a3ea" (v7+, 20-byte C-string)
@@ -36,6 +55,7 @@ class DeviceQueryResponse {
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
+    this.maxChannels,
     this.firmwareBuildDate,
     this.firmwareVersionString,
     this.pathHashMode,
@@ -130,6 +150,8 @@ class SelfInfo {
 /// * `bad_signature_length` — the radio returned something other than 64 bytes
 /// * `err`                  — the radio answered ERR mid-sign
 /// * `aborted`              — the connection closed while a sign was in flight
+/// * `busy` (transient): scope discovery held the radio for the whole wait;
+///   the link flow retries it with its usual backoff
 class SignException implements Exception {
   final String code;
   final String message;
@@ -154,6 +176,21 @@ class RadioErrorException implements Exception {
   String toString() => 'RadioErrorException($command, code $errorCode)';
 }
 
+/// Thrown into a pending query (stats, channel info, device query, export
+/// contact, get time) when the radio answers ERR. Carries the firmware's
+/// error code so a caller can tell the end of a list (ERR_CODE_NOT_FOUND)
+/// from a fault, and reads in logs exactly as the plain exception it replaced.
+class CommandErrorException implements Exception {
+  final int errorCode; // ErrorCodes.*
+
+  const CommandErrorException(this.errorCode);
+
+  bool get isNotFound => errorCode == ErrorCodes.notFound;
+
+  @override
+  String toString() => 'Exception: Command error (code $errorCode)';
+}
+
 /// Thrown into every pending repeater-admin completer when the connection
 /// closes mid-command (the `_abortPendingSign` pattern).
 class RadioAbortedException implements Exception {
@@ -167,6 +204,78 @@ class _AdminCommandToken {
   final String name;
 
   const _AdminCommandToken(this.name);
+}
+
+/// A send whose own bare OK or ERR the connection claims.
+enum _OwnReplyKind { tx, discovery, channel }
+
+/// One pending claim on the next OK or ERR, queued as its frame goes out.
+class _OwnReplyClaim {
+  final _OwnReplyKind kind;
+
+  /// Completes when the reply arrives, the claim expires, or it is released.
+  final Completer<void> reply = Completer<void>();
+  Timer? expiry;
+
+  /// True once the radio answered with OK or ERR (not expired or released).
+  bool answered = false;
+
+  /// The ERR code the radio answered with, null on OK or no answer.
+  int? errorCode;
+
+  _OwnReplyClaim(this.kind);
+
+  String get label => switch (kind) {
+        _OwnReplyKind.tx => 'TX send',
+        _OwnReplyKind.discovery => 'discovery request',
+        _OwnReplyKind.channel => 'channel write',
+      };
+
+  void settle() {
+    expiry?.cancel();
+    expiry = null;
+    if (!reply.isCompleted) reply.complete();
+  }
+}
+
+/// How many reply frames one outbound command earns from the companion
+/// firmware (`examples/companion_radio/MyMesh.cpp`, `handleCmdFrame`).
+class CommandReplyShape {
+  /// Reply frames owed: normally one, zero for the commands that reboot or
+  /// wipe the radio.
+  final int replies;
+
+  /// The reply is push 0x8B (self telemetry), not a code below 0x80.
+  final bool selfTelemetry;
+
+  /// CMD_GET_CONTACTS: one initial reply, then a stream tracked on its own.
+  final bool opensContactStream;
+
+  const CommandReplyShape(
+      {this.replies = 1,
+      this.selfTelemetry = false,
+      this.opensContactStream = false});
+}
+
+/// Where a CMD_GET_CONTACTS stream stands: written but not started,
+/// streaming, or neither.
+enum ContactsStreamState { none, requested, open }
+
+/// One reply the radio still owes, oldest first in the ledger.
+class _OwedReply {
+  final int command;
+  final bool selfTelemetry;
+  final bool opensContactStream;
+
+  /// Written by a scope lease. Only these keep Manage waiting once the
+  /// lease has ended: ordinary traffic owes replies too, and never did.
+  final bool scopeOwned;
+  Timer? expiry;
+
+  _OwedReply(this.command,
+      {required this.selfTelemetry,
+      required this.opensContactStream,
+      this.scopeOwned = false});
 }
 
 /// The parsed RESP_CODE_SENT frame: [flood:1][tag:4][est_timeout_ms:u32].
@@ -217,6 +326,11 @@ class ContactRecord {
   final int outPathLen;
   final Uint8List outPath; // always 64 bytes
   final String name;
+
+  /// The 32 name bytes exactly as the radio sent them (null for a record
+  /// built here). Written back verbatim, so a restore is byte-exact even for
+  /// a name that is not valid UTF-8 or carries bytes past its NUL.
+  final Uint8List? rawName;
   final int lastAdvert;
   final int latMicro;
   final int lonMicro;
@@ -233,6 +347,7 @@ class ContactRecord {
     required int latMicro,
     required int lonMicro,
     required int lastMod,
+    Uint8List? rawName,
   }) {
     if (publicKey.length != 32) {
       throw ArgumentError.value(
@@ -241,6 +356,10 @@ class ContactRecord {
     if (outPath.length != 64) {
       throw ArgumentError.value(
           outPath.length, 'outPath.length', 'must be exactly 64 bytes');
+    }
+    if (rawName != null && rawName.length != 32) {
+      throw ArgumentError.value(
+          rawName.length, 'rawName.length', 'must be exactly 32 bytes');
     }
     return ContactRecord._(
       publicKey: publicKey,
@@ -253,6 +372,7 @@ class ContactRecord {
       latMicro: latMicro,
       lonMicro: lonMicro,
       lastMod: lastMod,
+      rawName: rawName,
     );
   }
 
@@ -267,6 +387,7 @@ class ContactRecord {
     required this.latMicro,
     required this.lonMicro,
     required this.lastMod,
+    this.rawName,
   });
 
   /// A flood-route repeater contact with the MeshMapper name and position.
@@ -299,17 +420,24 @@ class ContactRecord {
           'Contact frame carries ${reader.remainingBytesCount} bytes, '
           'expected $payloadLength');
     }
+    final publicKey = reader.readBytes(32);
+    final type = reader.readByte();
+    final flags = reader.readByte();
+    final outPathLen = reader.readByte();
+    final outPath = reader.readBytes(64);
+    final rawName = Uint8List.fromList(reader.readBytes(32));
     return ContactRecord(
-      publicKey: reader.readBytes(32),
-      type: reader.readByte(),
-      flags: reader.readByte(),
-      outPathLen: reader.readByte(),
-      outPath: reader.readBytes(64),
-      name: reader.readCString(32),
+      publicKey: publicKey,
+      type: type,
+      flags: flags,
+      outPathLen: outPathLen,
+      outPath: outPath,
+      name: BufferReader(rawName).readCString(32),
       lastAdvert: reader.readUInt32LE(),
       latMicro: reader.readInt32LE(),
       lonMicro: reader.readInt32LE(),
       lastMod: reader.readUInt32LE(),
+      rawName: rawName,
     );
   }
 
@@ -354,6 +482,23 @@ class ContactRecord {
         latMicro: latMicro,
         lonMicro: lonMicro,
         lastMod: lastMod,
+        rawName: rawName,
+      );
+
+  /// The same record, byte for byte, with only `out_path_len` replaced. The
+  /// scope request borrows a zero-hop route with `withOutPathLen(0)`.
+  ContactRecord withOutPathLen(int outPathLen) => ContactRecord(
+        publicKey: publicKey,
+        type: type,
+        flags: flags,
+        outPathLen: outPathLen,
+        outPath: outPath,
+        name: name,
+        lastAdvert: lastAdvert,
+        latMicro: latMicro,
+        lonMicro: lonMicro,
+        lastMod: lastMod,
+        rawName: rawName,
       );
 
   Uint8List toFrame(int commandCode) {
@@ -364,7 +509,12 @@ class ContactRecord {
     w.writeByte(flags);
     w.writeByte(outPathLen);
     w.writeBytes(outPath);
-    w.writeCString(name, 32);
+    final raw = rawName;
+    if (raw != null) {
+      w.writeBytes(raw);
+    } else {
+      w.writeCString(name, 32);
+    }
     w.writeUInt32LE(lastAdvert);
     w.writeUInt32LE(latMicro.toUnsigned(32));
     w.writeUInt32LE(lonMicro.toUnsigned(32));
@@ -411,12 +561,28 @@ class MeshCoreConnection {
   // Completers for command responses
   Completer<DeviceQueryResponse>? _deviceQueryCompleter;
   Completer<SelfInfo>? _selfInfoCompleter;
-  Completer<void>? _sentCompleter;
   Completer<void>? _setTimeCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
+
+  /// The slot [_channelInfoCompleter] asked for. A CHANNEL_INFO for any other
+  /// slot is a late reply to an earlier read and is not this request's answer.
+  int? _channelInfoRequestedIdx;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
   Completer<int>? _getTimeCompleter;
+
+  // TX pings and discovery requests are answered with a bare OK or ERR (never
+  // RESP_CODE_SENT), in command order. Each send queues a claim as its frame
+  // reaches the wire, and the oldest claim takes the next OK or ERR: after a
+  // pending sign, before the repeater-admin and time-sync owners. Without the
+  // claim that reply went to whichever OK waiter happened to exist.
+  final List<_OwnReplyClaim> _ownReplyClaims = [];
+
+  /// How long a TX or discovery claim waits for its OK or ERR before it
+  /// expires, so an unanswered send cannot swallow a later command's reply.
+  /// Tests shorten it.
+  @visibleForTesting
+  Duration ownReplyTimeout = const Duration(seconds: 3);
 
   // Repeater-admin commands (contacts, login, binary request, reset path).
   // One at a time: the companion keeps a single pending request and a login
@@ -433,6 +599,9 @@ class MeshCoreConnection {
   Timer? _adminLateResponseTimer;
   Completer<List<ContactRecord>>? _contactsCompleter;
   List<ContactRecord> _contactsBuffer = [];
+  // Re-arms the running getContacts call's silence timer. Called on every
+  // CONTACTS_START and CONTACT frame, so a long list keeps its read alive.
+  void Function()? _contactsProgress;
 
   /// The radio's contact list as this connection last saw it, keyed by the
   /// full public key hex, in the radio's order. Lives exactly as long as
@@ -476,6 +645,23 @@ class MeshCoreConnection {
   bool _isFetchingNoiseFloor = false;
   int _noiseFloorFailCount = 0;
 
+  /// True while noise floor polling runs at [noiseFloorBackoffInterval]
+  /// after [_noiseFloorFailLimit] failures in a row.
+  bool _noiseFloorBackedOff = false;
+
+  /// Consecutive failures before polling slows to the backoff interval.
+  static const int _noiseFloorFailLimit = 3;
+
+  /// Normal noise floor poll interval. Tests shorten it.
+  @visibleForTesting
+  Duration noiseFloorPollInterval = const Duration(seconds: 5);
+
+  /// Slower poll interval used after repeated failures, so a radio that is
+  /// briefly busy (an Android GATT busy run, a second app on the link) costs a
+  /// few samples rather than the rest of the session. Tests shorten it.
+  @visibleForTesting
+  Duration noiseFloorBackoffInterval = const Duration(seconds: 30);
+
   // Battery tracking
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
   Timer? _batteryTimer;
@@ -489,6 +675,69 @@ class MeshCoreConnection {
   // null when that poller is idle. Read by [_drainPollsForAdminCommand].
   Completer<void>? _statsRequestSettled;
   Completer<void>? _batteryRequestSettled;
+
+  // ---- Scope discovery: reply ledger, contact stream, lease and listen ----
+  //
+  // The ledger holds one entry per reply frame the radio owes for commands
+  // already written (see [_replyShape]). It is bookkeeping for the scope
+  // lease only: it changes no dispatch outside a lease.
+  final List<_OwedReply> _repliesOwed = [];
+
+  /// How long an owed reply stays in the ledger after its write returns.
+  /// Tests shorten it.
+  @visibleForTesting
+  Duration replyOwedExpiry = kReplyOwedExpiry;
+
+  ContactsStreamState _contactsStream = ContactsStreamState.none;
+  Timer? _contactsStreamWatchdog;
+
+  // A contact stream that went silent: scope discovery stays off until the
+  // connection is rebuilt.
+  bool _scopeSuspended = false;
+
+  // An owed reply expired unanswered: the app can no longer tell which later
+  // reply answers which command, so scope discovery stays off until the
+  // connection is rebuilt.
+  bool _replySyncLost = false;
+
+  // A reboot or reset was written: the radio is going away, so no lease is
+  // admitted on this connection object again (a reconnect builds a new one).
+  bool _radioRestarting = false;
+
+  // A send to a repeater that is not a saved contact came back
+  // ERR_CODE_TABLE_FULL: the connected companion firmware (a bug fixed in
+  // v1.17.0's 8 reserved transient slots) needs a contact-table slot for
+  // CMD_SEND_ANON_REQ and has none free. Sticky for the life of the
+  // connection; a reconnect builds a new instance and clears it.
+  bool _scopeCannotAskNonContacts = false;
+
+  // The live lease, its admin-slot token and the gate every other write
+  // waits at while it is held.
+  ScopeLease? _lease;
+  _AdminCommandToken? _leaseToken;
+  Completer<void>? _leaseGate;
+  int _leaseGateWaiters = 0;
+  void Function(Uint8List frame)? _leaseReplyWaiter;
+
+  // The admin slot's owner during the answer wait that follows a lease.
+  _AdminCommandToken? _scopeListenToken;
+  Completer<Uint8List>? _scopeAnswerCompleter;
+  DateTime? _binaryResponseReceivedAt;
+
+  // Bumped by every teardown, so an admission in progress can tell.
+  int _scopeEpoch = 0;
+
+  // Completed when scope work lets go of the radio (lease and listen both
+  // over); a sign waiting at its entry listens for it.
+  Completer<void>? _scopeIdle;
+  int _signWaiters = 0;
+
+  /// How long [sign] waits for scope discovery before failing `busy`. Tests
+  /// shorten it.
+  @visibleForTesting
+  Duration signScopeWait = kSignScopeWait;
+
+  late final _ScopeLeaseHostAdapter _scopeHost = _ScopeLeaseHostAdapter(this);
 
   /// How long an admin command keeps the slot after timing out with its bare
   /// OK still owed. Tests shorten it; nothing in the app passes it.
@@ -709,6 +958,13 @@ class MeshCoreConnection {
     } catch (e) {
       debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);
+      // A disposed connection was abandoned or superseded: whoever disposed
+      // it owns the transport now, which may already carry a newer link.
+      if (_disposed) {
+        debugLog('[CONN] Connection was superseded, leaving the transport '
+            'to its new owner');
+        rethrow;
+      }
       // Clean up BLE connection on failure
       try {
         await _transport.disconnect();
@@ -727,10 +983,19 @@ class MeshCoreConnection {
     // Channel deletion is a gated write; a live sign would park it behind the
     // sign timeout while BLE is still up. Abort the sign first.
     _abortPendingSign();
+    _abortScopeWork('channel deletion');
     _abortPendingAdmin();
     final channel = _wardrivingChannel;
     if (channel != null) {
-      await ChannelService.deleteWardrivingChannel(this, channel.channelIndex);
+      if (channel.name == ChannelService.wardrivingChannelName) {
+        await ChannelService.deleteWardrivingChannel(
+            this, channel.channelIndex);
+      } else {
+        // A channel the user saved under their own name with the #wardriving
+        // key was reused, not created, so it stays on the radio.
+        debugLog('[CHANNEL] Keeping reused channel "${channel.name}" at '
+            'index ${channel.channelIndex} (not created by MeshMapper)');
+      }
       _wardrivingChannel = null;
     }
   }
@@ -739,7 +1004,10 @@ class MeshCoreConnection {
     try {
       debugLog('[CONN] Disconnecting');
       _abortPendingSign();
+      _abortScopeWork('disconnect');
       _abortPendingAdmin();
+      _releaseOwnReplies();
+      _resetReplyLedger();
 
       // Stop noise floor polling
       _stopNoiseFloorPolling();
@@ -772,10 +1040,23 @@ class MeshCoreConnection {
     // A RESP_SIGNATURE payload is 64 bytes of Ed25519 signature over the
     // portal's login nonce, and debug logs are uploadable to the bug-report
     // endpoint — so this one frame is logged by length only, never as hex.
+    // A CONTACT reply (a contact list stream, a scope lookup) and a new
+    // advert push open with a full 32-byte public key, and keys are logged by
+    // their 8-hex prefix only: the key past its first 4 bytes is redacted.
     // Every other frame keeps the full hexdump.
-    final frameDump = frame[0] == ResponseCodes.signature
-        ? 'SIGNATURE payload redacted'
-        : _hexDump(frame);
+    final String frameDump;
+    if (frame[0] == ResponseCodes.signature) {
+      frameDump = 'SIGNATURE payload redacted';
+    } else if ((frame[0] == ResponseCodes.contact ||
+            frame[0] == PushCodes.newAdvert) &&
+        frame.length > 5) {
+      final keyEnd = frame.length < 33 ? frame.length : 33;
+      frameDump = '${_hexDump(Uint8List.sublistView(frame, 0, 5))} '
+          '[key redacted]'
+          '${keyEnd < frame.length ? ' ${_hexDump(Uint8List.sublistView(frame, keyEnd))}' : ''}';
+    } else {
+      frameDump = _hexDump(frame);
+    }
 
     try {
       final reader = BufferReader(frame);
@@ -789,6 +1070,18 @@ class MeshCoreConnection {
       debugLog(
           '[CONN] Frame 0x${responseCode.toRadixString(16).padLeft(2, '0')} '
           '($responseCode), ${frame.length} bytes: $frameDump');
+
+      // The reply ledger sees every frame first. While a lease command
+      // awaits its reply, the next reply frame is the lease's, exactly once,
+      // before the sign, own-reply, admin and legacy owners are consulted.
+      final isReply = _accountReply(responseCode);
+      final leaseWaiter = _leaseReplyWaiter;
+      if (isReply && responseCode < 0x80 && leaseWaiter != null) {
+        _leaseReplyWaiter = null;
+        debugLog('[SCOPES] Reply code $responseCode taken by the scope lease');
+        leaseWaiter(frame);
+        return;
+      }
 
       switch (responseCode) {
         case ResponseCodes.ok:
@@ -805,6 +1098,7 @@ class MeshCoreConnection {
               if (!signOk.isCompleted) signOk.complete();
               break;
             }
+            if (_claimOwnReply(null)) break;
             final adminOk = _adminOkCompleter;
             if (adminOk != null) {
               final owner = _adminOkOwner;
@@ -853,6 +1147,7 @@ class MeshCoreConnection {
           )) {
             break;
           }
+          if (_claimOwnReply(errorCode)) break;
           // Time sync: error code 6 (ERR_CODE_ILLEGAL_ARG) means "no sync needed" — treat as success
           if (_setTimeCompleter != null) {
             if (errorCode == 6) {
@@ -872,7 +1167,14 @@ class MeshCoreConnection {
           // lane only when nothing else is waiting: the noise floor poll runs
           // every 5s and a login can wait up to 60s, and a poller's ERR must
           // not kill that login with the wrong sentence.
-          if (_statsCompleter == null &&
+          //
+          // Scope work holds no untagged command of its own while it owns
+          // the slot (a lease command's ERR is taken above, and the answer
+          // wait is ended only by its tagged push, a cancel, its timer or a
+          // disconnect), so an ERR here belongs to someone else and must not
+          // clear the tagged answer the scope listen is waiting for.
+          if (!_scopeOwnsSlot &&
+              _statsCompleter == null &&
               _channelInfoCompleter == null &&
               _deviceQueryCompleter == null &&
               _exportContactCompleter == null &&
@@ -881,7 +1183,7 @@ class MeshCoreConnection {
                 _adminCommandInFlight?.name ?? 'admin', errorCode));
           }
           // Complete any pending completers with error
-          final errException = Exception('Command error (code $errorCode)');
+          final errException = CommandErrorException(errorCode);
           _statsCompleter?.completeError(errException);
           _statsCompleter = null;
           _channelInfoCompleter?.completeError(errException);
@@ -996,12 +1298,14 @@ class MeshCoreConnection {
             break;
           }
           _contactsBuffer = [];
+          _contactsProgress?.call();
           final count =
               reader.remainingBytesCount >= 4 ? reader.readUInt32LE() : -1;
           debugLog('[CONN] Contact list starting ($count contacts)');
           break;
         case ResponseCodes.contact:
           if (_contactsCompleter == null) break;
+          _contactsProgress?.call();
           try {
             _contactsBuffer.add(ContactRecord.parse(reader));
           } on FormatException catch (e) {
@@ -1034,6 +1338,22 @@ class MeshCoreConnection {
             completer.complete(List.unmodifiable(_contactCache.values));
             break;
           }
+        // Known frames the app deliberately ignores: it never reads its
+        // inbox or keeps a contact UI, so these pushes and message-sync
+        // replies carry nothing it uses. The frame line above already
+        // records them, so they stay quiet here.
+        case PushCodes.advert:
+        case PushCodes.newAdvert:
+        case PushCodes.msgWaiting:
+        case PushCodes.sendConfirmed:
+        case PushCodes.contactDeleted:
+        case PushCodes.contactsFull:
+        case ResponseCodes.noMoreMessages:
+        case ResponseCodes.contactMsgRecv:
+        case ResponseCodes.contactMsgRecvV3:
+        case ResponseCodes.channelMsgRecvV3:
+        case ResponseCodes.advertPath:
+          break;
         default:
           // Log unhandled response codes (like JS implementation)
           debugLog(
@@ -1204,6 +1524,14 @@ class MeshCoreConnection {
 
   /// Tear down an in-flight repeater-admin command on disconnect/dispose.
   void _abortPendingAdmin() {
+    // The slot may belong to scope discovery (its lease or answer wait),
+    // which the teardown paths end first through [_abortScopeWork]. An admin
+    // abort from anywhere else (the Manage sheet closing) leaves it alone.
+    if (_scopeOwnsSlot) {
+      debugLog('[CONN] Admin abort skipped: the slot belongs to scope '
+          'discovery');
+      return;
+    }
     final wasPending = _failPendingAdmin(const RadioAbortedException());
     _adminCommandInFlight = null;
     if (wasPending) debugLog('[CONN] Aborted in-flight repeater admin command');
@@ -1215,6 +1543,245 @@ class MeshCoreConnection {
   /// Whether the single repeater-admin lane is still owned, including while
   /// an untagged reply is being drained after its caller timed out.
   bool get hasPendingAdminCommand => _adminCommandInFlight != null;
+
+  // ============================================
+  // Scope discovery lease
+  // ============================================
+
+  /// True while a scope lease holds the radio.
+  bool get isScopeLeaseActive => _lease != null;
+
+  /// True while the radio still owes a reply to a command a scope lease
+  /// wrote. Replies owed to ordinary traffic (the pollers, a flood scope
+  /// write) do not count: the admin lane has always coped with those.
+  bool get hasScopeReplyDebt => _repliesOwed.any((e) => e.scopeOwned);
+
+  /// Scope discovery owns the radio: a lease is held, or a reply is still
+  /// owed for a command one wrote. What Manage waits for.
+  bool get isScopeRadioBusy => _lease != null || hasScopeReplyDebt;
+
+  /// Fired synchronously whenever [isScopeRadioBusy] flips, and only then:
+  /// a lease granted or ended, or the last scope-owned reply retired,
+  /// expired or cleared. Wired to a plain provider notify so Manage
+  /// re-reads the flag the moment the radio frees up.
+  void Function()? onScopeRadioBusyChanged;
+  bool _scopeRadioBusyReported = false;
+
+  void _reportScopeRadioBusy() {
+    final busy = isScopeRadioBusy;
+    if (busy == _scopeRadioBusyReported) return;
+    _scopeRadioBusyReported = busy;
+    debugLog('[SCOPES] Radio ${busy ? 'held' : 'free'} for Manage');
+    onScopeRadioBusyChanged?.call();
+  }
+
+  /// True during the answer wait that follows a lease (the admin slot is
+  /// held by the scope listen).
+  bool get isScopeListenActive =>
+      _scopeListenToken != null &&
+      identical(_adminCommandInFlight, _scopeListenToken);
+
+  /// True once a contact stream went silent, an owed reply expired
+  /// unanswered, or a reboot or reset was written; no lease is admitted for
+  /// the rest of this connection.
+  bool get isScopeDiscoverySuspended =>
+      _scopeSuspended || _replySyncLost || _radioRestarting;
+
+  /// True once a send to a repeater that is not a saved contact came back
+  /// ERR_CODE_TABLE_FULL: this connection will not ask a non-contact again
+  /// until reconnected. A saved contact is unaffected and is still asked
+  /// normally.
+  bool get scopeCannotAskNonContacts => _scopeCannotAskNonContacts;
+
+  /// Fired once, synchronously, the moment [scopeCannotAskNonContacts] flips
+  /// from false to true. Wired to a plain provider notify (the Settings
+  /// tile's note), never `mapRevision` (Rule 9).
+  void Function()? onScopeCannotAskNonContactsChanged;
+
+  bool get _scopeOwnsSlot {
+    final owner = _adminCommandInFlight;
+    return owner != null &&
+        (identical(owner, _leaseToken) || identical(owner, _scopeListenToken));
+  }
+
+  bool get _scopeBusyForSign => _lease != null || isScopeListenActive;
+
+  /// Asks for a short exclusive hold on the radio for one scope request.
+  ///
+  /// Drains the pollers, then waits up to [admissionWait] (both inside that
+  /// one deadline) until the admin slot is free, no sign runs or waits, no
+  /// contact stream is open and no reply is owed. The grant is decided in one
+  /// synchronous step, which also re-reads [cancel]. Resolves null (with the
+  /// reason logged) when it is not admitted in time, [cancel] fires first,
+  /// the connection goes away, or scope discovery is suspended.
+  Future<ScopeLease?> acquireScopeLease(
+      {required Duration admissionWait,
+      required ScopeCancelToken cancel}) async {
+    final epoch = _scopeEpoch;
+    final refused = _scopeHardRefusal(cancel, epoch);
+    if (refused != null) {
+      debugLog('[SCOPES] Lease not admitted: $refused');
+      return null;
+    }
+    final deadline = Completer<void>();
+    final deadlineTimer = Timer(admissionWait, deadline.complete);
+    try {
+      // The drain alone may run to kPollDrainTimeout; the admission deadline
+      // bounds it.
+      await Future.any<void>([
+        _drainPollsForAdminCommand('scopeLease'),
+        deadline.future,
+        cancel.whenCancelled,
+      ]);
+      while (true) {
+        final hard = _scopeHardRefusal(cancel, epoch);
+        if (hard != null) {
+          debugLog('[SCOPES] Lease not admitted: $hard');
+          return null;
+        }
+        final busy = _scopeBusyReason();
+        if (busy == null) return _grantScopeLease(cancel);
+        if (deadline.isCompleted) {
+          debugLog('[SCOPES] Lease not admitted within '
+              '${admissionWait.inMilliseconds}ms: $busy');
+          return null;
+        }
+        await Future.any<void>([
+          Future<void>.delayed(const Duration(milliseconds: 20)),
+          deadline.future,
+          cancel.whenCancelled,
+        ]);
+      }
+    } finally {
+      deadlineTimer.cancel();
+    }
+  }
+
+  String? _scopeHardRefusal(ScopeCancelToken cancel, int epoch) {
+    if (_disposed) return 'connection disposed';
+    if (epoch != _scopeEpoch) return 'connection closed';
+    if (cancel.isCancelled) return 'cancelled';
+    if (_scopeSuspended) return 'suspended after a silent contact stream';
+    if (_replySyncLost) return 'suspended after an owed reply expired';
+    if (_radioRestarting) return 'a reboot or reset was sent to the radio';
+    return null;
+  }
+
+  String? _scopeBusyReason() {
+    final owner = _adminCommandInFlight;
+    if (owner != null) return 'admin slot held by ${owner.name}';
+    if (_signInProgress || _signWaiters > 0) return 'sign in progress';
+    if (_contactsStream != ContactsStreamState.none) {
+      return 'contact stream ${_contactsStream.name}';
+    }
+    if (_repliesOwed.isNotEmpty) {
+      return '${_repliesOwed.length} repl${_repliesOwed.length == 1 ? 'y' : 'ies'} owed';
+    }
+    if (_leaseGateWaiters > 0) return 'writes still queued';
+    return null;
+  }
+
+  ScopeLease _grantScopeLease(ScopeCancelToken cancel) {
+    // Never const: each lease needs its own token, compared by identity.
+    // ignore: prefer_const_constructors
+    final token = _AdminCommandToken('scopeLease');
+    _adminCommandInFlight = token;
+    _leaseToken = token;
+    _leaseGate = Completer<void>();
+    final lease = ScopeLease(host: _scopeHost, cancel: cancel);
+    _lease = lease;
+    debugLog('[SCOPES] Lease granted');
+    _reportScopeRadioBusy();
+    return lease;
+  }
+
+  /// Ends [lease] (see [ScopeLeaseHost.endLease]).
+  void _endScopeLease(ScopeLease lease, {required bool listen}) {
+    if (!identical(_lease, lease)) return;
+    _lease = null;
+    _leaseReplyWaiter = null;
+    final token = _leaseToken;
+    _leaseToken = null;
+    if (listen && identical(_adminCommandInFlight, token)) {
+      // ignore: prefer_const_constructors
+      final listenToken = _AdminCommandToken('scopeListen');
+      _scopeListenToken = listenToken;
+      _adminCommandInFlight = listenToken;
+    } else {
+      if (token != null) _endAdminCommand(token);
+      _disarmScopeAnswer();
+    }
+    final gate = _leaseGate;
+    _leaseGate = null;
+    if (gate != null && !gate.isCompleted) gate.complete();
+    debugLog('[SCOPES] Lease released'
+        '${listen ? ', waiting for the answer' : ''}'
+        '${_repliesOwed.isEmpty ? '' : ' (${_repliesOwed.length} reply owed)'}');
+    if (!isScopeListenActive) _notifyScopeIdle();
+    _reportScopeRadioBusy();
+  }
+
+  /// Ends the answer wait and frees the admin slot.
+  void _endScopeListen() {
+    _disarmScopeAnswer();
+    final token = _scopeListenToken;
+    _scopeListenToken = null;
+    if (token != null) _endAdminCommand(token);
+    if (_lease == null) _notifyScopeIdle();
+  }
+
+  Future<ScopeAnswerPush> _armScopeAnswer() {
+    final completer = Completer<Uint8List>();
+    _scopeAnswerCompleter = completer;
+    _binaryResponseCompleter = completer;
+    _binaryResponseTag = null;
+    return completer.future.then((body) =>
+        (body: body, receivedAt: _binaryResponseReceivedAt ?? clock.now()));
+  }
+
+  void _disarmScopeAnswer() {
+    final completer = _scopeAnswerCompleter;
+    if (completer == null) return;
+    _scopeAnswerCompleter = null;
+    if (identical(_binaryResponseCompleter, completer)) {
+      _binaryResponseCompleter = null;
+      _binaryResponseTag = null;
+    }
+  }
+
+  /// Teardown: ends any lease with [ScopeAborted] and any answer wait, and
+  /// bumps the epoch so an admission in progress grants nothing.
+  void _abortScopeWork(String why) {
+    _scopeEpoch++;
+    final lease = _lease;
+    final listening = isScopeListenActive;
+    if (lease == null && !listening) return;
+    debugLog('[SCOPES] Scope work aborted ($why)');
+    lease?.abortForDisconnect();
+    final answer = _scopeAnswerCompleter;
+    if (answer != null && !answer.isCompleted) {
+      answer.completeError(const RadioAbortedException());
+    }
+    _endScopeListen();
+  }
+
+  Future<void> _waitForScopeIdle(Duration limit) {
+    final idle = (_scopeIdle ??= Completer<void>()).future;
+    final done = Completer<void>();
+    final timer = Timer(limit, () {
+      if (!done.isCompleted) done.complete();
+    });
+    idle.then((_) {
+      if (!done.isCompleted) done.complete();
+    });
+    return done.future.whenComplete(timer.cancel);
+  }
+
+  void _notifyScopeIdle() {
+    final idle = _scopeIdle;
+    _scopeIdle = null;
+    if (idle != null && !idle.isCompleted) idle.complete();
+  }
 
   /// Tear down an in-flight sign on disconnect/dispose.
   ///
@@ -1241,7 +1808,8 @@ class MeshCoreConnection {
   void _onDeviceInfoResponse(BufferReader reader) {
     // Protocol format changed in v7/v8:
     // v1-v6: protoVer (1) + manufacturer C-string (64) + publicKey (32)
-    // v7+: firmwareVer (1) + reserved (6) + buildDate C-string (12) + manufacturerModel string (rest)
+    // v7+: firmwareVer (1), maxContacts/2 (1), maxChannels (1), BLE PIN (4),
+    // buildDate (12), model (40), then optional version and capability fields.
     // Note: Some v7 firmware (e.g., RAK4631) uses the new format
 
     final firmwareVer = reader.readByte();
@@ -1249,7 +1817,11 @@ class MeshCoreConnection {
 
     if (firmwareVer >= 7) {
       // Protocol v7+ format
-      reader.readBytes(6); // skip reserved bytes
+      reader.readByte(); // max contacts / 2
+      final channelCapacity = reader.readByte();
+      final maxChannels = channelCapacity > 0 ? channelCapacity : null;
+      reader.readBytes(4); // BLE PIN
+      debugLog('[CONN] Channel capacity: ${maxChannels ?? "unknown"}');
       final buildDate = reader.readCString(12); // e.g. "04-Jan-2026"
 
       // Read manufacturer model as CString(40) — fixed-length null-terminated
@@ -1284,6 +1856,7 @@ class MeshCoreConnection {
       final response = DeviceQueryResponse(
         protocolVersion: firmwareVer,
         manufacturer: manufacturerModel,
+        maxChannels: maxChannels,
         firmwareBuildDate: buildDate,
         firmwareVersionString: firmwareVersionString,
         pathHashMode: pathHashMode,
@@ -1372,8 +1945,9 @@ class MeshCoreConnection {
     }
   }
 
-  /// RESP_CODE_SENT. The legacy completer (channel messages) is void; the
-  /// repeater-admin completer wants the parsed [flood:1][tag:4][est:u32].
+  /// RESP_CODE_SENT. The repeater-admin completer wants the parsed
+  /// [flood:1][tag:4][est:u32]. Channel messages are answered with OK or ERR
+  /// instead (see [_claimOwnReply]).
   void _onSentResponse(BufferReader reader) {
     SentInfo? info;
     if (reader.remainingBytesCount >= 9) {
@@ -1382,8 +1956,6 @@ class MeshCoreConnection {
       final est = reader.readUInt32LE();
       info = SentInfo(flood: flood, tag: tag, estTimeoutMs: est);
     }
-    _sentCompleter?.complete();
-    _sentCompleter = null;
     final admin = _adminSentCompleter;
     _adminSentCompleter = null;
     if (admin != null && !admin.isCompleted) {
@@ -1418,8 +1990,22 @@ class MeshCoreConnection {
 
   void _onChannelInfoResponse(BufferReader reader) {
     final info = ChannelInfo.fromReader(reader);
-    _channelInfoCompleter?.complete(info);
+    final completer = _channelInfoCompleter;
+    if (completer == null) {
+      debugLog('[CONN] Ignoring unrequested CHANNEL_INFO for slot '
+          '${info.channelIndex}');
+      return;
+    }
+    if (info.channelIndex != _channelInfoRequestedIdx) {
+      // A late reply to a read that already timed out. Taking it would put
+      // every later answer one slot behind its request.
+      debugLog('[CONN] Ignoring CHANNEL_INFO for slot ${info.channelIndex} '
+          'while waiting for slot $_channelInfoRequestedIdx');
+      return;
+    }
+    completer.complete(info);
     _channelInfoCompleter = null;
+    _channelInfoRequestedIdx = null;
   }
 
   void _onRawDataPush(BufferReader reader) {
@@ -1540,6 +2126,7 @@ class MeshCoreConnection {
     }
     _binaryResponseCompleter = null;
     _binaryResponseTag = null;
+    _binaryResponseReceivedAt = clock.now();
     final data = reader.readRemainingBytes();
     debugLog('[CONN] BINARY_RESPONSE ${data.length} bytes');
     completer.complete(data);
@@ -1648,19 +2235,329 @@ class MeshCoreConnection {
   /// setFloodScope, setChannel, setPathHashMode, setAdvertName and setTxPower —
   /// letting one of those onto the wire mid-sign means its OK is consumed as
   /// the chunk ack and the handshake desynchronises. Sign's own frames pass
-  /// [isSignFrame] and bypass the gate.
-  Future<void> _write(Uint8List bytes, {bool isSignFrame = false}) async {
-    if (!isSignFrame) {
-      final gate = _signGate;
-      if (gate != null && !gate.isCompleted) {
-        final code = bytes.isNotEmpty ? bytes[0] : -1;
-        debugLog('[CONN] Queuing command $code behind an in-progress sign');
-        // The gate future NEVER completes with an error, so a queued command
-        // is delayed, never failed.
-        await gate.future;
+  /// [isSignFrame] and bypass the gate. [onWire] runs synchronously just
+  /// before the frame is handed to the transport, after any gate wait.
+  ///
+  /// While a scope lease is held, every write not issued by that [lease]
+  /// waits at the lease gate the same way, and goes out in order once the
+  /// lease is released. A lease write is checked against its lease right
+  /// before the transport write, so a cancelled or ended lease never puts
+  /// another byte on the air; it then resolves false.
+  ///
+  /// Every frame that goes out is entered in the reply ledger (see
+  /// [_replyShape]) before the transport write starts; the expiry of each
+  /// entry starts when that write returns.
+  Future<bool> _write(Uint8List bytes,
+      {bool isSignFrame = false,
+      void Function()? onWire,
+      ScopeLease? lease}) async {
+    final code = bytes.isNotEmpty ? bytes[0] : -1;
+    while (true) {
+      if (!isSignFrame) {
+        final gate = _signGate;
+        if (gate != null && !gate.isCompleted) {
+          debugLog('[CONN] Queuing command $code behind an in-progress sign');
+          // The gate future NEVER completes with an error, so a queued
+          // command is delayed, never failed.
+          await gate.future;
+          continue;
+        }
       }
+      if (lease == null) {
+        final gate = _leaseGate;
+        if (gate != null && !gate.isCompleted) {
+          debugLog('[CONN] Queuing command $code behind a scope lease');
+          _leaseGateWaiters++;
+          try {
+            await gate.future;
+          } finally {
+            _leaseGateWaiters--;
+          }
+          continue;
+        }
+      }
+      break;
     }
-    await _transport.write(bytes);
+    // After the gate waits, which dispose() releases: a disposed connection
+    // was abandoned or superseded, and the transport may already carry a
+    // newer connection whose replies this frame would steal.
+    if (_disposed) {
+      debugLog('[CONN] Command $code not written: connection disposed');
+      throw const RadioAbortedException();
+    }
+    if (lease != null && (!lease.active || lease.cancelled)) {
+      debugLog('[SCOPES] Command $code not written: the lease has ended');
+      return false;
+    }
+    onWire?.call();
+    final shape = _replyShape(bytes);
+    final owed = <_OwedReply>[
+      for (var i = 0; i < shape.replies; i++)
+        _OwedReply(code,
+            selfTelemetry: shape.selfTelemetry,
+            opensContactStream: shape.opensContactStream,
+            scopeOwned: lease != null),
+    ];
+    _repliesOwed.addAll(owed);
+    if (shape.replies == 0 && !_radioRestarting) {
+      // Reboot, factory reset or a CLI reboot: the radio answers nothing and
+      // goes away. No lease until the connection is rebuilt.
+      _radioRestarting = true;
+      debugWarn('[SCOPES] Command $code restarts the radio; scope discovery '
+          'off until reconnect');
+    }
+    if (shape.opensContactStream) {
+      _setContactsStream(ContactsStreamState.requested);
+    }
+    // APP_START stops the firmware's contact iterator without an END.
+    final cancelsStream = code == CommandCodes.appStart &&
+        _contactsStream == ContactsStreamState.open;
+    try {
+      await _transport.write(bytes);
+    } catch (_) {
+      // CompanionTransport cannot say whether a throwing write went out
+      // before it failed, so every throw is ambiguous: the ledger entries
+      // stay (and expire as usual) and a contact stream stays requested, so
+      // a CONTACTS_START that does arrive opens it, and a stream that never
+      // comes trips the silence rule instead of letting a lease in.
+      _armReplyExpiry(owed);
+      rethrow;
+    }
+    _armReplyExpiry(owed);
+    if (cancelsStream && _contactsStream == ContactsStreamState.open) {
+      debugLog('[CONN] APP_START ended the open contact stream');
+      _setContactsStream(ContactsStreamState.none);
+    }
+    return true;
+  }
+
+  /// The reply table: how many reply frames [frame] earns. Pure.
+  static CommandReplyShape _replyShape(Uint8List frame) {
+    if (frame.isEmpty) return const CommandReplyShape();
+    final payload = frame.sublist(1);
+    bool startsWith(String text) {
+      final t = text.codeUnits;
+      if (payload.length < t.length) return false;
+      for (var i = 0; i < t.length; i++) {
+        if (payload[i] != t[i]) return false;
+      }
+      return true;
+    }
+
+    switch (frame[0]) {
+      case CommandCodes.getContacts:
+        return const CommandReplyShape(opensContactStream: true);
+      case CommandCodes.sendTelemetryReq:
+        // Only the 4-byte form is the self request, answered by push 0x8B.
+        return frame.length == 4
+            ? const CommandReplyShape(selfTelemetry: true)
+            : const CommandReplyShape();
+      case CommandCodes.reboot:
+        return startsWith('reboot')
+            ? const CommandReplyShape(replies: 0)
+            : const CommandReplyShape();
+      case CommandCodes.factoryReset:
+        return startsWith('reset')
+            ? const CommandReplyShape(replies: 0)
+            : const CommandReplyShape();
+      case CommandCodes.runCliCommand:
+        if (frame.length < 3) return const CommandReplyShape();
+        final nul = payload.indexOf(0);
+        var text =
+            String.fromCharCodes(nul < 0 ? payload : payload.sublist(0, nul));
+        // The firmware accepts an optional two-character prefix, "xx|".
+        if (text.length > 4 && text[2] == '|') text = text.substring(3);
+        return text == 'reboot'
+            ? const CommandReplyShape(replies: 0)
+            : const CommandReplyShape();
+      default:
+        return const CommandReplyShape();
+    }
+  }
+
+  /// [_replyShape], for the fixture tests.
+  @visibleForTesting
+  static CommandReplyShape replyShapeOf(Uint8List frame) => _replyShape(frame);
+
+  /// Writes [frame] as is, through the one funnel. Tests use it for commands
+  /// the app has no method for.
+  @visibleForTesting
+  Future<void> debugWriteRaw(Uint8List frame) => _write(frame);
+
+  /// Replies still owed by the radio, for tests.
+  @visibleForTesting
+  int get repliesOwedCount => _repliesOwed.length;
+
+  /// Where the contact stream stands, for tests.
+  @visibleForTesting
+  ContactsStreamState get contactsStreamState => _contactsStream;
+
+  void _armReplyExpiry(List<_OwedReply> owed) {
+    for (final entry in owed) {
+      if (!_repliesOwed.contains(entry)) continue;
+      entry.expiry?.cancel();
+      entry.expiry = Timer(replyOwedExpiry, () {
+        if (_repliesOwed.remove(entry)) {
+          _reportScopeRadioBusy();
+          debugLog('[CONN] No reply to command ${entry.command} within '
+              '${replyOwedExpiry.inSeconds}s, dropped from the reply ledger');
+          // The reply may still come, and nothing says which later frame
+          // answers which command: a stale ERR_NOT_FOUND or CONTACT could be
+          // taken as a new lookup's answer and skip the zero-hop borrow.
+          if (!_replySyncLost) {
+            _replySyncLost = true;
+            debugWarn('[SCOPES] Replies out of step after command '
+                '${entry.command} went unanswered; scope discovery '
+                'suspended until reconnect');
+          }
+        }
+      });
+    }
+  }
+
+  /// Counts [code] against the ledger. Returns true when the frame is a
+  /// reply (so a lease waiting on one may take it).
+  ///
+  /// A reply is any frame below 0x80, plus push 0x8B when the oldest entry is
+  /// a self-telemetry request. A streamed CONTACT or END_OF_CONTACTS is never
+  /// a reply: it only moves the stream state.
+  bool _accountReply(int code) {
+    if (code == ResponseCodes.endOfContacts) {
+      if (_contactsStream != ContactsStreamState.none) {
+        _setContactsStream(ContactsStreamState.none);
+      }
+      return false;
+    }
+    if (code == ResponseCodes.contact &&
+        _contactsStream != ContactsStreamState.none) {
+      _setContactsStream(_contactsStream);
+      return false;
+    }
+    final isReply = code < 0x80 ||
+        (code == PushCodes.telemetryResponse &&
+            _repliesOwed.isNotEmpty &&
+            _repliesOwed.first.selfTelemetry);
+    if (!isReply) return false;
+    if (code == ResponseCodes.contactsStart &&
+        _contactsStream == ContactsStreamState.requested) {
+      _setContactsStream(ContactsStreamState.open);
+    }
+    if (_repliesOwed.isEmpty) return true;
+    final entry = _repliesOwed.removeAt(0);
+    entry.expiry?.cancel();
+    if (entry.scopeOwned) _reportScopeRadioBusy();
+    if (entry.opensContactStream &&
+        code != ResponseCodes.contactsStart &&
+        _contactsStream == ContactsStreamState.requested) {
+      // The initial reply was not CONTACTS_START (an ERR such as BAD_STATE):
+      // no stream follows.
+      _setContactsStream(ContactsStreamState.none);
+    }
+    return true;
+  }
+
+  /// Moves the stream to [state]. Any state but none (re)arms the silence
+  /// watchdog, so calling it with the current state marks a frame.
+  void _setContactsStream(ContactsStreamState state) {
+    _contactsStream = state;
+    _contactsStreamWatchdog?.cancel();
+    _contactsStreamWatchdog = null;
+    if (state == ContactsStreamState.none) return;
+    _contactsStreamWatchdog = Timer(kContactsStreamSilence, () {
+      _contactsStreamWatchdog = null;
+      if (_contactsStream == ContactsStreamState.none || _scopeSuspended) {
+        return;
+      }
+      // A lost START or END, or a frame that never arrived. Not cleared:
+      // the firmware may still be streaming, so scope discovery stays off.
+      _scopeSuspended = true;
+      debugWarn('[SCOPES] Contact stream ${_contactsStream.name} and silent '
+          'for ${kContactsStreamSilence.inSeconds}s; scope discovery '
+          'suspended until reconnect');
+    });
+  }
+
+  /// Clears the ledger and the stream state (disconnect and dispose).
+  void _resetReplyLedger() {
+    for (final entry in _repliesOwed) {
+      entry.expiry?.cancel();
+    }
+    _repliesOwed.clear();
+    _reportScopeRadioBusy();
+    _contactsStreamWatchdog?.cancel();
+    _contactsStreamWatchdog = null;
+    _contactsStream = ContactsStreamState.none;
+    _scopeSuspended = false;
+    _replySyncLost = false;
+  }
+
+  /// Queues a claim on the next OK or ERR for a send about to hit the wire.
+  _OwnReplyClaim _armOwnReply(_OwnReplyKind kind, {Duration? timeout}) {
+    final claim = _OwnReplyClaim(kind);
+    final wait = timeout ?? ownReplyTimeout;
+    claim.expiry = Timer(wait, () {
+      if (_ownReplyClaims.remove(claim)) {
+        debugWarn('[CONN] No reply to ${claim.label} within '
+            '${wait.inMilliseconds}ms');
+      }
+      claim.settle();
+    });
+    _ownReplyClaims.add(claim);
+    return claim;
+  }
+
+  /// Sends [data] with a claim on its own OK or ERR. The claim is dropped
+  /// again when the write itself fails.
+  Future<_OwnReplyClaim> _sendClaimingReply(
+      BufferWriter data, _OwnReplyKind kind,
+      {void Function()? onWire, Duration? timeout}) async {
+    _OwnReplyClaim? claim;
+    try {
+      await _write(data.toBytes(), onWire: () {
+        onWire?.call();
+        claim = _armOwnReply(kind, timeout: timeout);
+      });
+    } catch (_) {
+      final armed = claim;
+      if (armed != null) {
+        _ownReplyClaims.remove(armed);
+        armed.settle();
+      }
+      rethrow;
+    }
+    return claim!;
+  }
+
+  /// Hands an OK ([errorCode] null) or an ERR to the oldest pending TX or
+  /// discovery claim. Returns false when no claim is pending.
+  bool _claimOwnReply(int? errorCode) {
+    if (_ownReplyClaims.isEmpty) return false;
+    final claim = _ownReplyClaims.removeAt(0);
+    claim.answered = true;
+    claim.errorCode = errorCode;
+    claim.settle();
+    if (errorCode == null) {
+      debugLog('[CONN] OK claimed by ${claim.label}');
+    } else {
+      // Logged only for TX and discovery: the send's return and the ping flow
+      // are unchanged. A channel write reads the code and throws.
+      debugWarn('[CONN] ${switch (claim.kind) {
+        _OwnReplyKind.tx => 'TX send',
+        _OwnReplyKind.discovery => 'Discovery request',
+        _OwnReplyKind.channel => 'Channel write',
+      }} rejected by radio (error code $errorCode)');
+    }
+    return true;
+  }
+
+  /// Settles every pending TX or discovery claim, so no send is left waiting
+  /// on a link that is going away.
+  void _releaseOwnReplies() {
+    final claims = List<_OwnReplyClaim>.of(_ownReplyClaims);
+    _ownReplyClaims.clear();
+    for (final claim in claims) {
+      claim.settle();
+    }
   }
 
   /// Write frame to device
@@ -1677,11 +2574,26 @@ class MeshCoreConnection {
   /// its frame reach the wire long after that deadline, with nothing left to
   /// check by then. Awaiting this first moves the wait to a point where
   /// abandoning is still free and leaves no half-built transmission behind.
+  ///
+  /// A held scope lease parks writes the same way (for at most its 4 s
+  /// deadline), so it is waited out here too.
   Future<void> awaitWritableState() async {
-    final gate = _signGate;
-    if (gate == null || gate.isCompleted) return;
-    debugLog('[CONN] Caller waiting out an in-progress sign before deciding');
-    await gate.future;
+    while (true) {
+      final gate = _signGate;
+      if (gate != null && !gate.isCompleted) {
+        debugLog(
+            '[CONN] Caller waiting out an in-progress sign before deciding');
+        await gate.future;
+        continue;
+      }
+      final leaseGate = _leaseGate;
+      if (leaseGate != null && !leaseGate.isCompleted) {
+        debugLog('[CONN] Caller waiting out a scope lease before deciding');
+        await leaseGate.future;
+        continue;
+      }
+      return;
+    }
   }
 
   // ============================================
@@ -1808,6 +2720,7 @@ class MeshCoreConnection {
   Future<ChannelInfo> getChannel(int channelIdx) async {
     debugLog('[CONN] getChannel($channelIdx) - sending request');
     _channelInfoCompleter = Completer<ChannelInfo>();
+    _channelInfoRequestedIdx = channelIdx;
 
     // Save reference to future BEFORE writing command to avoid race condition
     // where response arrives and nulls completer before we can access the future
@@ -1830,14 +2743,37 @@ class MeshCoreConnection {
     );
   }
 
-  /// Set channel
-  Future<void> setChannel(int channelIdx, String name, Uint8List secret) async {
+  /// How long a channel delete waits for its OK during disconnect. Short on
+  /// purpose: teardown must not stall on a radio that stays quiet.
+  static const Duration channelDeleteReplyTimeout =
+      Duration(milliseconds: 1500);
+
+  /// Set channel and await the radio's OK or ERR.
+  ///
+  /// The firmware answers CMD_SET_CHANNEL with a bare OK, or ERR on a bad
+  /// index or name. The reply is claimed like a TX send's (FIFO among own
+  /// claims), so an OK arriving for this write is never left for another
+  /// consumer. Throws [CommandErrorException] on ERR. When no reply arrives
+  /// within [replyTimeout] (default [ownReplyTimeout]) it logs and returns,
+  /// as setDeviceTime does: the write may still have landed.
+  Future<void> setChannel(int channelIdx, String name, Uint8List secret,
+      {Duration? replyTimeout}) async {
     final data = BufferWriter();
     data.writeByte(CommandCodes.setChannel);
     data.writeByte(channelIdx);
     data.writeCString(name, 32);
     data.writeBytes(secret);
-    await _sendToRadio(data);
+    final claim = await _sendClaimingReply(data, _OwnReplyKind.channel,
+        timeout: replyTimeout);
+    await claim.reply.future;
+    final errorCode = claim.errorCode;
+    if (errorCode != null) {
+      throw CommandErrorException(errorCode);
+    }
+    if (!claim.answered) {
+      debugWarn('[CHANNEL] No OK for channel write at index $channelIdx, '
+          'continuing');
+    }
   }
 
   /// Set flood scope for regional packet filtering
@@ -1860,7 +2796,8 @@ class MeshCoreConnection {
 
   /// Delete channel by setting it to empty
   Future<void> deleteChannel(int channelIdx) async {
-    await setChannel(channelIdx, '', Uint8List(16));
+    await setChannel(channelIdx, '', Uint8List(16),
+        replyTimeout: channelDeleteReplyTimeout);
   }
 
   /// Get all channels (queries until error)
@@ -1914,28 +2851,25 @@ class MeshCoreConnection {
 
   /// Send channel text message (for TX pings)
   /// Reference: sendCommandSendChannelTxtMsg in connection.js
+  ///
+  /// [onWire] runs once the frame is past every write gate (sign, scope
+  /// lease), immediately before the transport write.
   Future<void> sendChannelTextMessage(
-      int txtType, int channelIdx, int senderTimestamp, String text) async {
-    _sentCompleter = Completer<void>();
-
-    // Save reference to future BEFORE sending command to avoid race condition
-    final future = _sentCompleter!.future;
-
+      int txtType, int channelIdx, int senderTimestamp, String text,
+      {void Function()? onWire}) async {
     final data = BufferWriter();
     data.writeByte(CommandCodes.sendChannelTxtMsg);
     data.writeByte(txtType);
     data.writeByte(channelIdx);
     data.writeUInt32LE(senderTimestamp);
     data.writeString(text);
-    await _sendToRadio(data);
 
-    // Wait for sent confirmation (with timeout)
-    await future.timeout(
-      const Duration(seconds: 3),
-      onTimeout: () {
-        // Ignore timeout - message may still be sent
-      },
-    );
+    // The firmware answers with OK, or ERR on a bad channel index, never with
+    // RESP_CODE_SENT. Wait for that reply (normally a few milliseconds); the
+    // claim gives up after [ownReplyTimeout], as the message may still be sent.
+    final claim =
+        await _sendClaimingReply(data, _OwnReplyKind.tx, onWire: onWire);
+    await claim.reply.future;
   }
 
   /// Send a pre-composed TX body to the #wardriving channel.
@@ -1944,7 +2878,11 @@ class MeshCoreConnection {
   /// so the exact same string is used for both TxTracker echo matching and the
   /// actual transmission.
   /// Power is not included in the mesh message — it is sent per-ping in the API payload.
-  Future<void> sendPing(String message) async {
+  ///
+  /// [onWire] runs when the frame actually goes out, after any wait behind a
+  /// sign or a scope lease and before the transport write, so echo tracking
+  /// armed there is live for the transmission and timed from it.
+  Future<void> sendPing(String message, {void Function()? onWire}) async {
     final channel = _wardrivingChannel;
     if (channel == null) {
       throw Exception('Wardriving channel not initialized');
@@ -1953,7 +2891,8 @@ class MeshCoreConnection {
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     await sendChannelTextMessage(
-        TxtTypes.plain, channel.channelIndex, timestamp, message);
+        TxtTypes.plain, channel.channelIndex, timestamp, message,
+        onWire: onWire);
   }
 
   /// Send discovery request to find nearby repeaters/rooms
@@ -1966,8 +2905,11 @@ class MeshCoreConnection {
   /// - Bytes 3-6: random tag (4 bytes)
   /// - Bytes 7-10: timestamp = 0 (discover all)
   ///
-  /// Returns the 4-byte tag used for matching responses
-  Future<Uint8List> sendDiscoveryRequest() async {
+  /// Returns the 4-byte tag used for matching responses, and [sentAt]: the
+  /// moment the frame was handed to the transport, after any sign or lease
+  /// gate wait and before the (acknowledged) transport write. That is local
+  /// command submission, not the radio's own transmission.
+  Future<({Uint8List tag, DateTime sentAt})> sendDiscoveryRequest() async {
     // Generate random 4-byte tag
     final random = Random.secure();
     final tag = Uint8List.fromList([
@@ -1987,9 +2929,13 @@ class MeshCoreConnection {
         DiscoveryConstants.typeFilterRepeaterRoom); // 0x0C = REPEATER | ROOM
     data.writeBytes(tag); // 4-byte random tag
     data.writeUInt32LE(0); // timestamp = 0 (discover all)
-    await _sendToRadio(data);
+    // Claim the OK or ERR so it cannot complete another command's waiter.
+    // Nothing waits on it.
+    DateTime? sentAt;
+    await _sendClaimingReply(data, _OwnReplyKind.discovery,
+        onWire: () => sentAt = clock.now());
 
-    return tag;
+    return (tag: tag, sentAt: sentAt ?? clock.now());
   }
 
   /// Send trace path to a specific repeater (targeted ping / zero-hop trace)
@@ -2072,10 +3018,29 @@ class MeshCoreConnection {
   }
 
   /// Read the radio's whole contact list (CMD_GET_CONTACTS with since = 0).
-  Future<List<ContactRecord>> getContacts(
-      {Duration timeout = const Duration(seconds: 20)}) async {
+  ///
+  /// The wait follows the stream rather than a fixed total: it times out
+  /// after [silenceTimeout] with no frame of the list, or at [timeout]
+  /// overall. The radio streams about one contact per 60 ms, so a 350 entry
+  /// table takes over 21 s, and a fixed 20 s cut it off every time.
+  Future<List<ContactRecord>> getContacts({
+    Duration silenceTimeout = const Duration(seconds: 5),
+    Duration timeout = const Duration(seconds: 120),
+  }) async {
     final token = _beginAdminCommand('getContacts');
     final completer = Completer<List<ContactRecord>>();
+    Timer? silence;
+    void armSilence() {
+      silence?.cancel();
+      silence = Timer(silenceTimeout, () {
+        if (completer.isCompleted) return;
+        debugWarn('[CONN] getContacts: radio silent for '
+            '${silenceTimeout.inMilliseconds}ms '
+            '(${_contactsBuffer.length} contacts received)');
+        completer.completeError(TimeoutException('getContacts timed out'));
+      });
+    }
+
     try {
       await _drainPollsForAdminCommand('getContacts');
       _contactsCompleter = completer;
@@ -2086,12 +3051,16 @@ class MeshCoreConnection {
         ..writeByte(CommandCodes.getContacts)
         ..writeUInt32LE(since);
       await _sendToRadio(data);
+      _contactsProgress = armSilence;
+      armSilence();
       return await completer.future.timeout(timeout, onTimeout: () {
         _contactsCompleter = null;
         _contactsBuffer = [];
         throw TimeoutException('getContacts timed out');
       });
     } finally {
+      silence?.cancel();
+      if (identical(_contactsProgress, armSilence)) _contactsProgress = null;
       // A write that threw before completer.future was ever awaited leaves
       // this call's completer registered with no listener. Clear it here
       // (only if it is still the one this call installed - a later call may
@@ -2373,6 +3342,27 @@ class MeshCoreConnection {
     if (_disposed) {
       throw StateError('Cannot sign on a disposed connection');
     }
+    // A sign's chunk OKs are bare, so it cannot share the radio with a scope
+    // lease, and it must not start during the answer wait that follows one.
+    // Wait for scope work to let go, then re-check and arm synchronously.
+    if (_scopeBusyForSign) {
+      _signWaiters++;
+      debugLog('[CONN] sign: waiting for scope discovery to release the radio');
+      try {
+        await _waitForScopeIdle(signScopeWait);
+      } finally {
+        _signWaiters--;
+      }
+      if (_disposed) {
+        throw StateError('Cannot sign on a disposed connection');
+      }
+      if (_scopeBusyForSign) {
+        debugWarn('[CONN] sign: radio still held by scope discovery after '
+            '${signScopeWait.inSeconds}s');
+        throw const SignException(
+            'busy', 'The radio is busy with scope discovery');
+      }
+    }
     if (_signInProgress) {
       throw StateError('A sign is already in progress');
     }
@@ -2499,15 +3489,34 @@ class MeshCoreConnection {
     _noiseFloorTimer?.cancel();
     _isFetchingNoiseFloor = false;
     _noiseFloorFailCount = 0;
+    _noiseFloorBackedOff = false;
 
     // Get initial reading immediately
     _fetchNoiseFloor();
 
-    _noiseFloorTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _scheduleNoiseFloorTimer(noiseFloorPollInterval);
+
+    debugLog('[CONN] Started noise floor polling '
+        '(${noiseFloorPollInterval.inSeconds}s interval)');
+  }
+
+  /// Starts noise floor polling outside the connect workflow, for tests.
+  @visibleForTesting
+  void debugStartNoiseFloorPolling() => _startNoiseFloorPolling();
+
+  /// Whether noise floor polling is running, for tests.
+  @visibleForTesting
+  bool get isNoiseFloorPolling => _noiseFloorTimer != null;
+
+  /// Whether noise floor polling is backed off to the slower interval.
+  @visibleForTesting
+  bool get isNoiseFloorBackedOff => _noiseFloorBackedOff;
+
+  void _scheduleNoiseFloorTimer(Duration interval) {
+    _noiseFloorTimer?.cancel();
+    _noiseFloorTimer = Timer.periodic(interval, (_) async {
       await _fetchNoiseFloor();
     });
-
-    debugLog('[CONN] Started noise floor polling (5s interval)');
   }
 
   /// True while a repeater admin command holds the link. The two pollers
@@ -2517,7 +3526,14 @@ class MeshCoreConnection {
   /// The poll simply skips a tick; the next one runs once the command ends.
   /// A poll that was ALREADY on the wire when the slot was claimed is waited
   /// out instead, by [_drainPollsForAdminCommand].
-  bool get _pollsHeld => _adminCommandInFlight != null;
+  ///
+  /// Scope work holds the pollers only while its LEASE is held; during the
+  /// answer wait that follows, the slot is owned by a scope-listen token and
+  /// the pollers run as normal.
+  bool get _pollsHeld =>
+      _lease != null ||
+      (_adminCommandInFlight != null &&
+          !identical(_adminCommandInFlight, _scopeListenToken));
 
   Future<void> _fetchNoiseFloor() async {
     if (_isFetchingNoiseFloor) return; // Skip if previous fetch still in flight
@@ -2539,13 +3555,28 @@ class MeshCoreConnection {
       // line (once every 5 seconds, all session) pure duplication.
       await getNoiseFloor();
       _noiseFloorFailCount = 0; // Reset on success
+      // Polling may have been stopped (disconnect) while this fetch was in
+      // flight; only a live poller returns to the normal interval.
+      if (_noiseFloorBackedOff && _noiseFloorTimer != null) {
+        _noiseFloorBackedOff = false;
+        _scheduleNoiseFloorTimer(noiseFloorPollInterval);
+        debugLog('[CONN] Noise floor fetch recovered, polling back to '
+            '${noiseFloorPollInterval.inSeconds}s');
+      }
     } catch (e) {
       _noiseFloorFailCount++;
-      debugLog('[CONN] Noise floor fetch failed ($_noiseFloorFailCount/3): $e');
-      if (_noiseFloorFailCount >= 3) {
-        debugLog(
-            '[CONN] Noise floor polling stopped after 3 consecutive failures');
-        _stopNoiseFloorPolling();
+      debugLog('[CONN] Noise floor fetch failed '
+          '($_noiseFloorFailCount/$_noiseFloorFailLimit): $e');
+      // Back off rather than stop: a run of transient failures used to end
+      // polling for the rest of the session while battery polls kept working.
+      if (_noiseFloorFailCount >= _noiseFloorFailLimit &&
+          !_noiseFloorBackedOff &&
+          _noiseFloorTimer != null) {
+        _noiseFloorBackedOff = true;
+        _scheduleNoiseFloorTimer(noiseFloorBackoffInterval);
+        debugWarn('[CONN] Noise floor polling slowed to '
+            '${noiseFloorBackoffInterval.inSeconds}s after '
+            '$_noiseFloorFailLimit consecutive failures');
       }
     } finally {
       _isFetchingNoiseFloor = false;
@@ -2557,6 +3588,7 @@ class MeshCoreConnection {
     _noiseFloorTimer?.cancel();
     _noiseFloorTimer = null;
     _isFetchingNoiseFloor = false;
+    _noiseFloorBackedOff = false;
     debugLog('[CONN] Stopped noise floor polling');
   }
 
@@ -2618,10 +3650,16 @@ class MeshCoreConnection {
   /// Dispose of resources
   void dispose() {
     _disposed = true;
+    // Not emitted (the stream closes below), but anything still holding this
+    // object, such as a PingService timer guard, must not read it as live.
+    _currentStep = ConnectionStep.disconnected;
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
     _abortPendingSign();
+    _abortScopeWork('dispose');
     _abortPendingAdmin();
+    _releaseOwnReplies();
+    _resetReplyLedger();
     _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
@@ -2633,5 +3671,56 @@ class MeshCoreConnection {
     _noiseFloorController.close();
     _batteryController.close();
     _pathUpdatedController.close();
+  }
+}
+
+/// Hands a [ScopeLease] the connection's private primitives, so the lease
+/// logic can live in its own file without widening this class's API.
+class _ScopeLeaseHostAdapter implements ScopeLeaseHost {
+  final MeshCoreConnection _c;
+
+  _ScopeLeaseHostAdapter(this._c);
+
+  @override
+  bool get repliesSettled => _c._repliesOwed.isEmpty;
+
+  @override
+  Future<bool> writeForLease(ScopeLease lease, Uint8List frame) =>
+      _c._write(frame, lease: lease);
+
+  @override
+  void setLeaseReplyWaiter(
+      ScopeLease lease, void Function(Uint8List frame)? waiter) {
+    if (identical(_c._lease, lease)) _c._leaseReplyWaiter = waiter;
+  }
+
+  @override
+  Future<ScopeAnswerPush> armScopeAnswer() => _c._armScopeAnswer();
+
+  @override
+  void setScopeAnswerTag(Uint8List tag) {
+    if (_c._scopeAnswerCompleter != null) _c._binaryResponseTag = tag;
+  }
+
+  @override
+  void disarmScopeAnswer() => _c._disarmScopeAnswer();
+
+  @override
+  void endLease(ScopeLease lease, {required bool listen}) =>
+      _c._endScopeLease(lease, listen: listen);
+
+  @override
+  void endListen() => _c._endScopeListen();
+
+  @override
+  bool get cannotAskNonContacts => _c._scopeCannotAskNonContacts;
+
+  @override
+  void markCannotAskNonContacts() {
+    if (_c._scopeCannotAskNonContacts) return;
+    _c._scopeCannotAskNonContacts = true;
+    debugLog('[SCOPES] Radio contact table full: no more asks to repeaters '
+        'that are not saved contacts on this connection');
+    _c.onScopeCannotAskNonContactsChanged?.call();
   }
 }

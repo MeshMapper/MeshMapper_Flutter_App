@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:math';
 
 import '../../utils/debug_logger_io.dart';
+import '../fix_altitude.dart';
 import 'packet_metadata.dart';
 import 'packet_validator.dart';
+import 'protocol_constants.dart';
 
 /// Passive RX logger for continuous wardriving observations
 /// Reference: handleRxLogging() + handleRxBatching() in wardrive.js (lines 3812-4140)
@@ -23,9 +25,10 @@ class RxLogger {
   /// Callback for immediate observation (fires before batching, for real-time UI)
   final void Function(RxObservation)? onObservation;
 
-  /// GPS location provider. `alt` is meters or null when the phone did not
-  /// know its altitude; it rides along to the API entry, nothing else reads it.
-  final ({double lat, double lon, double? alt})? Function() getGpsLocation;
+  /// GPS location provider. [altitude] is the fix's labelled altitude, or
+  /// unknown; it rides along to the API entry, nothing else reads it.
+  final ({double lat, double lon, FixAltitude altitude})? Function()
+      getGpsLocation;
 
   /// Function to check if a repeater ID should be ignored
   /// Returns true if the repeater should be filtered out
@@ -66,11 +69,12 @@ class RxLogger {
     isWardriving = true;
   }
 
-  /// Stop passive RX wardriving and flush all batches
-  void stopWardriving({String trigger = 'user_stop'}) {
+  /// Stop passive RX wardriving and flush all batches. Returns the flush, so
+  /// a caller about to upload the queue can wait for the batches to land.
+  Future<void> stopWardriving({String trigger = 'user_stop'}) {
     debugLog('[RX LOG] Stopping passive RX wardriving: trigger=$trigger');
     isWardriving = false;
-    flushAllBatches(trigger: trigger);
+    return flushAllBatches(trigger: trigger);
   }
 
   /// Handle incoming packet for passive logging
@@ -89,6 +93,18 @@ class RxLogger {
       if (metadata.pathHashCount == 0) {
         debugLog(
             '[RX LOG] Ignoring: no path (direct transmission, not via repeater)');
+        return false;
+      }
+
+      // A direct packet's path is the route it still has to travel (each
+      // repeater removes itself as it forwards), not the hops it came
+      // through, so its last hop is not who we heard. Crediting or blaming
+      // it named a repeater kilometres away as a carpeater when a nearby
+      // radio sent a login request routed through it.
+      if (metadata.routeType == RouteType.direct ||
+          metadata.routeType == RouteType.reserved2) {
+        debugLog(
+            '[RX LOG] Ignoring: direct-routed packet (path is its remaining route)');
         return false;
       }
 
@@ -197,7 +213,7 @@ class RxLogger {
         header: metadata.header,
         lat: gpsLocation.lat,
         lon: gpsLocation.lon,
-        alt: gpsLocation.alt,
+        altitude: gpsLocation.altitude,
         timestamp: DateTime.now(),
         metadata: metadata,
         displayHops: displayHops,
@@ -250,7 +266,7 @@ class RxLogger {
     required int? rssi,
     required int pathLength,
     required int header,
-    required ({double lat, double lon, double? alt}) currentLocation,
+    required ({double lat, double lon, FixAltitude altitude}) currentLocation,
     required PacketMetadata metadata,
     required List<String> displayHops,
   }) async {
@@ -270,7 +286,7 @@ class RxLogger {
           header: header,
           lat: currentLocation.lat,
           lon: currentLocation.lon,
-          alt: currentLocation.alt,
+          altitude: currentLocation.altitude,
           timestamp: DateTime.now(),
           metadata: metadata,
           displayHops: displayHops,
@@ -308,7 +324,7 @@ class RxLogger {
           header: header,
           lat: buffer.firstLocation.lat, // Keep original location
           lon: buffer.firstLocation.lon, // Keep original location
-          alt: buffer.firstLocation.alt, // and its altitude
+          altitude: buffer.firstLocation.altitude, // and its altitude
           timestamp: DateTime.now(),
           metadata: metadata,
           displayHops: displayHops,
@@ -411,7 +427,7 @@ class RxLogger {
       repeaterId: repeaterId,
       lat: best.lat,
       lon: best.lon,
-      alt: best.alt,
+      altitude: best.altitude,
       snr: best.snr,
       rssi: best.rssi,
       pathLength: best.pathLength,
@@ -503,7 +519,7 @@ class RxLogger {
 
 /// Batch buffer for a single repeater
 class RxBatch {
-  final ({double lat, double lon, double? alt}) firstLocation;
+  final ({double lat, double lon, FixAltitude altitude}) firstLocation;
   RxObservation bestObservation;
   Timer? timeoutTimer;
 
@@ -524,8 +540,8 @@ class RxObservation {
   final double lat;
   final double lon;
 
-  /// Altitude in meters at [lat],[lon], null when unknown.
-  final double? alt;
+  /// The labelled altitude at [lat],[lon], unknown when not proved.
+  final FixAltitude altitude;
   final DateTime timestamp;
   final PacketMetadata metadata;
 
@@ -541,7 +557,7 @@ class RxObservation {
     required this.header,
     required this.lat,
     required this.lon,
-    this.alt,
+    this.altitude = const FixAltitude.unknown(),
     required this.timestamp,
     required this.metadata,
     this.displayHops = const [],
@@ -554,8 +570,8 @@ class RxApiEntry {
   final double lat;
   final double lon;
 
-  /// Altitude in meters at [lat],[lon], null when unknown.
-  final double? alt;
+  /// The labelled altitude at [lat],[lon], unknown when not proved.
+  final FixAltitude altitude;
   final double? snr; // Null for CARpeater pass-through
   final int? rssi; // Null for CARpeater pass-through
   final int pathLength;
@@ -570,7 +586,7 @@ class RxApiEntry {
     required this.repeaterId,
     required this.lat,
     required this.lon,
-    this.alt,
+    this.altitude = const FixAltitude.unknown(),
     this.snr,
     this.rssi,
     required this.pathLength,

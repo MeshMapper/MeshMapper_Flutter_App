@@ -37,7 +37,7 @@ void main() {
   group('manageBlockReason', () {
     String? reason({bool connected = true, bool mode = false, bool inProgress = false,
         bool sending = false, bool admin = false, bool reconnecting = false,
-        bool firmwareOk = true}) =>
+        bool firmwareOk = true, bool scopeBusy = false}) =>
         manageBlockReason(
             isConnected: connected,
             isAnyModeRunning: mode,
@@ -45,7 +45,11 @@ void main() {
             isPingSending: sending,
             isRepeaterAdminActive: admin,
             isAutoReconnecting: reconnecting,
-            companionFirmwareSupported: firmwareOk);
+            companionFirmwareSupported: firmwareOk,
+            scopeRadioBusy: scopeBusy);
+
+    bool busy({bool lease = false, bool debt = false}) =>
+        scopeRadioBusy(isScopeLeaseActive: lease, hasScopeReplyDebt: debt);
 
     test('allowed', () => expect(reason(), isNull));
     test('not connected', () => expect(reason(connected: false), 'Connect a radio to manage this repeater'));
@@ -59,6 +63,13 @@ void main() {
         expect(reason(reconnecting: true), 'Connect a radio to manage this repeater'));
     test('connection outranks the mode', () =>
         expect(reason(connected: false, mode: true), 'Connect a radio to manage this repeater'));
+    test('a scope lease held, or only its reply debt left: wait', () {
+      const wait = 'Finishing a scope request. Try again in a few seconds.';
+      expect(reason(scopeBusy: busy(lease: true)), wait);
+      expect(reason(scopeBusy: busy(debt: true)), wait);
+      expect(reason(scopeBusy: busy(lease: true, debt: true)), wait);
+      expect(reason(scopeBusy: busy()), isNull);
+    });
     test('old companion firmware, once connected', () {
       expect(reason(firmwareOk: false), 'Update companion firmware to use Manage');
       expect(reason(connected: false, firmwareOk: false), 'Connect a radio to manage this repeater');

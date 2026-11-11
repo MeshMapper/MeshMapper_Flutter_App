@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/user_preferences.dart';
 import '../utils/debug_logger_io.dart';
+import 'api_queue_service.dart' show kAltitudeReferences;
 
 /// Service for forwarding wardrive ping payloads to a user-configured
 /// third-party API endpoint. Fire-and-forget: never blocks MeshMapper uploads.
@@ -85,6 +86,15 @@ class CustomApiService {
       final enrichedPing = Map<String, dynamic>.from(ping);
       // The auto mode stamp is MeshMapper analytics, never a third party's.
       enrichedPing.remove('auto_mode');
+      // An altitude without a proved reference is never forwarded either; a
+      // row from an older offline session can still carry one.
+      final ref = enrichedPing['altitude_ref'];
+      if (ref is! String || !kAltitudeReferences.contains(ref)) {
+        enrichedPing
+          ..remove('altitude')
+          ..remove('altitude_ref')
+          ..remove('altitude_acc');
+      }
       if (contact != null) enrichedPing['contact'] = contact;
       if (iata != null) enrichedPing['iata'] = iata;
       return enrichedPing;

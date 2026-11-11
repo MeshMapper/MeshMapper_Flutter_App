@@ -3,6 +3,7 @@ import '../../../models/ping_data.dart';
 import '../../../models/repeater.dart';
 import '../../../providers/app_state_provider.dart' show OverlayPingType;
 import '../../../utils/ping_colors.dart';
+import '../../../utils/repeater_nicknames.dart';
 import '../external_surface_color.dart';
 import 'external_surface_geo_models.dart';
 
@@ -289,6 +290,39 @@ class ExternalSurfaceGeoBuilder {
     return prefixed.length == 1 ? prefixed.single : null;
   }
 
+  /// Resolve one overlay row to a repeater: the fullest identity the row
+  /// arrived with first, then the display hash it is shown under.
+  ///
+  /// **The fallback is the point.** A discovery response's public key is a
+  /// better identity, but the catalogue is matched by a `hexId` that the API
+  /// frequently omits, and the display hash additionally resolves
+  /// through `displayHexId`, which falls back to the short numeric ID when
+  /// there is no hex at all. Trying only the longer form threw away the lookup
+  /// that was doing the work, and left named repeaters unnamed. An [identity]
+  /// that is null, empty or matches nothing (or more than one repeater) falls
+  /// through to [displayId].
+  ///
+  /// Returns null unless exactly one repeater matches, as [resolveRepeater]
+  /// does: a confidently wrong name is worse than none.
+  static Repeater? resolveOverlayRow({
+    required String displayId,
+    String? identity,
+    required List<Repeater> repeaters,
+    int? hopBytes,
+  }) =>
+      (identity == null || identity.isEmpty
+          ? null
+          : resolveRepeater(
+              repeaters: repeaters,
+              id: identity,
+              hopBytes: hopBytes,
+            )) ??
+      resolveRepeater(
+        repeaters: repeaters,
+        id: displayId.toUpperCase(),
+        hopBytes: hopBytes,
+      );
+
   /// Resolve overlay display hashes to repeaters, preferring the fuller
   /// identity the ping actually carried.
   ///
@@ -368,12 +402,13 @@ class ExternalSurfaceGeoBuilder {
   static ExternalSurfaceColor snrColor(double snr) =>
       ExternalSurfaceColor.fromColor(PingColors.snrColor(snr));
 
-  /// The "Top Heard" overlay rows: up to three top-SNR repeaters from the
-  /// latest ping, then the current RX slot.
+  /// The "Top Heard" overlay rows: up to [ExternalSurfaceGeoWire.maxHeard]
+  /// rows, the top-SNR repeaters from the latest ping, then the current RX
+  /// slot, which is always kept when present (ping rows are cut to make room).
   ///
   /// Order is deliberate rather than a global SNR sort: it matches the map
   /// overlay, where the RX slot is a distinct trailing row rather than a
-  /// competitor for the top three.
+  /// competitor for the top-SNR rows.
   static List<ExternalSurfaceHeardNode> buildHeard({
     required List<({String repeaterId, double snr, OverlayPingType type})> top,
     ({String repeaterId, double snr})? rxSlot,
@@ -382,13 +417,17 @@ class ExternalSurfaceGeoBuilder {
     required DateTime? rxAt,
     double? lat,
     double? lon,
+    Map<String, RepeaterNickname> nicknames = const {},
   }) {
     final rows = <ExternalSurfaceHeardNode>[];
+    // Leave the RX row its place under the wire cap.
+    const cap = ExternalSurfaceGeoWire.maxHeard;
+    final maxPingRows = rxSlot != null && rxAt != null ? cap - 1 : cap;
 
     // Missing time means the provider cannot truthfully say when this set was
     // heard. Omitting such a row is safer than presenting a plausible lie in
     // Node Detail; every production mutation records its timestamp atomically.
-    for (final entry in top.where((_) => topAt != null)) {
+    for (final entry in top.where((_) => topAt != null).take(maxPingRows)) {
       rows.add(_row(
         id: entry.repeaterId,
         snr: entry.snr,
@@ -397,6 +436,7 @@ class ExternalSurfaceGeoBuilder {
         at: topAt!,
         lat: lat,
         lon: lon,
+        nicknames: nicknames,
       ));
     }
 
@@ -409,6 +449,7 @@ class ExternalSurfaceGeoBuilder {
         at: rxAt,
         lat: lat,
         lon: lon,
+        nicknames: nicknames,
       ));
     }
 
@@ -423,6 +464,7 @@ class ExternalSurfaceGeoBuilder {
     required OverlayPingType type,
     required Map<String, Repeater> repeaterByHex,
     required DateTime at,
+    required Map<String, RepeaterNickname> nicknames,
     double? lat,
     double? lon,
   }) {
@@ -441,8 +483,12 @@ class ExternalSurfaceGeoBuilder {
     return ExternalSurfaceHeardNode(
       id: hex,
       // Null rather than a guess: a short path hash can match several
-      // repeaters, and a confidently wrong name is worse than none.
-      name: repeater?.name,
+      // repeaters, and a confidently wrong name is worse than none. The user's
+      // own nickname for the resolved repeater outranks the server's name.
+      name: (repeater == null
+              ? null
+              : RepeaterNicknames.nicknameFor(repeater, nicknames)) ??
+          repeater?.name,
       snr: snr,
       at: at,
       distanceM: distance,

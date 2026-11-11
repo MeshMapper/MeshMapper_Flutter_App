@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:clock/clock.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:mesh_mapper/services/api_service.dart';
+import 'package:mesh_mapper/services/idle_session.dart';
 
 /// Regression tests for the 2026-08-29 heartbeat POST storm (361k requests in
 /// 64 minutes from one device).
@@ -218,6 +220,260 @@ void main() {
         async.elapse(const Duration(seconds: 10));
         expect(heartbeats, 2,
             reason: 'the recovered session schedules its own next heartbeat');
+      });
+    });
+  });
+
+  group('an expired keepalive while idle (#563)', () {
+    /// A server whose session has lapsed: every heartbeat answers
+    /// session_expired until a new /auth mints a fresh session.
+    ({
+      ApiService api,
+      int Function() auths,
+      int Function() heartbeats,
+      int Function() recoveries,
+    }) buildLapsed(bool Function() idle) {
+      var auths = 0;
+      var heartbeats = 0;
+      var recoveries = 0;
+      var lapsed = false;
+      late final ApiService api;
+      api = ApiService(
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/auth')) {
+            auths++;
+            // The first auth is the connect; the test then lets it lapse.
+            lapsed = auths == 1;
+            return http.Response(
+              json.encode({
+                'success': true,
+                'session_id': 'session-$auths',
+                'tx_allowed': true,
+                'rx_allowed': true,
+                'expires_at': clock.now().millisecondsSinceEpoch ~/ 1000 + 300,
+              }),
+              200,
+            );
+          }
+          heartbeats++;
+          if (lapsed) {
+            return http.Response(
+              json.encode({
+                'success': false,
+                'reason': 'session_expired',
+                'message': 'expired for test',
+              }),
+              401,
+            );
+          }
+          return http.Response(
+            json.encode({
+              'success': true,
+              'expires_at': clock.now().millisecondsSinceEpoch ~/ 1000 + 300,
+            }),
+            200,
+          );
+        }),
+      );
+      api.onSessionExpiredRecovery = () async {
+        recoveries++;
+        await api.requestAuth(
+          reason: 'connect',
+          publicKey: 'AB',
+          lat: 45.0,
+          lon: -75.0,
+        );
+        return SessionRecoveryResult.recovered;
+      };
+      api.isSessionIdle = idle;
+      return (
+        api: api,
+        auths: () => auths,
+        heartbeats: () => heartbeats,
+        recoveries: () => recoveries,
+      );
+    }
+
+    void connectAndRunToFirstKeepalive(FakeAsync async, ApiService api) {
+      api.requestAuth(
+        reason: 'connect',
+        publicKey: 'AB',
+        lat: 45.0,
+        lon: -75.0,
+      );
+      async.flushMicrotasks();
+      api.enableHeartbeat();
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 241));
+      async.flushMicrotasks();
+    }
+
+    bool idleWith({bool autoPingEnabled = false, int queuedItems = 0}) =>
+        sessionIsIdle(
+          autoPingEnabled: autoPingEnabled,
+          autoPingStarting: false,
+          pendingDisable: false,
+          pingSending: false,
+          pingInProgress: false,
+          repeaterAdminOpen: false,
+          queuedItems: queuedItems,
+        );
+
+    test('idle: no recovery, the keepalive stops, the next action recovers',
+        () {
+      fakeAsync((async) {
+        final origin = DateTime.utc(2026, 9, 28, 22);
+        withClock(Clock(() => origin.add(async.elapsed)), () {
+          final built = buildLapsed(() => idleWith());
+          connectAndRunToFirstKeepalive(async, built.api);
+
+          expect(built.heartbeats(), 1);
+          expect(built.recoveries(), 0,
+              reason: 'an idle app must not mint a session nobody will use');
+          expect(built.auths(), 1);
+          expect(built.api.sessionId, 'session-1',
+              reason: 'the lapsed session is left in place, not cleared');
+
+          async.elapse(const Duration(minutes: 30));
+          expect(built.heartbeats(), 1,
+              reason: 'the keepalive stops instead of retrying');
+          expect(built.recoveries(), 0);
+
+          // The next Start or manual ping runs the session check, which
+          // posts its own heartbeat and recovers on the expired answer.
+          ({bool isValid, String? reason, String? message})? check;
+          built.api.checkSessionValid(lat: 45.0, lon: -75.0).then((r) {
+            check = r;
+          });
+          async.flushMicrotasks();
+          expect(check?.isValid, isTrue);
+          expect(built.recoveries(), 1);
+          expect(built.api.sessionId, 'session-2');
+
+          // The recovered session owns a keepalive again.
+          final before = built.heartbeats();
+          async.elapse(const Duration(seconds: 241));
+          expect(built.heartbeats(), before + 1,
+              reason: 'the recovered session schedules its own keepalive');
+        });
+      });
+    });
+
+    test('a running mode still recovers as before', () {
+      fakeAsync((async) {
+        final origin = DateTime.utc(2026, 9, 28, 22);
+        withClock(Clock(() => origin.add(async.elapsed)), () {
+          final built = buildLapsed(() => idleWith(autoPingEnabled: true));
+          connectAndRunToFirstKeepalive(async, built.api);
+
+          expect(built.recoveries(), 1);
+          expect(built.auths(), 2);
+          expect(built.api.sessionId, 'session-2');
+        });
+      });
+    });
+
+    test('queued items still recover as before', () {
+      fakeAsync((async) {
+        final origin = DateTime.utc(2026, 9, 28, 22);
+        withClock(Clock(() => origin.add(async.elapsed)), () {
+          final built = buildLapsed(() => idleWith(queuedItems: 3));
+          connectAndRunToFirstKeepalive(async, built.api);
+
+          expect(built.recoveries(), 1);
+          expect(built.auths(), 2);
+          expect(built.api.sessionId, 'session-2');
+        });
+      });
+    });
+    test('a late expired answer for a replaced session leaves its keepalive',
+        () {
+      fakeAsync((async) {
+        final origin = DateTime.utc(2026, 9, 28, 22);
+        withClock(Clock(() => origin.add(async.elapsed)), () {
+          var auths = 0;
+          var recoveries = 0;
+          final heartbeatSessions = <String>[];
+          final held = Completer<http.Response>();
+          http.Response expired() => http.Response(
+                json.encode({
+                  'success': false,
+                  'reason': 'session_expired',
+                  'message': 'expired for test',
+                }),
+                401,
+              );
+          late final ApiService api;
+          api = ApiService(
+            client: MockClient((request) async {
+              if (request.url.path.endsWith('/auth')) {
+                auths++;
+                return http.Response(
+                  json.encode({
+                    'success': true,
+                    'session_id': 'session-$auths',
+                    'tx_allowed': true,
+                    'rx_allowed': true,
+                    'expires_at':
+                        clock.now().millisecondsSinceEpoch ~/ 1000 + 300,
+                  }),
+                  200,
+                );
+              }
+              final body = json.decode(request.body) as Map<String, dynamic>;
+              final sid = body['session_id'] as String;
+              heartbeatSessions.add(sid);
+              if (sid == 'session-1') {
+                // The scheduled keepalive is held in flight; the manual
+                // check that follows is answered at once.
+                if (heartbeatSessions.length == 1) return held.future;
+                return expired();
+              }
+              return http.Response(
+                json.encode({
+                  'success': true,
+                  'expires_at':
+                      clock.now().millisecondsSinceEpoch ~/ 1000 + 300,
+                }),
+                200,
+              );
+            }),
+          );
+          api.onSessionExpiredRecovery = () async {
+            recoveries++;
+            await api.requestAuth(
+              reason: 'connect',
+              publicKey: 'AB',
+              lat: 45.0,
+              lon: -75.0,
+            );
+            return SessionRecoveryResult.recovered;
+          };
+          api.isSessionIdle = () => idleWith();
+          connectAndRunToFirstKeepalive(async, api);
+          expect(heartbeatSessions, ['session-1']);
+
+          // A manual action recovers to session-2 while the keepalive for
+          // session-1 is still waiting on its answer.
+          ({bool isValid, String? reason, String? message})? check;
+          api.checkSessionValid(lat: 45.0, lon: -75.0).then((r) {
+            check = r;
+          });
+          async.flushMicrotasks();
+          expect(check?.isValid, isTrue);
+          expect(api.sessionId, 'session-2');
+          expect(recoveries, 1);
+
+          // The stale answer lands with the app idle.
+          held.complete(expired());
+          async.flushMicrotasks();
+          expect(api.sessionId, 'session-2');
+          expect(recoveries, 1, reason: 'a stale answer must not re-mint');
+
+          async.elapse(const Duration(seconds: 241));
+          expect(heartbeatSessions.last, 'session-2',
+              reason: "the replacement session's keepalive survives");
+        });
       });
     });
   });

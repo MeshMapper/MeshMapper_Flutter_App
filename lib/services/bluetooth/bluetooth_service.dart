@@ -86,6 +86,13 @@ abstract class BluetoothService implements CompanionTransport {
   /// budget inside one call.
   Future<void> connect(String deviceId, {int? maxAttempts});
 
+  /// Abandon a connect() that is still in progress, at the user's request.
+  ///
+  /// The in-flight connect() stops retrying and throws. A link the platform
+  /// had not finished opening is dropped without a 'disconnected' event; one
+  /// that finished just before the cancel is closed through [disconnect].
+  Future<void> cancelConnect();
+
   /// Disconnect from current device
   @override
   Future<void> disconnect();

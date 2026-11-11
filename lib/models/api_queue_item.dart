@@ -1,5 +1,7 @@
 import 'package:hive/hive.dart';
 
+import '../utils/public_key.dart';
+
 part 'api_queue_item.g.dart';
 
 /// Item in the API upload queue
@@ -17,7 +19,7 @@ part 'api_queue_item.g.dart';
 @HiveType(typeId: 3)
 class ApiQueueItem extends HiveObject {
   @HiveField(0)
-  final String type; // 'TX', 'RX', 'DISC', 'TRACE' or 'DEFER'
+  final String type; // 'TX', 'RX', 'DISC', 'TRACE', 'DEFER' or 'SCOPES'
 
   @HiveField(1)
   final double latitude;
@@ -65,10 +67,9 @@ class ApiQueueItem extends HiveObject {
   final String? wireTag;
 
   /// Altitude of the fix in meters, null when the phone did not know it.
-  /// iOS reports height above mean sea level. Android usually reports height
-  /// above the WGS84 ellipsoid, but Android 14+ substitutes mean sea level
-  /// when the fix carries it, so one device can report either. The two differ
-  /// by the local geoid separation (up to ~100 m).
+  /// Uploaded ONLY together with [altitudeRef]: an altitude whose reference
+  /// is not proved is stored but never emitted. Contract:
+  /// MeshMapper_Server/docs/APP_API.md.
   @HiveField(18)
   final double? altitude;
 
@@ -90,6 +91,26 @@ class ApiQueueItem extends HiveObject {
   @HiveField(20)
   final String? radioFreq;
 
+  /// A repeater's scope discovery answer, sent only for a SCOPES item. The
+  /// list is exactly what the repeater sent (case kept, `*` kept, at most
+  /// 33 entries, may be empty). Null for every other type. The answering
+  /// repeater's public key rides in [heardRepeats] instead, the DISC/DEFER
+  /// packing precedent, since a list needs its own field.
+  @HiveField(21)
+  final List<String>? scopes;
+
+  /// The vertical reference [altitude] is measured from, `msl` (above mean
+  /// sea level) or `ellipsoid` (above the WGS84 ellipsoid). Null when the
+  /// app could not prove it, in which case [toApiJson] emits no altitude.
+  @HiveField(22)
+  final String? altitudeRef;
+
+  /// Vertical accuracy of the fix in meters, about one standard deviation.
+  /// Null when the phone did not know it. Emitted only beside a labelled
+  /// altitude and only when finite and above zero.
+  @HiveField(23)
+  final double? altitudeAccuracy;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -105,8 +126,11 @@ class ApiQueueItem extends HiveObject {
     this.pingCounter,
     this.wireTag,
     this.altitude,
+    this.altitudeRef,
+    this.altitudeAccuracy,
     this.autoMode,
     this.radioFreq,
+    this.scopes,
   });
 
   /// Create from TX ping
@@ -122,6 +146,8 @@ class ApiQueueItem extends HiveObject {
     int? pingCounter,
     String? wireTag,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -139,6 +165,8 @@ class ApiQueueItem extends HiveObject {
       pingCounter: pingCounter,
       wireTag: wireTag,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -155,6 +183,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -169,6 +199,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -190,6 +222,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -207,6 +241,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -226,6 +262,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -242,6 +280,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -256,6 +296,8 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? altitudeRef,
+    double? altitudeAccuracy,
     String? autoMode,
     String? radioFreq,
   }) {
@@ -270,6 +312,8 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      altitudeRef: altitudeRef,
+      altitudeAccuracy: altitudeAccuracy,
       autoMode: autoMode,
       radioFreq: radioFreq,
     );
@@ -299,8 +343,79 @@ class ApiQueueItem extends HiveObject {
     );
   }
 
+  /// A repeater's answer to a direct scope discovery question, sent only
+  /// after a discovery found it. The public key rides in [heardRepeats]
+  /// (the DISC/DEFER packing precedent); the answer itself needs its own
+  /// field since a list cannot be squeezed safely into that string. Never
+  /// stamped with the auto mode, the DEFER precedent again: this is a
+  /// repeater fact, not a session-mode analytics stamp.
+  ///
+  /// [publicKeyHex] is normalized to 64 upper-case hex via
+  /// [normalizePublicKey], so the item never serializes any other shape.
+  /// Anything that does not normalize throws [ArgumentError]: the server
+  /// would reject the whole item, and a caller that can meet a bad key
+  /// (`ApiQueueService.enqueueScopes` does) validates it first and refuses
+  /// it without building the item.
+  factory ApiQueueItem.fromScopes({
+    required String publicKeyHex,
+    required List<String> scopes,
+    required double lat,
+    required double lon,
+    required int timestamp,
+    String? radioFreq,
+  }) {
+    final key = normalizePublicKey(publicKeyHex);
+    if (key == null) {
+      throw ArgumentError.value(publicKeyHex, 'publicKeyHex',
+          'must be a 64 hex character public key');
+    }
+    return ApiQueueItem(
+      type: 'SCOPES',
+      latitude: lat,
+      longitude: lon,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: key,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: false,
+      scopes: scopes,
+      radioFreq: radioFreq,
+    );
+  }
+
   /// Convert to API JSON format (matches WebClient exactly)
+  /// The altitude trio, or nothing. An altitude is never emitted without its
+  /// reference, and the accuracy only beside both and when usable. The
+  /// enqueue paths already pass null for all three when the reference is
+  /// unknown; this gate makes sure neither side alone can leak a bare value.
+  Map<String, dynamic> get _altitudeFields {
+    final meters = altitude;
+    final ref = altitudeRef;
+    if (meters == null || ref == null) return const {};
+    final acc = altitudeAccuracy;
+    return {
+      'altitude': meters.round(),
+      'altitude_ref': ref,
+      if (acc != null && acc.isFinite && acc > 0) 'altitude_acc': acc.round(),
+    };
+  }
+
   Map<String, dynamic> toApiJson() {
+    // A repeater's scope answer: public key, the scopes exactly as heard,
+    // when the answer arrived, and where the discovery that found it was
+    // made. Never the mode stamp and never external_antenna/noisefloor/
+    // altitude/power, the DEFER precedent.
+    if (type == 'SCOPES') {
+      return {
+        'type': type,
+        'public_key': heardRepeats,
+        'scopes': scopes ?? const <String>[],
+        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
+        'lat': latitude,
+        'lon': longitude,
+        if (radioFreq != null) 'radio_freq': radioFreq,
+      };
+    }
+
     // A deferral carries only the square and which kind of ping was held.
     // Never the mode stamp (the server stores none for a deferral), but the
     // radio tag rides along.
@@ -334,7 +449,7 @@ class ApiQueueItem extends HiveObject {
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
-        if (altitude != null) 'altitude': altitude!.round(),
+        ..._altitudeFields,
         if (autoMode != null) 'auto_mode': autoMode,
         if (radioFreq != null) 'radio_freq': radioFreq,
       };
@@ -353,7 +468,7 @@ class ApiQueueItem extends HiveObject {
           'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
           'external_antenna': externalAntenna,
           'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
-          if (altitude != null) 'altitude': altitude!.round(),
+          ..._altitudeFields,
           if (autoMode != null) 'auto_mode': autoMode,
           if (radioFreq != null) 'radio_freq': radioFreq,
         };
@@ -376,7 +491,7 @@ class ApiQueueItem extends HiveObject {
             1000, // Unix timestamp in seconds
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
-        if (altitude != null) 'altitude': altitude!.round(),
+        ..._altitudeFields,
         if (autoMode != null) 'auto_mode': autoMode,
         if (radioFreq != null) 'radio_freq': radioFreq,
       };
@@ -396,8 +511,8 @@ class ApiQueueItem extends HiveObject {
       // absence (coords mode / RX) is the unchanged-from-today coords path.
       if (pingCounter != null) 'ping_counter': pingCounter,
       if (wireTag != null) 'wire_tag': wireTag,
-      // Whole meters, omitted when the phone did not know its altitude.
-      if (altitude != null) 'altitude': altitude!.round(),
+      // Altitude, its reference and its accuracy together, or nothing.
+      ..._altitudeFields,
       if (autoMode != null) 'auto_mode': autoMode,
       if (radioFreq != null) 'radio_freq': radioFreq,
     };
