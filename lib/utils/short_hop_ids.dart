@@ -18,8 +18,12 @@ import '../models/repeater.dart';
 /// Anything else is ambiguous and resolves to nothing, because a confidently
 /// wrong repeater is worse than a bare id.
 ///
-/// Display only: logs and uploads keep the raw heard id, and the server
-/// resolves it again on its own.
+/// Used for display (Top Heard) and for reading stored coverage (the cell
+/// summary and repeater stats, through `RepeaterLookup`). Logs and uploads
+/// keep the raw heard id, and the server resolves it again on its own.
+///
+/// The region's path width never takes part in matching: an id is judged at
+/// its own width only, so the same stored ping reads the same in any region.
 ///
 /// Built once per repeater list (the provider caches it on the list's
 /// identity): ids of 1, 2 and 3 bytes, the only widths a path carries, are
@@ -29,17 +33,20 @@ class ShortHopIds {
 
   final List<_Slot> _keys;
   final Map<String, _Slot> _byPrefix;
+  final Map<String, List<_Slot>> _byFirstByte;
 
-  ShortHopIds._(this._keys, this._byPrefix);
+  ShortHopIds._(this._keys, this._byPrefix, this._byFirstByte);
 
   factory ShortHopIds.fromRepeaters(Iterable<Repeater> repeaters) {
     final keys = <_Slot>[];
     final byPrefix = <String, _Slot>{};
+    final byFirstByte = <String, List<_Slot>>{};
     for (final repeater in repeaters) {
       final key = _clean(repeater.hexId) ?? _clean(repeater.id);
       if (key == null) continue;
       final slot = _Slot(key, repeater);
       keys.add(slot);
+      (byFirstByte[key.substring(0, 2)] ??= <_Slot>[]).add(slot);
       for (final length in _indexedLengths) {
         if (key.length < length) break;
         final prefix = key.substring(0, length);
@@ -47,11 +54,26 @@ class ShortHopIds {
         byPrefix[prefix] = existing == null ? slot : existing.merge(slot);
       }
     }
-    return ShortHopIds._(keys, byPrefix);
+    return ShortHopIds._(keys, byPrefix, byFirstByte);
   }
 
   /// The one repeater [heardId] can mean, or null when none or several do.
   Repeater? resolve(String heardId) => _slotFor(heardId)?.repeater;
+
+  /// Every repeater row whose key starts with [heardId], in list order. Empty
+  /// when the id is unknown, more than one row when it is ambiguous or one
+  /// device has several rows. For callers that settle an ambiguous id with
+  /// other evidence, such as the coordinates stamped on a stored hop.
+  List<Repeater> matching(String heardId) {
+    final token = _clean(heardId);
+    if (token == null) return const <Repeater>[];
+    final bucket = _byFirstByte[token.substring(0, 2)];
+    if (bucket == null) return const <Repeater>[];
+    return [
+      for (final slot in bucket)
+        if (slot.key.startsWith(token)) slot.repeater,
+    ];
+  }
 
   /// [heardId] as Top Heard shows and groups it: when it resolves, the
   /// repeater's key cut to the wider of its own advertised width and the

@@ -18,7 +18,7 @@ Repeater _rep(String id, String hexId, double lat, double lon,
 void main() {
   // Target repeater at (45, -75); id 'ab12' (2 bytes), full hex 'ab12cd34'.
   final target = _rep('ab12', 'ab12cd34', 45.0, -75.0);
-  final lookup = RepeaterLookup.fromRepeaters([target], hopBytes: 2);
+  final lookup = RepeaterLookup.fromRepeaters([target]);
 
   group('RepeaterLookup.resolveByHex', () {
     final durham = _rep(
@@ -36,7 +36,7 @@ void main() {
       name: 'Dahlonega Solar RAK 1W',
     );
     final colliding =
-        RepeaterLookup.fromRepeaters([durham, georgia], hopBytes: 2);
+        RepeaterLookup.fromRepeaters([durham, georgia]);
 
     test('full keys resolve each real DF85 repeater independently', () {
       expect(colliding.resolveByHex(durham.hexId), same(durham));
@@ -55,7 +55,7 @@ void main() {
 
     test('a repeater without a published location remains resolvable', () {
       final noLocation = _rep('A102', 'A102${'CD' * 30}', 0, 0);
-      final lk = RepeaterLookup.fromRepeaters([noLocation], hopBytes: 2);
+      final lk = RepeaterLookup.fromRepeaters([noLocation]);
 
       expect(lk.resolveByHex(noLocation.hexId), same(noLocation));
       expect(lk.resolveByHex('A102'), same(noLocation));
@@ -135,7 +135,6 @@ void main() {
       // a baked [0,0] token, must NOT produce a ~8900 km distance to (0,0).
       final lk = RepeaterLookup.fromRepeaters(
         [target, _rep('00ff', '00ff0000', 0.0, 0.0)],
-        hopBytes: 2,
       );
       final pts = <Map<String, dynamic>>[
         {
@@ -246,7 +245,7 @@ void main() {
         36.000378,
         -78.912449,
       );
-      final lk = RepeaterLookup.fromRepeaters([durham, sibling], hopBytes: 2);
+      final lk = RepeaterLookup.fromRepeaters([durham, sibling]);
       final siblingPoint = <String, dynamic>{
         'status': 1,
         'lat': 36.001,
@@ -505,7 +504,7 @@ void main() {
         'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
         36.0,
         -78.9);
-    final lk = RepeaterLookup.fromRepeaters([rep], hopBytes: 2);
+    final lk = RepeaterLookup.fromRepeaters([rep]);
 
     final endpoints = heardEndpointsForCell(
       [
@@ -521,5 +520,137 @@ void main() {
 
     expect(endpoints, hasLength(1));
     expect(endpoints.single.repeaterId, rep.hexId.toLowerCase());
+  });
+
+  // A stored hop id matches a repeater only when the repeater's key starts
+  // with the whole hop id, at the hop id's own width (the server's
+  // rc_resolve_token rule). The region's path width from auth plays no part,
+  // so these results are the same in a 1, 2 or 3 byte region.
+  group('hop ids match at their own width', () {
+    String key(String prefix) => prefix.padRight(64, '0');
+    Repeater rep(String id, String prefix, double lat,
+            {required int advertBytes, bool multibyteCapable = false}) =>
+        Repeater(
+          id: id,
+          hexId: key(prefix),
+          name: 'R$advertBytes',
+          lat: lat,
+          lon: -75.0,
+          lastHeard: 0,
+          enabled: 1,
+          hopBytes: advertBytes,
+          advertBytes: advertBytes,
+          multibyteCapable: multibyteCapable,
+        );
+
+    // Three different keys sharing the first byte, advertised at 1, 2 and 3
+    // bytes. The 1-byte one has been seen relaying wider ids.
+    final one = rep('a3', 'a3b7', 45.0, advertBytes: 1, multibyteCapable: true);
+    final two = rep('a3f2', 'a3f21c', 45.1, advertBytes: 2);
+    final three = rep('a3f2e9', 'a3f2e9', 45.2, advertBytes: 3);
+    final lk = RepeaterLookup.fromRepeaters([one, two, three]);
+
+    // Hop ids at every width the history holds.
+    final points = <Map<String, dynamic>>[
+      // 1 byte, shared by all three, stamped at `one` (~1573 m away).
+      {
+        'status': 1,
+        'lat': 45.0,
+        'lon': -75.02,
+        'heard_repeats': 'a3(9)[45.0,-75.0]',
+      },
+      // 2 bytes, shared by `two` and `three`, stamped at `two` (~2356 m).
+      {
+        'status': 2,
+        'lat': 45.1,
+        'lon': -75.03,
+        'via': 'a3f2(3)[45.1,-75.0]',
+      },
+      // 3 bytes, only `three`.
+      {
+        'status': 5,
+        'lat': 45.2,
+        'lon': -75.01,
+        'heard_repeats': 'a3f2e9(2)[45.2,-75.0]',
+      },
+      // 3 bytes that no key starts with, though `one` shares two of them.
+      // Stamped at `one`, ~3931 m away: must not be credited to it.
+      {
+        'status': 1,
+        'lat': 45.0,
+        'lon': -75.05,
+        'heard_repeats': 'a3b7ff(4)[45.0,-75.0]',
+      },
+      // 3 bytes that only share the first byte with anything (~6290 m).
+      {
+        'status': 1,
+        'lat': 45.0,
+        'lon': -75.08,
+        'heard_repeats': 'a3d400(5)[45.0,-75.0]',
+      },
+      // DISC answered by `one`, named by its full key.
+      {
+        'status': 6,
+        'public_key': one.hexId,
+        'lat': 45.0,
+        'lon': -75.01,
+        'heard_repeats': '[45.0,-75.0]',
+      },
+      // Full key of `three`.
+      {
+        'status': 1,
+        'lat': 45.2,
+        'lon': -75.02,
+        'heard_repeats': '${three.hexId}(6)[45.2,-75.0]',
+      },
+      // 2 bytes, only `one`.
+      {
+        'status': 3,
+        'lat': 45.0,
+        'lon': -75.0,
+        'heard_repeats': 'a3b7(1)[45.0,-75.0]',
+      },
+    ];
+
+    test('the cell summary ignores a hop id that no key starts with', () {
+      final s = GridSummary.fromPoints(points, lk);
+
+      expect(s.total, 8);
+      // The farthest credited ping is the 2-byte one at ~2356 m. The
+      // unmatched 3-byte hops at ~3931 m and ~6290 m do not count.
+      expect(s.maxDistMeters, isNotNull);
+      expect(s.maxDistMeters!, closeTo(2356, 60));
+    });
+
+    test('repeater stats credit each hop id to the right repeater', () {
+      final a = RepeaterStats.fromCoverageWithPoints(points, one, lk);
+      expect(a.matched, [points[0], points[5], points[7]]);
+      expect(a.stats.bidir, 1);
+      expect(a.stats.disc, 1);
+      expect(a.stats.dead, 1);
+      expect(a.stats.totalMatched, 3);
+      expect(a.stats.maxRangeMeters!, closeTo(1573, 60));
+
+      final b = RepeaterStats.fromCoverageWithPoints(points, two, lk);
+      expect(b.matched, [points[1]]);
+      expect(b.stats.tx, 1);
+      expect(b.stats.totalMatched, 1);
+
+      final c = RepeaterStats.fromCoverageWithPoints(points, three, lk);
+      expect(c.matched, [points[2], points[6]]);
+      expect(c.stats.rx, 1);
+      expect(c.stats.bidir, 1);
+      expect(c.stats.totalMatched, 2);
+    });
+
+    test('the tile lines reach only repeaters a hop id can mean', () {
+      final ends = heardEndpointsForCell(
+        [points[3], points[4]],
+        lk,
+        startLat: 45.0,
+        startLon: -75.05,
+      );
+      expect(ends, isEmpty);
+    });
   });
 }

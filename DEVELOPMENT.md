@@ -213,8 +213,18 @@ the server's `rc_resolve_token` rule (key = hex id, else legacy id; matches
 whose keys form one prefix chain are one device; anything else stays the
 short id) and widens a match to the wider of its advertised width and the
 device/region hop width. The provider builds it once per repeater list
-(prefix map for 1-3 byte ids). It is display only: logs, RX pins and uploads
-keep the raw hop id, and the server resolves it again itself.
+(prefix map for 1-3 byte ids). Logs, RX pins and uploads keep the raw hop id,
+and the server resolves it again itself.
+
+Stored coverage is read with the same rule. `RepeaterLookup`
+(`coverage_summary.dart`) matches each stored hop id through `ShortHopIds`:
+the exact full key, else the repeaters whose key starts with the whole id,
+else the legacy id key. The cell summary uses a single match, repeater stats
+and the tile lines take every match and settle an ambiguous id with the
+coordinates stamped on the hop. An id that no key starts with matches
+nothing. The region's `/auth` `hop_bytes` only sets the radio's path width
+and never takes part in a lookup, so a stored ping reads the same in a 1, 2
+or 3 byte region.
 
 Labels and detail/Manage sheets use each repeater's `advert_bytes`, falling
 back to `hop_bytes`, independently of regional TX path-width enforcement.

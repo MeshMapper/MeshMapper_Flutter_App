@@ -79,6 +79,28 @@ void main() {
     });
   });
 
+  group('matching', () {
+    final twin = _repeater(_key('A8FF01'));
+    final index = ShortHopIds.fromRepeaters([norra, twin, other]);
+
+    test('lists every repeater whose key starts with the id', () {
+      expect(index.matching('A8'), [norra, twin]);
+      expect(index.matching('a81e'), [norra]);
+      expect(index.matching(_key('A8FF01')), [twin]);
+    });
+
+    test('an id that only shares a first byte matches nothing', () {
+      expect(index.matching('A81EFF'), isEmpty);
+      expect(index.matching('A8D4'), isEmpty);
+    });
+
+    test('unknown, non-hex and too-short ids match nothing', () {
+      expect(index.matching('C4'), isEmpty);
+      expect(index.matching('ZZ'), isEmpty);
+      expect(index.matching('A'), isEmpty);
+    });
+  });
+
   group('displayId', () {
     test('a short id shows as the full-width id of its one match', () {
       final index = ShortHopIds.fromRepeaters([norra, other]);

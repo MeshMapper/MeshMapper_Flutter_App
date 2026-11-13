@@ -123,8 +123,7 @@ class RepeaterIdChip extends StatelessWidget {
     final repeaters = appState.repeaters;
 
     final matchKey = fullHexId ?? repeaterId;
-    final lookup = RepeaterLookup.fromRepeaters(repeaters,
-        hopBytes: appState.effectiveHopBytes);
+    final lookup = RepeaterLookup.fromRepeaters(repeaters);
     final resolved = lookup.resolveByHex(matchKey);
     final matchCount = repeaters
         .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
@@ -251,7 +250,6 @@ class RepeaterIdChip extends StatelessWidget {
     Repeater repeater, {
     double? refLat,
     double? refLon,
-    int? regionHopBytesOverride,
   }) {
     final isActive = repeater.isActive;
     final badgeColor =

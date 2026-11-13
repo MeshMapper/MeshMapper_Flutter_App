@@ -2759,8 +2759,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // ($gsize === 100 ? 1 : 0) blob rule for both presets).
     final blob = gridSize == 100 ? 1 : 0;
     final radius = cell.blobFetchRadiusMeters(blob, gridSize.toDouble());
-    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
-        hopBytes: appState.effectiveHopBytes);
+    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters);
     final isImperial = appState.preferences.isImperial;
 
     debugLog('[COVERAGE] cell tap @ '
@@ -3294,8 +3293,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   void _showRepeaterDetailsById(String repeaterId, {bool isolate = true}) {
     if (!mounted) return;
     final appState = context.read<AppStateProvider>();
-    final repeater = RepeaterLookup.fromRepeaters(appState.repeaters,
-            hopBytes: appState.effectiveHopBytes)
+    final repeater = RepeaterLookup.fromRepeaters(appState.repeaters)
         .resolveByHex(repeaterId);
     if (repeater == null) return;
 
@@ -6897,8 +6895,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       deferredMarkers.lastOrNull,
       appState.repeaters.length,
       appState.discDropEnabled,
-      appState.enforceHopBytes,
-      appState.effectiveHopBytes,
       _focusedPingLocation,
       _focusedPingTimestamp,
       _focusedRepeaters.length,
@@ -8642,8 +8638,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Repeater? _lookupRepeaterByHexId(String hexId) {
     if (hexId.isEmpty) return null;
     final appState = context.read<AppStateProvider>();
-    return RepeaterLookup.fromRepeaters(appState.repeaters,
-            hopBytes: appState.effectiveHopBytes)
+    return RepeaterLookup.fromRepeaters(appState.repeaters)
         .resolveByHex(hexId);
   }
 
@@ -10863,8 +10858,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Lazily fetch this repeater's coverage points for the BIDIR/TX/RX/DISC/DEAD
     // totals + max range, then aggregate client-side (renderRepeaterChart parity).
     final appState = context.read<AppStateProvider>();
-    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
-        hopBytes: appState.effectiveHopBytes);
+    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters);
     final isImperial = appState.preferences.isImperial;
     final cvd = appState.preferences.colorVisionType;
     final gridSize = appState.preferences.coverageGridSize;

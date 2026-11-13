@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../models/repeater.dart';
+import 'short_hop_ids.dart';
 
 // Client-side coverage aggregation, ported from the web client (dev/index.php)
 // so the app's cell GRID SUMMARY and repeater totals stay in parity with the web.
@@ -194,7 +195,7 @@ int _pointStatusCategory(Map<String, dynamic> p) {
   return 6; // red (drop / unknown)
 }
 
-// --- repeater lookup (ports repObj / repeaterByHex / repeaterByFullHex) ------
+// --- repeater lookup (ports repObj / repeaterByFullHex) ----------------------
 
 class _RepInfo {
   final String id; // short hex id, lowercased
@@ -207,24 +208,28 @@ class _RepInfo {
       this.id, this.hexId, this.lat, this.lon, this.status, this.hidden);
 }
 
-/// Indexes the loaded repeaters the same three ways the web does: by id
-/// (`repeaterLocs`), by full hex (`repeaterByFullHex`), and by short-hex bucket
-/// (`repeaterByHex`), plus `narrowCandidates`/`prefixLen` for token resolution.
+/// Indexes the loaded repeaters for the coverage views: by legacy id (web
+/// `repeaterLocs`), by full hex (`repeaterByFullHex`), and by hop id through
+/// [ShortHopIds].
+///
+/// A stored hop id is matched at its own width against full keys, the
+/// server's `rc_resolve_token` rule. The `/auth` `hop_bytes` is the region's
+/// radio path width, a different thing from a repeater's id width
+/// (`MeshMapper_Server/docs/APP_API.md`, "`hop_bytes` means two things"), and
+/// takes no part here, so a stored ping reads the same in every region.
 class RepeaterLookup {
-  final int prefixLen;
   final Map<String, _RepInfo> _byId = {};
   final Map<String, _RepInfo> _byFullHex = {};
-  final Map<String, List<_RepInfo>> _byShortHex = {};
+  final Map<Repeater, _RepInfo> _infoFor = Map.identity();
   final Map<String, List<Repeater>> _identityByFullHex = {};
   final Map<String, List<Repeater>> _identityByLegacyId = {};
+  late final ShortHopIds _hopIds;
 
-  RepeaterLookup._(this.prefixLen);
+  RepeaterLookup._();
 
-  /// [hopBytes] is the region path width (web `hopBytes`); `prefixLen = hopBytes*2`.
-  factory RepeaterLookup.fromRepeaters(Iterable<Repeater> repeaters,
-      {required int hopBytes}) {
-    final prefixLen = math.max(2, hopBytes * 2);
-    final lk = RepeaterLookup._(prefixLen);
+  factory RepeaterLookup.fromRepeaters(Iterable<Repeater> repeaters) {
+    final lk = RepeaterLookup._();
+    final keyed = <Repeater>[];
     for (final r in repeaters) {
       // web adds enabled IN (1,2) to the lookup
       if (r.enabled != 1 && r.enabled != 2) continue;
@@ -248,18 +253,13 @@ class RepeaterLookup {
       final hidden = r.name.startsWith('🚫') || r.name.endsWith('🚫');
       final info = _RepInfo(id, cleanHex, r.lat, r.lon, r.enabled, hidden);
       lk._byId[id] = info;
-      final shortHex = cleanHex.length >= prefixLen
-          ? cleanHex.substring(0, prefixLen)
-          : cleanHex;
-      if (shortHex.length >= 2) {
-        (lk._byShortHex[shortHex] ??= <_RepInfo>[]).add(info);
-        final firstByte = cleanHex.length >= 2 ? cleanHex.substring(0, 2) : '';
-        if (firstByte.length == 2 && firstByte != shortHex) {
-          (lk._byShortHex[firstByte] ??= <_RepInfo>[]).add(info);
-        }
-      }
-      if (cleanHex.isNotEmpty) lk._byFullHex[cleanHex] = info;
+      if (cleanHex.isEmpty) continue;
+      lk._byFullHex[cleanHex] = info;
+      // A row with no hex stays reachable by its legacy id only, as before.
+      lk._infoFor[r] = info;
+      keyed.add(r);
     }
+    lk._hopIds = ShortHopIds.fromRepeaters(keyed);
     return lk;
   }
 
@@ -286,41 +286,17 @@ class RepeaterLookup {
     return legacy.length == 1 ? legacy.first : null;
   }
 
-  /// Port of `narrowCandidates` (`dev/index.php:9709`): greedy narrowing on a
-  /// longer id, backward-compat widening on a shorter id.
-  List<_RepInfo> _narrowCandidates(List<_RepInfo> candidates, String id) {
-    final idLower = id.toLowerCase();
-    if (candidates.length > 1 && id.length > prefixLen) {
-      final narrowed = candidates
-          .where((rep) =>
-              rep.hexId.length >= id.length &&
-              rep.hexId.substring(0, id.length) == idLower)
-          .toList();
-      if (narrowed.isNotEmpty) return narrowed;
-    }
-    if (candidates.isEmpty && id.isNotEmpty && id.length < prefixLen) {
-      final results = <_RepInfo>[];
-      _byShortHex.forEach((key, reps) {
-        if (key.length >= idLower.length &&
-            key.substring(0, idLower.length) == idLower) {
-          for (final rep in reps) {
-            if (!results.contains(rep)) results.add(rep);
-          }
-        }
-      });
-      if (results.isNotEmpty) return results;
-    }
-    return candidates;
-  }
-
-  /// Resolve a token hex to candidate repeaters, mirroring the web order:
-  /// full-hex, else narrowed short-hex bucket, else `repeaterLocs[id]`.
+  /// Every located repeater a stored hop id can mean: the exact full key,
+  /// else each one whose key starts with the whole id, else the legacy id
+  /// key. More than one means the id is ambiguous; callers settle that with
+  /// the coordinates stamped on the hop. An id that no key starts with gets
+  /// nothing, never the repeaters that merely share its first byte.
   List<_RepInfo> _candidatesFor(String rid) {
     final full = _byFullHex[rid];
     if (full != null) return <_RepInfo>[full];
-    final short = rid.length >= prefixLen ? rid.substring(0, prefixLen) : rid;
-    final cands =
-        _narrowCandidates(_byShortHex[short] ?? const <_RepInfo>[], rid);
+    final cands = <_RepInfo>[
+      for (final rep in _hopIds.matching(rid)) _infoFor[rep]!,
+    ];
     if (cands.isEmpty) {
       final loc = _byId[rid];
       if (loc != null) return <_RepInfo>[loc];
@@ -328,17 +304,16 @@ class RepeaterLookup {
     return cands;
   }
 
-  /// Resolve a token hex (any width — old narrow OR new 4-byte-capped) to its single repeater,
-  /// or null. Mirrors the web `repObjForToken`: full-hex, else a UNIQUE short-hex/narrowed match,
-  /// else the legacy id key. Tokens normalize WIDER than `repeater.id`, so a bare `_byId[token]`
-  /// lookup misses — the cell MAX-DIST must resolve by full-hex.
+  /// The single repeater a stored hop id (any width) means, or null: the
+  /// exact full key, else the one repeater whose key starts with the whole
+  /// id, else the legacy id key. Hop ids are stored wider than `repeater.id`,
+  /// so a bare `_byId[token]` lookup misses and the cell MAX DIST must go
+  /// through the key.
   _RepInfo? _repForToken(String rid) {
     final full = _byFullHex[rid];
     if (full != null) return full;
-    final short = rid.length >= prefixLen ? rid.substring(0, prefixLen) : rid;
-    final cands =
-        _narrowCandidates(_byShortHex[short] ?? const <_RepInfo>[], rid);
-    if (cands.length == 1) return cands.first;
+    final one = _hopIds.resolve(rid);
+    if (one != null) return _infoFor[one];
     return _byId[rid];
   }
 }
