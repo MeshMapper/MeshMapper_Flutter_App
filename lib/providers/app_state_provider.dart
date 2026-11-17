@@ -539,6 +539,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
   Position? _currentPosition;
   ({double lat, double lon})? _lastKnownPosition;
+  bool _lastPositionLoaded = false;
   DateTime?
       _lastPositionSaveTime; // Throttle position saves to every 30 seconds
   bool _firstGpsLockLogged =
@@ -1817,6 +1818,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   GpsStatus get gpsStatus => _gpsStatus;
   Position? get currentPosition => _currentPosition;
   ({double lat, double lon})? get lastKnownPosition => _lastKnownPosition;
+
+  /// True once startup has checked storage for a saved last position, whether
+  /// or not one was found. The map holds off creating itself until then.
+  bool get lastPositionLoaded => _lastPositionLoaded;
   DeviceModel? get deviceModel => _deviceModel;
   String? get manufacturerString => _manufacturerString;
   String? get firmwareVersionString => _firmwareVersionString;
@@ -4426,6 +4431,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Load user preferences
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
+    // The saved last position comes straight after preferences: the map waits
+    // for it before it is created, so it can open on the user's area (or a
+    // world view) instead of a placeholder city.
+    await _loadLastPosition();
     await _loadRegionalCarpeaters();
     await _loadRepeaterNicknames();
     await _loadRepeaterClaims();
@@ -4444,9 +4453,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugWarn('[ACCOUNT] Init failed: ${e.runtimeType}');
     }
-
-    // Load last known GPS position for map centering
-    await _loadLastPosition();
 
     // Load last connected device info (for bug reports)
     await _loadLastConnectedDevice();
@@ -14902,21 +14908,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Load last known GPS position from Hive storage for map centering
   Future<void> _loadLastPosition() async {
-    final box = await _openBoxSafely(_preferencesBoxName);
-    if (box == null) return;
-
     try {
+      final box = await _openBoxSafely(_preferencesBoxName);
+      if (box == null) return;
       final lat = box.get('last_position_lat') as double?;
       final lon = box.get('last_position_lon') as double?;
       if (lat != null && lon != null && isValidLatLng(lat, lon)) {
         _lastKnownPosition = (lat: lat, lon: lon);
         debugLog('[GPS] Loaded last position: $lat, $lon');
-        notifyListeners(); // Trigger UI rebuild so map can center on last position
       } else if (lat != null && lon != null) {
         debugWarn('[GPS] Ignoring invalid stored last position: $lat, $lon');
+      } else {
+        debugLog('[GPS] No saved last position');
       }
     } catch (e) {
       debugLog('[GPS] Failed to load last position: $e');
+    } finally {
+      _lastPositionLoaded = true;
+      // A map revision bump, not a plain notify: the map sits behind the
+      // mapRevision Selector and is created on its next build.
+      _notifyMapNow();
     }
   }
 

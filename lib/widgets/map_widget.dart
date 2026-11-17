@@ -1060,14 +1060,35 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // detail sheet opens, cleared when it closes/minimizes or on empty-map tap.
   String? _isolatedRepeaterId;
 
-  // Default center (Ottawa)
-  static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
+  // Center and zoom of the world view the map opens on when neither a GPS fix
+  // nor a saved last position is known. The first fix then zooms in from it.
+  static const LatLng _defaultCenter = LatLng(20.0, 0.0);
+  static const double _worldViewZoom = 0.5;
   static const double _defaultZoom = 15.0; // Closer zoom for driving
+
+  // The map is not created until startup has checked for a saved last
+  // position (or a fix arrived), so its one-shot initial camera is the user's
+  // area rather than a placeholder. This timer is the backstop if that check
+  // never reports back.
+  static const Duration _startupGateTimeout = Duration(seconds: 3);
+  Timer? _startupGateTimer;
+  bool _startupGateExpired = false;
+  bool _mapCreated = false;
+  // True while the map sits on the world view it opened on: the min zoom is
+  // relaxed to allow it, and the first zoom-in animates more slowly.
+  bool _worldViewActive = false;
+
+  Duration get _startupZoomDuration => _worldViewActive
+      ? const Duration(milliseconds: 1800)
+      : const Duration(milliseconds: 500);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _startupGateTimer = Timer(_startupGateTimeout, () {
+      if (mounted && !_mapCreated) setState(() => _startupGateExpired = true);
+    });
     _appLifecycleState =
         WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
     // Coverage-patch updates are driven by a DIRECT provider listener, not the
@@ -1241,6 +1262,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // helpers dereference the field after awaits, so they fail closed here;
     // keep the local only for listener cleanup below.
     _mapController = null;
+    _startupGateTimer?.cancel();
     _styleLoadRunner.cancel();
     _regionBorderRunner.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -1351,7 +1373,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Smoothly animate the map to a new position with zoom
-  void _animateToPositionWithZoom(LatLng target, double targetZoom) {
+  void _animateToPositionWithZoom(LatLng target, double targetZoom,
+      {Duration duration = const Duration(milliseconds: 500)}) {
     if (_mapController == null ||
         !_isMapReady ||
         !mounted ||
@@ -1367,7 +1390,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     _mapController!.animateCamera(
       CameraUpdate.newLatLngZoom(target, targetZoom),
-      duration: const Duration(milliseconds: 500),
+      duration: duration,
     );
   }
 
@@ -1794,7 +1817,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           final zoom = _startupZoom(appState, 15.0 - _zoomEpsilon);
-          _animateToPositionWithZoom(lastKnownCenter, zoom);
+          _animateToPositionWithZoom(lastKnownCenter, zoom,
+              duration: _startupZoomDuration);
           debugLog('[MAP] Initial zoom to last known position '
               '(zoom=${zoom.toStringAsFixed(2)})');
         }
@@ -1826,11 +1850,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   widget.bottomPaddingPixels,
                   widget.rightPaddingPixels,
                   initialZoom);
-              _animateToPositionWithZoom(adjustedPosition, initialZoom);
+              _animateToPositionWithZoom(adjustedPosition, initialZoom,
+                  duration: _startupZoomDuration);
               debugLog('[MAP] Initial zoom to GPS position (with panel offset, '
                   'zoom=${initialZoom.toStringAsFixed(2)})');
             } else {
-              _animateToPositionWithZoom(initialPosition, initialZoom);
+              _animateToPositionWithZoom(initialPosition, initialZoom,
+                  duration: _startupZoomDuration);
               debugLog('[MAP] Initial zoom to GPS position '
                   '(zoom=${initialZoom.toStringAsFixed(2)})');
             }
@@ -1957,18 +1983,36 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
 
     // Determine map center - prefer current GPS, fallback to last known, then
-    // Ottawa. Only adopt a source position when its coords are valid — this
-    // feeds initialCameraPosition, and an invalid LatLng aborts the app in
+    // the world view. Only adopt a source position when its coords are valid —
+    // this feeds initialCameraPosition, and an invalid LatLng aborts the app in
     // MapLibre's native ctor (the launch/resume crash).
     LatLng center = _defaultCenter;
+    var positionKnown = false;
     final centerPos = appState.currentPosition;
     final centerLastKnown = appState.lastKnownPosition;
     if (centerPos != null &&
         isValidLatLng(centerPos.latitude, centerPos.longitude)) {
       center = LatLng(centerPos.latitude, centerPos.longitude);
+      positionKnown = true;
     } else if (centerLastKnown != null &&
         isValidLatLng(centerLastKnown.lat, centerLastKnown.lon)) {
       center = LatLng(centerLastKnown.lat, centerLastKnown.lon);
+      positionKnown = true;
+    }
+
+    // Create the map only once its initial camera is known (see
+    // _startupGateTimer). It is read once at creation, so this is decided once.
+    if (!_mapCreated &&
+        (positionKnown || appState.lastPositionLoaded || _startupGateExpired)) {
+      _mapCreated = true;
+      _startupGateTimer?.cancel();
+      if (positionKnown) {
+        _initialCameraZoom = appState.mapViewState.zoom ?? _defaultZoom;
+      } else {
+        _initialCameraZoom = _worldViewZoom;
+        _worldViewActive = true;
+        debugLog('[MAP] No saved position: opening on world view');
+      }
     }
 
     // Camera-follow / derived heading / one-time zooms / GPS-marker puck now
@@ -2535,54 +2579,61 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     return Stack(
       children: [
-        // MapLibre GL map (base tiles via style; coverage overlay added programmatically)
-        MapLibreMap(
-          styleString: newStyleUrl,
-          // Read once by the platform view at creation, so pin the zoom the
-          // map was created at: _onCameraIdle compares against it.
-          initialCameraPosition: CameraPosition(
-            target: center,
-            zoom: _initialCameraZoom ??=
-                appState.mapViewState.zoom ?? _defaultZoom,
+        // Until the startup position is known, a plain backdrop holds the
+        // map's place (see _startupGateTimer).
+        if (!_mapCreated)
+          Positioned.fill(
+            child: ColoredBox(color: Theme.of(context).colorScheme.surface),
+          )
+        else
+          // MapLibre GL map (base tiles via style; coverage overlay added programmatically)
+          MapLibreMap(
+            styleString: newStyleUrl,
+            // Read once by the platform view at creation, so pin the zoom the
+            // map was created at: _onCameraIdle compares against it.
+            initialCameraPosition: CameraPosition(
+              target: center,
+              zoom: _initialCameraZoom!,
+            ),
+            minMaxZoomPreference: MinMaxZoomPreference(
+                _worldViewActive ? _worldViewZoom : MapViewState.minZoom,
+                _maxUserZoom),
+            rotateGesturesEnabled: !_rotationLocked,
+            scrollGesturesEnabled: true,
+            zoomGesturesEnabled: true,
+            tiltGesturesEnabled: false, // 2D wardriving map
+            compassEnabled: false, // We have our own controls
+            // The (i) attribution button carries the OpenStreetMap and
+            // OpenFreeMap credit the ODbL requires, so it has to stay visible.
+            // Bottom-left, lifted by the control panel's height (the same
+            // padding the camera uses), so it rides just above the panel
+            // instead of underneath it. Both platforms apply the margins live
+            // through the map options diff, so it follows the panel as it
+            // opens, minimises and closes.
+            attributionButtonPosition: AttributionButtonPosition.bottomLeft,
+            attributionButtonMargins:
+                math.Point(8, widget.bottomPaddingPixels + 8),
+            // CRITICAL: must be true so the controller's `cameraPosition` getter
+            // stays synced with the platform side. Without this, the Dart-side
+            // _cameraPosition is set once at construction and never updated, which
+            // breaks our sync projection (markers project to stale positions and
+            // get filtered out by viewport bounds). Also enables camera-move events
+            // during gestures so _onCameraChanged fires every frame for live
+            // marker overlay updates.
+            trackCameraPosition: true,
+            onMapCreated: _onMapCreated,
+            onStyleLoadedCallback: () => _handleStyleLoadedCallback(appState),
+            onMapIdle: _onMapIdle,
+            onCameraIdle: _onCameraIdle,
+            // onMapClick fires ONLY for taps that DON'T hit an interactive
+            // layer (the iOS/Android plugin routes feature hits to
+            // `feature#onTap` and doesn't dispatch onMapClick in that case).
+            // That's exactly what we need for the empty-area-collapse path —
+            // tapping the map background closes any open spider.
+            // Custom-layer feature taps still flow through
+            // `controller.onFeatureTapped` (registered in _onMapCreated).
+            onMapClick: _onMapEmptyTap,
           ),
-          minMaxZoomPreference:
-              const MinMaxZoomPreference(MapViewState.minZoom, _maxUserZoom),
-          rotateGesturesEnabled: !_rotationLocked,
-          scrollGesturesEnabled: true,
-          zoomGesturesEnabled: true,
-          tiltGesturesEnabled: false, // 2D wardriving map
-          compassEnabled: false, // We have our own controls
-          // The (i) attribution button carries the OpenStreetMap and
-          // OpenFreeMap credit the ODbL requires, so it has to stay visible.
-          // Bottom-left, lifted by the control panel's height (the same
-          // padding the camera uses), so it rides just above the panel
-          // instead of underneath it. Both platforms apply the margins live
-          // through the map options diff, so it follows the panel as it
-          // opens, minimises and closes.
-          attributionButtonPosition: AttributionButtonPosition.bottomLeft,
-          attributionButtonMargins:
-              math.Point(8, widget.bottomPaddingPixels + 8),
-          // CRITICAL: must be true so the controller's `cameraPosition` getter
-          // stays synced with the platform side. Without this, the Dart-side
-          // _cameraPosition is set once at construction and never updated, which
-          // breaks our sync projection (markers project to stale positions and
-          // get filtered out by viewport bounds). Also enables camera-move events
-          // during gestures so _onCameraChanged fires every frame for live
-          // marker overlay updates.
-          trackCameraPosition: true,
-          onMapCreated: _onMapCreated,
-          onStyleLoadedCallback: () => _handleStyleLoadedCallback(appState),
-          onMapIdle: _onMapIdle,
-          onCameraIdle: _onCameraIdle,
-          // onMapClick fires ONLY for taps that DON'T hit an interactive
-          // layer (the iOS/Android plugin routes feature hits to
-          // `feature#onTap` and doesn't dispatch onMapClick in that case).
-          // That's exactly what we need for the empty-area-collapse path —
-          // tapping the map background closes any open spider.
-          // Custom-layer feature taps still flow through
-          // `controller.onFeatureTapped` (registered in _onMapCreated).
-          onMapClick: _onMapEmptyTap,
-        ),
         // No widget marker overlay — markers are now native MapLibre
         // annotations rendered by the platform view itself.
       ],
@@ -3781,6 +3832,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   void _onCameraIdle() {
     if (_mapController == null) return;
     _rememberCameraZoom();
+    // Left the opening world view (the first zoom-in, or the user zoomed in):
+    // restore the normal min zoom. Only once the camera is back above it, so
+    // tightening the limit cannot snap the camera.
+    if (_worldViewActive && _zoomRestoreSettled) {
+      final zoom = _mapController?.cameraPosition?.zoom;
+      if (zoom != null && zoom >= MapViewState.minZoom && mounted) {
+        setState(() => _worldViewActive = false);
+      }
+    }
     if (!_autoFollow) return;
     _autoFollowDesiredZoom = null;
   }
