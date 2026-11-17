@@ -769,7 +769,10 @@ private struct MeshMapperIslandBottom: View {
         showsNames: false,
         rowFont: .caption2
       )
-      MeshMapperMetrics(state: state, compact: true)
+      // No metrics row here. The expanded island has a hard height cap, and a
+      // fourth line ran past it: the system clipped "TX 22 RX 46" at the bottom
+      // and pushed the trailing count into the top corner's curve. The primary
+      // count already shows in the trailing region; RX stays on the lock screen.
     }
   }
 }
@@ -840,7 +843,13 @@ private struct MeshMapperCompactTrailing: View {
         isActive: true,
         font: .caption2.monospacedDigit().weight(.bold)
       )
-      .frame(minWidth: 28)
+      // A fixed width, not a minimum. Text(timerInterval:) reserves room for
+      // its widest possible value, so with only a minimum the compact island
+      // grew to nearly full width with "0:07" centred in the slack. 36 pt fits
+      // "59:59" at this size; trailing alignment keeps short values beside
+      // the island's edge instead of floating mid-slot.
+      .multilineTextAlignment(.trailing)
+      .frame(width: 36, alignment: .trailing)
     } else if let best = state.repeaters.first {
       Text(best.snr.formattedSnr)
         .font(.caption2.monospacedDigit().weight(.bold))
