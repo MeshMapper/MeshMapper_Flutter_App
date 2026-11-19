@@ -132,14 +132,14 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
                   'Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
               onTap: () => _launchUrl('https://ottawamesh.ca/'),
             ),
-            // Buy Me a Coffee — external donation links are fine on Android/Web
+            // Ko-fi donation link: external donation links are fine on Android/Web
             // but violate Apple guideline 3.1.1 on iOS, so omit it on iOS.
             if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS)
               ListTile(
                 leading: const Icon(Icons.coffee),
                 title: const Text('Buy us a coffee'),
                 subtitle: const Text('Support MeshMapper development'),
-                onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
+                onTap: () => _launchUrl('https://ko-fi.com/mralders0n'),
               ),
           ]),
           SettingsSectionCard(title: 'Support', children: [
