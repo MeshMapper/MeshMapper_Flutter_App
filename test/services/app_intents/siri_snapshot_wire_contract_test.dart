@@ -10,6 +10,7 @@ void main() {
         isConnected: true,
         deviceName: 'MrAlders0n',
         batteryPercent: 76,
+        powerWatts: 0.3,
         gpsStatus: 'locked',
       ),
       session: SiriSessionSnapshot(
@@ -84,8 +85,10 @@ void main() {
       'isConnected',
       'deviceName',
       'batteryPercent',
+      'powerWatts',
       'gpsStatus',
     });
+    expect((snapshot['connection']! as Map)['powerWatts'], 0.3);
     expect((snapshot['session']! as Map).keys.toSet(), {
       'id',
       'startedAtMs',

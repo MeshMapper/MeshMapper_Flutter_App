@@ -3299,6 +3299,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         isConnected: isConnected,
         deviceName: displayDeviceName,
         batteryPercent: _currentBatteryPercent,
+        powerWatts: isConnected ? _preferences.powerLevel : null,
         gpsStatus: _gpsStatus.name,
       ),
       session: SiriSessionSnapshot(
@@ -3360,6 +3361,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       isConnected,
       displayDeviceName,
       _currentBatteryPercent,
+      isConnected ? _preferences.powerLevel : null,
       _gpsStatus.name,
       _liveActivitySessionId,
       _autoPingEnabled,

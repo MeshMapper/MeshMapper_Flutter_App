@@ -25,6 +25,8 @@
 		7288D34A9BC1C140A95C5ED9 /* SampleSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A44B241BC20153F36C053D /* SampleSnapshot.swift */; };
 		73F9D344DD4B7EC7AC29CD86 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F799CC3DB45F3F5C30B5907D /* Pods_RunnerTests.framework */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
+		D30000000000000000000001 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* SceneDelegate.swift */; };
+		D40000000000000000000001 /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000002 /* CarPlaySceneDelegate.swift */; };
 		75D889865C3C829654189002 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CAA1E3000FEC19EE9ED5CFE /* Pods_Runner.framework */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
 		91E86E700B648483F172FAA5 /* ControlsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FD851ABE7C5AD5DBCEBDE26 /* ControlsPage.swift */; };
@@ -62,6 +64,9 @@
 		B1000000000000000000001B /* RepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* RepeaterEntity.swift */; };
 		B1000000000000000000001C /* HeardRepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* HeardRepeaterEntity.swift */; };
 		B1000000000000000000000F /* MeshMapperAppIntents.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* MeshMapperAppIntents.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D10000000000000000000001 /* MeshMapperStatusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* MeshMapperStatusWidget.swift */; };
+		D10000000000000000000002 /* MeshMapperSiriSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */; };
+		D10000000000000000000003 /* MeshMapperSiriSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -164,6 +169,8 @@
 		74331FACF5FD72D49FF952AD /* MeshMapperWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MeshMapperWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		D30000000000000000000002 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		D40000000000000000000002 /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		775B3F6C0618B4BD5644B40B /* NodeListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NodeListView.swift; sourceTree = "<group>"; };
 		78E0A7A72DC9AD7400C4905E /* FlutterGeneratedPluginSwiftPackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = FlutterGeneratedPluginSwiftPackage; path = Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
@@ -211,6 +218,8 @@
 		B2000000000000000000000F /* MeshMapperAppIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MeshMapperAppIntents.entitlements; sourceTree = "<group>"; };
 		B20000000000000000000010 /* MeshMapperAppIntents.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = MeshMapperAppIntents.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000011 /* ConnectLastMeshMapperCompanionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectLastMeshMapperCompanionIntent.swift; sourceTree = "<group>"; };
+		D20000000000000000000001 /* MeshMapperStatusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperStatusWidget.swift; sourceTree = "<group>"; };
+		D20000000000000000000002 /* MeshMapperLiveActivity.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MeshMapperLiveActivity.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -370,6 +379,8 @@
 				1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */,
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
+				D30000000000000000000002 /* SceneDelegate.swift */,
+				D40000000000000000000002 /* CarPlaySceneDelegate.swift */,
 				A20000000000000000000001 /* LiveActivityManager.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				4DB902C46F9528E4D932613C /* WatchSessionManager.swift */,
@@ -392,8 +403,10 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000003 /* MeshMapperLiveActivity.swift */,
+				D20000000000000000000001 /* MeshMapperStatusWidget.swift */,
 				A20000000000000000000009 /* Assets.xcassets */,
 				A20000000000000000000004 /* MeshMapperLiveActivityBundle.swift */,
+				D20000000000000000000002 /* MeshMapperLiveActivity.entitlements */,
 				A20000000000000000000005 /* Info.plist */,
 			);
 			path = MeshMapperLiveActivity;
@@ -765,6 +778,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
+				D30000000000000000000001 /* SceneDelegate.swift in Sources */,
+				D40000000000000000000001 /* CarPlaySceneDelegate.swift in Sources */,
 				A10000000000000000000001 /* LiveActivityManager.swift in Sources */,
 				A10000000000000000000002 /* MeshMapperActivityAttributes.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
@@ -792,6 +807,9 @@
 				A10000000000000000000003 /* MeshMapperActivityAttributes.swift in Sources */,
 				A10000000000000000000004 /* MeshMapperLiveActivity.swift in Sources */,
 				A10000000000000000000005 /* MeshMapperLiveActivityBundle.swift in Sources */,
+				D10000000000000000000001 /* MeshMapperStatusWidget.swift in Sources */,
+				D10000000000000000000002 /* MeshMapperSiriSnapshot.swift in Sources */,
+				D10000000000000000000003 /* MeshMapperSiriSnapshotStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1236,6 +1254,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MeshMapperLiveActivity/MeshMapperLiveActivity.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = "$(MESHMAPPER_DEVELOPMENT_TEAM)";
@@ -1265,6 +1284,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MeshMapperLiveActivity/MeshMapperLiveActivity.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = "$(MESHMAPPER_DEVELOPMENT_TEAM)";
@@ -1293,6 +1313,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MeshMapperLiveActivity/MeshMapperLiveActivity.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = "$(MESHMAPPER_DEVELOPMENT_TEAM)";
