@@ -20,8 +20,18 @@ The custom UIKit dashboard sits beneath an empty CPMapTemplate and is not a map.
 
 ## Integration notes
 
-Based on upstream dev `b857836` fetched October 30, 2026. The provider overlap was limited to two optional power snapshot fields; upstream logic and formatting were preserved. Personal signing, app-name, authentication/background identifiers, release notes and local dependency-lock changes are excluded. The personal phone-build checkout is unchanged.
+Integrated with upstream dev `65fc255` on November 20, 2026. The provider overlap is limited to two optional power snapshot fields; upstream logic and formatting are preserved. Personal signing, app-name, authentication/background identifiers, release notes and local dependency-lock changes are excluded. The personal phone-build checkout is unchanged.
 
 Prior personal-build testing does not establish that this upstream integration passes production signing or App Store review. The integrated branch still needs a signed iOS build and device testing.
 
-Integrated validation: all 263 tests in `test/services/app_intents` and `test/services/status` passed; plist/project syntax and diff whitespace checks passed. Dependencies were resolved from the local cache; the local SDK resolved four test-library versions differently, but that lockfile churn was not retained in the contribution. Repeat tests with the upstream CI toolchain before merge.
+Historical validation before the November upstream merge: all 263 tests in `test/services/app_intents` and `test/services/status` passed. Dependencies were resolved from the local cache; the local SDK resolved four test-library versions differently, but that lockfile churn was not retained in the contribution. Repeat tests with the upstream CI toolchain before merge.
+
+The contributor successfully installed a signed personal build based on upstream `4d690c5` on November 18 and reported successful use on November 20. This is manual evidence for the dashboard, not a signed archive or full regression pass for this contribution branch. The two newer upstream commits change donation links. Plist/project syntax and diff whitespace checks passed after integration.
+
+## Device screenshot
+
+Current post-merge validation on November 20: **266 tests passed** with `flutter test --no-pub test/services/app_intents test/services/status`.
+
+User-supplied dashboard screenshot from the tested personal build (real companion/repeater names, shared with permission). The phone map screenshot is omitted because it includes location information.
+
+![CarPlay recent-repeater dashboard](docs/screenshots/carplay-recent-repeaters.jpg)

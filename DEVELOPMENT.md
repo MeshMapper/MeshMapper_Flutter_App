@@ -3237,3 +3237,9 @@ All API endpoints may return maintenance mode:
 - `lib/screens/settings/repeater_nicknames_page.dart` - Settings > Map > Repeater Nicknames: the list with add, edit, remove and Undo
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization
+
+### Draft CarPlay dashboard and status widget
+
+The iOS scene integration in `AppDelegate.swift` and `SceneDelegate.swift` separates Flutter's phone scene from `CarPlaySceneDelegate.swift`. The dashboard consumes the existing shared Siri snapshot and refreshes displayed ages on a one-second timer; it does not run a second radio session. The existing Live Activity extension also hosts `MeshMapperStatusWidget`, whose refresh and relevance remain system-controlled. The optional `powerWatts` snapshot field is backward-compatible.
+
+The custom dashboard beneath `CPMapTemplate` is a prototype with an unresolved Apple map-layer restriction, not an approved production presentation. See [CARPLAY_REVIEW.md](CARPLAY_REVIEW.md) for owner provisioning steps, lifecycle regression checks, device evidence, and known limitations (including head-unit scrolling). Review or split this work before release.
