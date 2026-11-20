@@ -14,11 +14,13 @@ import 'settings/developer_settings_page.dart';
 import 'settings/general_settings_page.dart';
 import 'settings/map_settings_page.dart';
 import 'settings/settings_section_card.dart';
+import 'settings/support_kofi_tile.dart';
 import 'settings/wardriving_settings_page.dart';
 import 'watch_diagnostics_screen.dart';
 
 /// Settings tab: one row per settings folder, each opening its own page,
-/// plus Close App at the bottom on Android.
+/// the Ko-fi link above About & Support (not iOS), and Close App at the
+/// bottom on Android.
 ///
 /// The folder pages live in `settings/`. This screen only decides which rows
 /// to show; every tile, dialog and platform gate lives on the page it belongs
@@ -37,6 +39,13 @@ class SettingsScreen extends StatelessWidget {
     final aboutSubtitle = kIsWeb
         ? 'Version ${AppConstants.appVersion}, feedback'
         : 'Version ${AppConstants.appVersion}, feedback, debug logs';
+    // The background location setting is iOS-only and the exit options are
+    // Android-only, so the web build has neither.
+    final generalSubtitle = kIsWeb
+        ? 'Appearance, sounds'
+        : defaultTargetPlatform == TargetPlatform.iOS
+            ? 'Appearance, sounds, background location'
+            : 'Appearance, sounds, exit options';
 
     return Scaffold(
       appBar: AppBar(
@@ -52,7 +61,7 @@ class SettingsScreen extends StatelessWidget {
             _FolderTile(
               icon: Icons.tune,
               title: 'General',
-              subtitle: 'Appearance, sounds, background location',
+              subtitle: generalSubtitle,
               builder: (_) => const GeneralSettingsPage(),
             ),
             _FolderTile(
@@ -99,6 +108,10 @@ class SettingsScreen extends StatelessWidget {
                     WatchDiagnosticsScreen(bridge: appState.watchBridge),
               ),
           ]),
+          // Ko-fi link above About & Support. Hidden on iOS: external
+          // donation links break Apple guideline 3.1.1.
+          if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS)
+            const SettingsSectionCard(children: [SupportKofiTile()]),
           SettingsSectionCard(children: [
             _FolderTile(
               icon: Icons.info_outline,

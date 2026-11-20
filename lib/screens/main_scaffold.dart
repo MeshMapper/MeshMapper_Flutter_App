@@ -6,10 +6,13 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import '../debug/store_capture.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
+import '../services/location_consent.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/portal_account_service.dart';
+import '../services/precise_location_gate.dart';
 import '../utils/debug_logger_io.dart';
 import '../widgets/app_toast.dart';
 import 'home_screen.dart';
@@ -31,15 +34,20 @@ class MainScaffold extends StatefulWidget {
 class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
-  bool _hasShownLocationSettingsPrompt = false;
   bool _carpeaterPromptOpen = false;
   bool _carpeaterNoticeOpen = false;
   bool _linkPromptDialogOpen = false;
+  bool _preciseLocationDialogOpen = false;
+  AppStateProvider? _appStateForUpgrade;
   bool _signInErrorToastOpen = false;
   final _onboardingGate = OnboardingPromptGate();
   final _onboardingGuidePresenter = OnboardingGuidePresenter();
   bool _startupPromptsSettled = false;
   bool _onboardingGuideOpen = false;
+
+  /// Debug-only store capture mode: opens on a chosen tab and skips the
+  /// startup prompts so screenshots show the screen, not a dialog.
+  bool get _capturing => kDebugMode && StoreCaptureConfig.active != null;
 
   // Built per frame so the Log screen knows when it is the tab on screen:
   // the IndexedStack keeps every tab alive, so being built says nothing.
@@ -54,8 +62,17 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   void initState() {
     super.initState();
+    if (kDebugMode && StoreCaptureConfig.active != null) {
+      _selectedIndex = StoreCaptureConfig.active!.screen.tabIndex;
+    }
     _onboardingGuidePresenter.coordinator
         .addListener(_onOnboardingReservationChanged);
+    // Android's Precise Location upgrade at Connect goes through the same
+    // disclosure as every other location prompt, which needs this context.
+    if (!kIsWeb && Platform.isAndroid) {
+      _appStateForUpgrade = context.read<AppStateProvider>()
+        ..preciseLocationUpgradeRequester = _requestPreciseLocationUpgrade;
+    }
     // Check disclosure after first frame (needs context)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAndShowDisclosure();
@@ -64,6 +81,7 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   @override
   void dispose() {
+    _appStateForUpgrade?.preciseLocationUpgradeRequester = null;
     _onboardingGuidePresenter.coordinator
         .removeListener(_onOnboardingReservationChanged);
     super.dispose();
@@ -73,7 +91,8 @@ class _MainScaffoldState extends State<MainScaffold> {
     if (mounted) setState(() {});
   }
 
-  /// Check if location disclosure has been shown, show it if not, then request permissions
+  /// Ensure location permission at startup. The disclosure comes up inside
+  /// [_ensureLocationPermission].
   Future<void> _checkAndShowDisclosure() async {
     if (_hasCheckedDisclosure) return;
     _hasCheckedDisclosure = true;
@@ -88,16 +107,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         return;
       }
 
-      // Check if disclosure was already shown
-      final hasShown = await PermissionDisclosureService.hasShownDisclosure();
-      if (!hasShown) {
-        // Show the disclosure dialog
-        if (!mounted) return;
-        debugLog('[DISCLOSURE] Showing location disclosure dialog');
-        await PermissionDisclosureService.showLocationDisclosure(context);
-      }
-
-      debugLog('[DISCLOSURE] Ensuring location permission after disclosure');
+      debugLog('[DISCLOSURE] Ensuring location permission');
       await _ensureLocationPermission();
     } finally {
       if (mounted) {
@@ -142,23 +152,47 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  /// Ensure location permission after disclosure has been shown.
-  /// Requests when possible, restarts GPS when granted, and surfaces a settings CTA
-  /// when the permission has been permanently denied.
+  /// Show the location disclosure. False means Not Now: skip the request and
+  /// leave GPS off.
+  Future<bool> _discloseLocation() async {
+    if (_capturing) {
+      await LocationConsent.markAgreed();
+      return true;
+    }
+    if (!mounted) return false;
+    debugLog('[DISCLOSURE] Showing location disclosure dialog');
+    final agreed = await PermissionDisclosureService.showLocationDisclosure(
+      context,
+    );
+    if (!agreed) debugLog('[DISCLOSURE] Location disclosure declined');
+    return agreed;
+  }
+
+  /// Ensure location permission. Shows the disclosure until it is agreed to
+  /// and again before every system prompt (Google Play), requests when the
+  /// prompt can still appear, restarts GPS when granted, and surfaces a
+  /// settings CTA when the permission has been permanently denied.
   Future<void> _ensureLocationPermission() async {
     bool granted = false;
+
+    // Until it is agreed to, the disclosure comes up even when location is
+    // already granted: review devices can install with it granted.
+    var disclosed = false;
+    if (!await LocationConsent.hasAgreed()) {
+      if (!await _discloseLocation()) return;
+      disclosed = true;
+    }
 
     if (Platform.isIOS) {
       // iOS: Request location via Geolocator
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
+        if (!disclosed && !await _discloseLocation()) return;
         permission = await Geolocator.requestPermission();
       }
       debugLog('[DISCLOSURE] iOS location permission: $permission');
-      if (permission == LocationPermission.deniedForever) {
-        _showLocationSettingsPrompt();
-        return;
-      }
+      // Denied for good: the Connect tab says so and offers the settings.
+      if (permission == LocationPermission.deniedForever) return;
       granted = permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse;
     } else {
@@ -166,6 +200,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       var status = await Permission.locationWhenInUse.status;
       var deniedSilently = false;
       if (status.isDenied) {
+        if (!disclosed && !await _discloseLocation()) return;
         final stopwatch = Stopwatch()..start();
         status = await Permission.locationWhenInUse.request();
         stopwatch.stop();
@@ -183,7 +218,8 @@ class _MainScaffoldState extends State<MainScaffold> {
           debugLog('[DISCLOSURE] Location denied without a system dialog, '
               'offering app settings');
         }
-        _showLocationSettingsPrompt();
+        // Denied for good, or approximate only once the precise upgrade
+        // was refused: the Connect tab says so and offers the settings.
         return;
       }
       granted = status.isGranted;
@@ -195,6 +231,52 @@ class _MainScaffoldState extends State<MainScaffold> {
       final appState = context.read<AppStateProvider>();
       await appState.restartGpsAfterPermission();
     }
+  }
+
+  /// Android: re-request fine location while only approximate is granted,
+  /// after the usual disclosure (Google Play wants it before every system
+  /// location prompt). Android 12+ answers with its "precise" upgrade dialog.
+  /// True when the request was made. Starts no GPS.
+  Future<bool> _requestPreciseLocationUpgrade() async {
+    if (!mounted) return false;
+    final status = await Permission.locationWhenInUse.status;
+    if (status.isPermanentlyDenied) {
+      debugLog('[GPS] Fine location permanently denied, no re-request');
+      return false;
+    }
+    if (!await _discloseLocation()) return false;
+    final result = await Permission.locationWhenInUse.request();
+    debugLog('[GPS] Fine location re-request returned $result');
+    return true;
+  }
+
+  /// Explains a connect refused for approximate location.
+  void _showPreciseLocationDialog() {
+    debugLog('[GPS] Showing the Precise Location needed dialog');
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text(preciseLocationDialogTitle),
+        content: const Text(preciseLocationDialogBody),
+        actions: [
+          TextButton(
+            onPressed: () {
+              debugLog('[GPS] Precise Location dialog: cancelled');
+              Navigator.pop(dialogContext);
+            },
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              debugLog('[GPS] Precise Location dialog: opening app settings');
+              Navigator.pop(dialogContext);
+              Geolocator.openAppSettings();
+            },
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// One-tap offer to bind the connected radio to the signed-in account.
@@ -218,7 +300,9 @@ class _MainScaffoldState extends State<MainScaffold> {
           title: const Text('Link This Device?'),
           content: Text(
             "Link '$deviceName' to your MeshMapper account ($accountName)? "
-            'Wardriving data from this device will count toward your account.',
+            'Wardriving data from this device will count toward your account. '
+            'Its points move onto your account the next time the leaderboard '
+            'updates, which can take up to 24 hours.',
           ),
           actions: [
             TextButton(
@@ -253,11 +337,14 @@ class _MainScaffoldState extends State<MainScaffold> {
     switch (outcome.status) {
       case PortalLinkStatus.linked:
         final account = outcome.accountName ?? 'your MeshMapper account';
+        final linked = outcome.adoptedCount > 1
+            ? 'Linked to $account and claimed ${outcome.adoptedCount} radios'
+            : 'Linked to $account';
         AppToast.success(
           context,
-          outcome.adoptedCount > 1
-              ? 'Linked to $account and claimed ${outcome.adoptedCount} radios'
-              : 'Linked to $account',
+          '$linked. Points move over at the next leaderboard update, within '
+          '24 hours.',
+          duration: const Duration(seconds: 6),
         );
       case PortalLinkStatus.adoptionRequired:
         await showDialog<void>(
@@ -302,21 +389,6 @@ class _MainScaffoldState extends State<MainScaffold> {
       case PortalLinkStatus.failed:
         break;
     }
-  }
-
-  void _showLocationSettingsPrompt() {
-    if (!mounted || _hasShownLocationSettingsPrompt) return;
-    _hasShownLocationSettingsPrompt = true;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Location permission is disabled in system settings.'),
-        action: SnackBarAction(
-          label: 'Settings',
-          onPressed: Geolocator.openAppSettings,
-        ),
-      ),
-    );
   }
 
   /// Report a failed sign-in.
@@ -391,7 +463,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     final onboardingModalLaneReserved = _onboardingGate.reservesModalLane(
       isMobile: !kIsWeb,
       stateLoaded: appState.onboardingGuideStateLoaded,
-      isDue: appState.shouldShowOnboardingGuide,
+      isDue: appState.shouldShowOnboardingGuide && !_capturing,
     );
     final onboardingPresentationReserved =
         _onboardingGuidePresenter.coordinator.isReserved;
@@ -425,7 +497,7 @@ class _MainScaffoldState extends State<MainScaffold> {
           isMobile: !kIsWeb,
           startupPromptsSettled: _startupPromptsSettled,
           stateLoaded: appState.onboardingGuideStateLoaded,
-          isDue: appState.shouldShowOnboardingGuide,
+          isDue: appState.shouldShowOnboardingGuide && !_capturing,
         )) {
       _onboardingGate.markScheduled();
       _onboardingGuideOpen = true;
@@ -473,6 +545,24 @@ class _MainScaffoldState extends State<MainScaffold> {
         if (code == null) return;
         appState.clearPortalSignInError();
         _showPortalSignInError(code);
+      });
+    }
+
+    // A connect refused for approximate location is explained here, whichever
+    // tab the tap came from (the Connection screen, the remembered companion,
+    // Siri).
+    if (appState.preciseLocationPromptDue &&
+        !onboardingModalLaneReserved &&
+        !onboardingPresentationReserved &&
+        !_onboardingGuideOpen &&
+        !_preciseLocationDialogOpen) {
+      _preciseLocationDialogOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _preciseLocationDialogOpen = false;
+        if (!mounted) return;
+        if (!appState.preciseLocationPromptDue) return;
+        appState.acknowledgePreciseLocationPrompt();
+        _showPreciseLocationDialog();
       });
     }
 

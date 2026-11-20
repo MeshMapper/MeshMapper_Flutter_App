@@ -164,7 +164,7 @@ PingService _build(
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: discoveryWindow,
       deviceId: 'TEST',
-    )..checkRecentCoverage = (lat, lon) => RecentCoverage.clear;
+    )..checkRecentCoverage = (lat, lon, kind) => RecentCoverage.clear;
 
 void main() {
   testWidgets('a user stop keeps the 25 m anchor, so a restart in place is held',

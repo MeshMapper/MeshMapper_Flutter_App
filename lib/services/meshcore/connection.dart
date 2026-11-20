@@ -958,6 +958,13 @@ class MeshCoreConnection {
     } catch (e) {
       debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);
+      // A disposed connection was abandoned or superseded: whoever disposed
+      // it owns the transport now, which may already carry a newer link.
+      if (_disposed) {
+        debugLog('[CONN] Connection was superseded, leaving the transport '
+            'to its new owner');
+        rethrow;
+      }
       // Clean up BLE connection on failure
       try {
         await _transport.disconnect();
@@ -1331,6 +1338,22 @@ class MeshCoreConnection {
             completer.complete(List.unmodifiable(_contactCache.values));
             break;
           }
+        // Known frames the app deliberately ignores: it never reads its
+        // inbox or keeps a contact UI, so these pushes and message-sync
+        // replies carry nothing it uses. The frame line above already
+        // records them, so they stay quiet here.
+        case PushCodes.advert:
+        case PushCodes.newAdvert:
+        case PushCodes.msgWaiting:
+        case PushCodes.sendConfirmed:
+        case PushCodes.contactDeleted:
+        case PushCodes.contactsFull:
+        case ResponseCodes.noMoreMessages:
+        case ResponseCodes.contactMsgRecv:
+        case ResponseCodes.contactMsgRecvV3:
+        case ResponseCodes.channelMsgRecvV3:
+        case ResponseCodes.advertPath:
+          break;
         default:
           // Log unhandled response codes (like JS implementation)
           debugLog(
@@ -2254,6 +2277,13 @@ class MeshCoreConnection {
         }
       }
       break;
+    }
+    // After the gate waits, which dispose() releases: a disposed connection
+    // was abandoned or superseded, and the transport may already carry a
+    // newer connection whose replies this frame would steal.
+    if (_disposed) {
+      debugLog('[CONN] Command $code not written: connection disposed');
+      throw const RadioAbortedException();
     }
     if (lease != null && (!lease.active || lease.cancelled)) {
       debugLog('[SCOPES] Command $code not written: the lease has ended');
@@ -3620,6 +3650,9 @@ class MeshCoreConnection {
   /// Dispose of resources
   void dispose() {
     _disposed = true;
+    // Not emitted (the stream closes below), but anything still holding this
+    // object, such as a PingService timer guard, must not read it as live.
+    _currentStep = ConnectionStep.disconnected;
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
     _abortPendingSign();

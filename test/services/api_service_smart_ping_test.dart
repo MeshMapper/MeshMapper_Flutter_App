@@ -70,6 +70,41 @@ void main() {
     });
   });
 
+  group('flood only parsing', () {
+    test('a missing field reads true', () async {
+      final api = await authed({'smart_ping': true});
+      expect(api.apiSmartPingFloodOnly, isTrue);
+    });
+
+    test('false and 0 read false', () async {
+      expect(
+          (await authed({'smart_ping_flood_only': false}))
+              .apiSmartPingFloodOnly,
+          isFalse);
+      expect(
+          (await authed({'smart_ping_flood_only': 0})).apiSmartPingFloodOnly,
+          isFalse);
+    });
+
+    test('true and a string read true', () async {
+      expect(
+          (await authed({'smart_ping_flood_only': true}))
+              .apiSmartPingFloodOnly,
+          isTrue);
+      expect(
+          (await authed({'smart_ping_flood_only': 'false'}))
+              .apiSmartPingFloodOnly,
+          isTrue);
+    });
+
+    test('clearing the session reads true again', () async {
+      final api = await authed({'smart_ping_flood_only': false});
+      expect(api.apiSmartPingFloodOnly, isFalse);
+      api.clearSession();
+      expect(api.apiSmartPingFloodOnly, isTrue);
+    });
+  });
+
   group('fetchRecentCoverageTile', () {
     http.Request? seen;
     ApiService answering(http.Response Function() responder) => ApiService(

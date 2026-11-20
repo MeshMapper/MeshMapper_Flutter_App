@@ -91,8 +91,10 @@ class GeneralSettingsPage extends StatelessWidget {
             ],
           ]),
 
-          // Background location needs an OS permission the web build cannot hold.
-          if (!kIsWeb)
+          // Only iOS has a background location permission to manage. Android
+          // keeps GPS running through the session service, which needs none,
+          // and the web build cannot hold the permission.
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS)
             SettingsSectionCard(title: 'Location', children: [
               _BackgroundModeToggle(appState: appState),
             ]),

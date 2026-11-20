@@ -185,6 +185,7 @@ class ApiService {
   int _apiHopBytes = 1;
   bool _enforceSmartPing = false;
   int _apiSmartPingDays = 14;
+  bool _apiSmartPingFloodOnly = true;
   bool _scopeDiscoveryOffered = false;
   bool _enforceScopeDiscovery = false;
   int _apiScopeRefreshDays = 14;
@@ -231,6 +232,12 @@ class ApiService {
   /// The Smart Pinging window (days) the server sent; only binding when
   /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
   int get apiSmartPingDays => _apiSmartPingDays;
+
+  /// Whether Smart Pinging holds a flood (TX) ping back only for a green
+  /// square and never holds a discovery request; only binding when
+  /// [enforceSmartPing] is true. True when the field is
+  /// missing or anything other than false / 0.
+  bool get apiSmartPingFloodOnly => _apiSmartPingFloodOnly;
 
   /// Whether the last live auth carried the `scope_discovery` key at all.
   /// The key's PRESENCE is the gate: a server that predates the feature never
@@ -1030,9 +1037,12 @@ class ApiService {
               (smartDays is int && smartDays >= 1 && smartDays <= 365)
                   ? smartDays
                   : 14;
+          final floodOnly = data['smart_ping_flood_only'];
+          _apiSmartPingFloodOnly = !(floodOnly == false || floodOnly == 0);
           if (_enforceSmartPing) {
             debugLog(
-                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window');
+                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window, '
+                '${_apiSmartPingFloodOnly ? 'flood only' : 'all pings'}');
           }
 
           // Scope discovery (APP_API.md). The key's PRESENCE is the gate: a
@@ -1793,6 +1803,7 @@ class ApiService {
       _apiHopBytes = 1;
       _enforceSmartPing = false;
       _apiSmartPingDays = 14;
+      _apiSmartPingFloodOnly = true;
       final scopeWasOffered = _scopeDiscoveryOffered;
       final scopeWasEnforced = _enforceScopeDiscovery;
       _scopeDiscoveryOffered = false;
@@ -1935,7 +1946,11 @@ class ApiService {
   /// 304 retains this verdict; it does not mean the render was unchanged.
   /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
   /// is empty; package:http has already gunzipped the response).
-  Future<({bool? changed, Uint8List? body})> freshenVectorTile({
+  /// `noVerdictReason`: why `changed` is null (`header absent`, `HTTP <code>`
+  /// or `request failed`); null whenever a verdict came back. An absent
+  /// header is the normal answer for an on-demand render, not a failure.
+  Future<({bool? changed, Uint8List? body, String? noVerdictReason})>
+      freshenVectorTile({
     required String zone,
     required int z,
     required int x,
@@ -1969,17 +1984,22 @@ class ApiService {
       if (response.statusCode != 200 &&
           response.statusCode != 204 &&
           !(verdictOnly && response.statusCode == 304)) {
-        return (changed: null, body: null);
+        return (
+          changed: null,
+          body: null,
+          noVerdictReason: 'HTTP ${response.statusCode}',
+        );
       }
       final body = response.statusCode == 200 ? response.bodyBytes : null;
       return (
         changed: changed == null ? null : changed == '1',
         body: body,
+        noVerdictReason: changed == null ? 'header absent' : null,
       );
     } catch (e) {
       debugWarn(
           '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
-      return (changed: null, body: null);
+      return (changed: null, body: null, noVerdictReason: 'request failed');
     }
   }
 

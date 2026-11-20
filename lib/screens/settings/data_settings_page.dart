@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,6 +7,7 @@ import '../../utils/web_file_helpers_stub.dart'
     if (dart.library.html) '../../utils/web_file_helpers.dart';
 
 import '../../providers/app_state_provider.dart';
+import '../../services/offline_session_export.dart';
 import '../../services/offline_session_service.dart';
 import '../../utils/debug_logger_io.dart';
 import '../../utils/share_origin.dart';
@@ -88,6 +87,32 @@ class DataSettingsPage extends StatelessWidget {
                     onDownload: (origin) => _downloadOfflineSession(
                         context, appState, session.filename, origin),
                   )),
+            // Export all: only with sessions to export (the empty state above
+            // says there are none). Never deletes or marks them uploaded.
+            if (appState.offlineSessions.isNotEmpty)
+              Builder(
+                builder: (tileContext) {
+                  final exporting = appState.isExportingOfflineSessions;
+                  final count = appState.offlineSessions.length;
+                  return ListTile(
+                    leading: const Icon(Icons.download, color: Colors.blue),
+                    title: const Text('Export all'),
+                    subtitle: Text(count == 1
+                        ? '1 session as a JSON file'
+                        : '$count sessions as JSON files'),
+                    trailing: exporting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : null,
+                    enabled: !exporting,
+                    onTap: () => _exportAllOfflineSessions(
+                        context, appState, globalRectOf(tileContext)),
+                  );
+                },
+              ),
           ]),
         ],
       ),
@@ -296,8 +321,7 @@ class DataSettingsPage extends StatelessWidget {
       }
 
       // Convert to pretty JSON
-      final jsonString =
-          const JsonEncoder.withIndent('  ').convert(sessionData);
+      final jsonString = offlineSessionJson(sessionData);
 
       if (kIsWeb && isWebFileHelpersAvailable) {
         // Web: Create a blob and trigger download
@@ -328,6 +352,47 @@ class DataSettingsPage extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error downloading: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Export every offline session at once (#560). Mobile: one share sheet
+  /// with a file per session. Web: one download per session. A dismissed
+  /// share sheet is not an error; the sessions are kept either way.
+  Future<void> _exportAllOfflineSessions(
+      BuildContext context, AppStateProvider appState, Rect? origin) async {
+    try {
+      if (kIsWeb && isWebFileHelpersAvailable) {
+        final sessions = appState.offlineSessions;
+        for (final session in sessions) {
+          downloadFileWeb(
+            content: offlineSessionJson(session.data),
+            filename: session.filename,
+            mimeType: 'application/json',
+          );
+        }
+        debugLog('[OFFLINE] Downloaded all ${sessions.length} sessions');
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Downloaded ${sessions.length} sessions'),
+              duration: const Duration(seconds: 2),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        await appState.shareAllOfflineSessions(sharePositionOrigin: origin);
+      }
+    } catch (e) {
+      debugError('[OFFLINE] Failed to export all sessions: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error exporting: $e'),
             backgroundColor: Colors.red,
           ),
         );

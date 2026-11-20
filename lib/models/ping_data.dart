@@ -148,6 +148,13 @@ class PingStats {
   final int rxCount;
   final int discCount; // Discovery count (Passive Mode)
   final int traceCount; // Trace count (Targeted Mode)
+
+  /// Scope requests a repeater answered with its scope list (Passive/Hybrid
+  /// scope discovery), one per answering repeater, counted whether or not the
+  /// hourly cap let the answer upload. Lives here, not on the scope log, so
+  /// it resets with TX/DISC/Trace (`PingService.resetStats`, a new
+  /// connection) and is not cut by Clear logs or the log's 500-entry cap.
+  final int scopeCount;
   final int successfulUploads;
   final int failedUploads;
   final int queuedCount;
@@ -157,6 +164,7 @@ class PingStats {
     this.rxCount = 0,
     this.discCount = 0,
     this.traceCount = 0,
+    this.scopeCount = 0,
     this.successfulUploads = 0,
     this.failedUploads = 0,
     this.queuedCount = 0,
@@ -167,6 +175,7 @@ class PingStats {
     int? rxCount,
     int? discCount,
     int? traceCount,
+    int? scopeCount,
     int? successfulUploads,
     int? failedUploads,
     int? queuedCount,
@@ -176,6 +185,7 @@ class PingStats {
       rxCount: rxCount ?? this.rxCount,
       discCount: discCount ?? this.discCount,
       traceCount: traceCount ?? this.traceCount,
+      scopeCount: scopeCount ?? this.scopeCount,
       successfulUploads: successfulUploads ?? this.successfulUploads,
       failedUploads: failedUploads ?? this.failedUploads,
       queuedCount: queuedCount ?? this.queuedCount,

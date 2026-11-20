@@ -1,3 +1,4 @@
+import '../utils/gps_marker_colors.dart';
 import '../utils/public_key.dart';
 
 /// User preferences for wardriving configuration
@@ -64,6 +65,12 @@ class UserPreferences {
 
   /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
   final int smartPingDays;
+
+  /// Smart Pinging holds a flood (TX) ping back only for a green square (a
+  /// heard echo), and never holds a discovery request. Off, a green or cyan
+  /// square holds both. The region's value wins while it enforces Smart
+  /// Pinging.
+  final bool smartPingFloodOnly;
 
   /// Limit the map overlay to the effective Smart Pinging coverage window.
   final bool smartPingRecentCoverageOnly;
@@ -146,6 +153,10 @@ class UserPreferences {
   /// GPS position marker style (arrow, car, bike, boat, walk)
   final String gpsMarkerStyle;
 
+  /// GPS position marker colour, for every style ('default', 'green').
+  /// See [GpsMarkerColors].
+  final String gpsMarkerColor;
+
   /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
   final String colorVisionType;
 
@@ -206,6 +217,7 @@ class UserPreferences {
     this.hybridModeEnabled = true,
     this.smartPingEnabled = true,
     this.smartPingDays = SmartPingDays.defaultDays,
+    this.smartPingFloodOnly = true,
     this.smartPingRecentCoverageOnly = false,
     this.scopeDiscoveryEnabled = false,
     this.scopeDiscoveryDays = ScopeDiscoveryDays.defaultDays,
@@ -228,6 +240,7 @@ class UserPreferences {
     this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
+    this.gpsMarkerColor = GpsMarkerColors.defaultChoice,
     this.colorVisionType = 'none',
     this.mapTilesEnabled = true,
     this.coverageOverlayOpacity = 0.7,
@@ -265,6 +278,7 @@ class UserPreferences {
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
+      smartPingFloodOnly: (json['smartPingFloodOnly'] as bool?) ?? true,
       smartPingRecentCoverageOnly:
           (json['smartPingRecentCoverageOnly'] as bool?) ?? false,
       showDeferredMarkers: (json['showDeferredMarkers'] as bool?) ?? true,
@@ -298,6 +312,8 @@ class UserPreferences {
       liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
+      gpsMarkerColor: GpsMarkerColors.normalize(
+          json['gpsMarkerColor'] is String ? json['gpsMarkerColor'] : null),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
       coverageOverlayOpacity:
@@ -380,6 +396,7 @@ class UserPreferences {
       'hybridModeEnabled': hybridModeEnabled,
       'smartPingEnabled': smartPingEnabled,
       'smartPingDays': smartPingDays,
+      'smartPingFloodOnly': smartPingFloodOnly,
       'smartPingRecentCoverageOnly': smartPingRecentCoverageOnly,
       'scopeDiscoveryEnabled': scopeDiscoveryEnabled,
       'scopeDiscoveryDays': scopeDiscoveryDays,
@@ -402,6 +419,7 @@ class UserPreferences {
       'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
+      'gpsMarkerColor': gpsMarkerColor,
       'colorVisionType': colorVisionType,
       'mapTilesEnabled': mapTilesEnabled,
       'coverageOverlayOpacity': coverageOverlayOpacity,
@@ -439,6 +457,7 @@ class UserPreferences {
     bool? hybridModeEnabled,
     bool? smartPingEnabled,
     int? smartPingDays,
+    bool? smartPingFloodOnly,
     bool? smartPingRecentCoverageOnly,
     bool? scopeDiscoveryEnabled,
     int? scopeDiscoveryDays,
@@ -461,6 +480,7 @@ class UserPreferences {
     bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
+    String? gpsMarkerColor,
     String? colorVisionType,
     bool? mapTilesEnabled,
     double? coverageOverlayOpacity,
@@ -498,6 +518,7 @@ class UserPreferences {
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
       smartPingEnabled: smartPingEnabled ?? this.smartPingEnabled,
       smartPingDays: smartPingDays ?? this.smartPingDays,
+      smartPingFloodOnly: smartPingFloodOnly ?? this.smartPingFloodOnly,
       smartPingRecentCoverageOnly:
           smartPingRecentCoverageOnly ?? this.smartPingRecentCoverageOnly,
       scopeDiscoveryEnabled: scopeDiscoveryEnabled ?? this.scopeDiscoveryEnabled,
@@ -524,6 +545,7 @@ class UserPreferences {
           liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
+      gpsMarkerColor: gpsMarkerColor ?? this.gpsMarkerColor,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
       coverageOverlayOpacity:
@@ -591,6 +613,7 @@ class UserPreferences {
         other.hybridModeEnabled == hybridModeEnabled &&
         other.smartPingEnabled == smartPingEnabled &&
         other.smartPingDays == smartPingDays &&
+        other.smartPingFloodOnly == smartPingFloodOnly &&
         other.smartPingRecentCoverageOnly == smartPingRecentCoverageOnly &&
         other.scopeDiscoveryEnabled == scopeDiscoveryEnabled &&
         other.scopeDiscoveryDays == scopeDiscoveryDays &&
@@ -611,6 +634,7 @@ class UserPreferences {
         other.liveActivityShowNames == liveActivityShowNames &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
+        other.gpsMarkerColor == gpsMarkerColor &&
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
         other.coverageOverlayOpacity == coverageOverlayOpacity &&
@@ -645,6 +669,7 @@ class UserPreferences {
       hybridModeEnabled,
       smartPingEnabled,
       smartPingDays,
+      smartPingFloodOnly,
       smartPingRecentCoverageOnly,
       scopeDiscoveryEnabled,
       scopeDiscoveryDays,
@@ -665,6 +690,7 @@ class UserPreferences {
       liveActivityShowNames,
       markerStyle,
       gpsMarkerStyle,
+      gpsMarkerColor,
       colorVisionType,
       mapTilesEnabled,
       coverageOverlayOpacity,

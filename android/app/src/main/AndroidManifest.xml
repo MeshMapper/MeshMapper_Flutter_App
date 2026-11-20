@@ -9,7 +9,10 @@
     <!-- Location permissions for GPS and BLE scanning -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Background GPS comes from the session service, which starts on screen
+         at connect, so "Allow all the time" is not needed. remove keeps a
+         plugin from merging the permission back in. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:node="remove" />
 
     <!-- BLE hardware feature -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
@@ -21,6 +24,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Network state for satellite/constrained-network detection -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 14+ requires one of a short list of permissions for a
+         connectedDevice foreground service. Without this one, a TCP-only user
+         who denied Nearby devices (Bluetooth) fails the type check:
+         startForeground throws, the session service never becomes
+         foreground, and the session dies once the app is in the background.
+         It is a normal permission: no prompt. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <!-- Wake lock for auto-ping mode -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -29,8 +39,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Only flutter_background_service asks for this, for its BootReceiver,
+         which is removed below. Nothing starts at boot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" tools:node="remove" />
 
     <application
         android:label="MeshMapper"
@@ -84,12 +96,28 @@
             android:name="android.telephony.PROPERTY_SATELLITE_DATA_OPTIMIZED"
             android:value="net.meshmapper.app" />
 
-        <!-- Background service for continuous wardriving -->
+        <!-- The app's own foreground service (MeshMapperSessionService.kt),
+             which keeps BLE and GPS running in the background. It is started
+             while the app is on screen. stopWithTask ends it when the app is
+             swiped away, and nothing starts it at boot or restarts it. -->
+        <service
+            android:name=".MeshMapperSessionService"
+            android:exported="false"
+            android:stopWithTask="true"
+            android:foregroundServiceType="location|connectedDevice" />
+
+        <!-- flutter_background_service is iOS only now. Its Android service,
+             restart alarm receiver and boot receiver are removed from the
+             merged manifest. -->
         <service
             android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:foregroundServiceType="location|connectedDevice|dataSync"
-            android:exported="true"
-            tools:replace="android:exported,android:foregroundServiceType" />
+            tools:node="remove" />
+        <receiver
+            android:name="id.flutter.flutter_background_service.WatchdogReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="id.flutter.flutter_background_service.BootReceiver"
+            tools:node="remove" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

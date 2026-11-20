@@ -159,6 +159,8 @@ class _ConnectedAppState extends ChangeNotifier implements AppStateProvider {
   @override
   bool get isAirborne => false;
   @override
+  GpsStatus get gpsStatus => GpsStatus.locked;
+  @override
   bool get offlineMode => false;
   @override
   bool get maintenanceMode => false;

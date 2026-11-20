@@ -110,6 +110,13 @@ class CryptoService {
     return digest.bytes[0];
   }
 
+  /// Whether [length] bytes of ciphertext can be AES-ECB decrypted: at least
+  /// one block and a whole number of 16-byte blocks. Anything else is a
+  /// malformed packet, so callers drop it before calling
+  /// [decryptChannelMessage].
+  static bool isValidCiphertextLength(int length) =>
+      length > 0 && length % 16 == 0;
+
   /// Decrypt channel message using AES-ECB mode
   ///
   /// MeshCore uses AES-128-ECB for channel message encryption

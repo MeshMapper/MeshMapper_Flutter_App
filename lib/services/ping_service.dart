@@ -141,6 +141,12 @@ class PingService {
   /// only re-read the mode then went out alongside the new session's own.
   int _sendEpoch = 0;
 
+  /// Set by [dispose]. The provider disposes this service on a radio drop
+  /// without a force disable first, so every scheduler and timer callback
+  /// checks it: a send still parked on its fresh fix or BLE write must not
+  /// re-arm a lane on a service nobody owns any more.
+  bool _disposed = false;
+
   // Auto-ping mode
   bool _autoPingEnabled = false;
   bool _passiveModeEnabled = false;
@@ -221,11 +227,18 @@ class PingService {
   /// Callback to get the power level in watts (0.3, 0.6, 1.0, 2.0) from user preferences
   double Function()? getPowerLevel;
 
-  /// Smart Pinging: whether the cell under a fix already has recent coverage.
-  /// Consulted by the auto TX validator and the auto discovery path only.
-  /// Null (or [RecentCoverage.unknown]) never blocks. Wired by the provider
-  /// to [RecentCoverageService.isCovered].
-  RecentCoverage Function(double lat, double lon)? checkRecentCoverage;
+  /// Smart Pinging: whether the cell under a fix already has recent coverage
+  /// for this kind of ping. Consulted by the auto TX validator and the auto
+  /// discovery path only. Null (or [RecentCoverage.unknown]) never blocks.
+  /// Wired by the provider to [RecentCoverageService.isCovered], asked per
+  /// kind: a TX asks with forTx true, a discovery with forTx false.
+  RecentCoverage Function(double lat, double lon, BankedPingType kind)?
+      checkRecentCoverage;
+
+  /// Whether Smart Pinging is on with a known zone. Diagnostics only: an
+  /// inactive lookup answers [RecentCoverage.clear], so the send log needs
+  /// this to say why a ping went out.
+  bool Function()? isRecentCoverageActive;
 
   /// Fired once each time smart pinging holds a ping, with the fix that was
   /// validated and which kind of ping was held. The provider dedupes it on
@@ -268,6 +281,11 @@ class PingService {
   /// Callback for discovery events (Passive Mode)
   /// Fires immediately when disc ping is created (like onTxPing)
   void Function(DiscLogEntry)? onDiscPing;
+
+  /// The entry [onDiscPing] published was never sent: the discovery write
+  /// failed. The listener withdraws it, so a request that never went on the
+  /// air is not drawn as a failed discovery. Nothing was queued for upload.
+  void Function(DiscLogEntry)? onDiscPingAborted;
 
   /// Called in real-time when each node is discovered during tracking window
   /// Parameters: (DiscLogEntry discPing, DiscoveredNodeEntry nodeEntry, bool isNew)
@@ -461,7 +479,8 @@ class PingService {
     // here and the interval tick already fails open; 'clear' is also the
     // answer once Smart Pinging is off, which is why the provider drops the
     // bank when the lookup goes inactive.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) !=
+    if (checkRecentCoverage?.call(
+            position.latitude, position.longitude, banked) !=
         RecentCoverage.clear) {
       return false;
     }
@@ -607,7 +626,8 @@ class PingService {
     // reads as held, not rate limited, and both Hybrid legs then agree. Banking
     // a too close ping is safe, since the release re-checks the 25 m rule
     // before it ever goes out. Only here (auto): manual pings always send.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+    if (checkRecentCoverage?.call(
+            position.latitude, position.longitude, BankedPingType.tx) ==
         RecentCoverage.covered) {
       return PingValidation.recentlyCovered;
     }
@@ -986,6 +1006,10 @@ class PingService {
         debugError('[PING] No GPS position available');
         _pingInProgress = false;
         return false;
+      }
+      if (!manual) {
+        debugLog('[PING] Auto TX passed validation, smart ping: '
+            '${_smartPingVerdict(position, BankedPingType.tx)}');
       }
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
@@ -1420,10 +1444,20 @@ class PingService {
     }
   }
 
+  /// Why Smart Pinging let a send through, for the send log: 'inactive'
+  /// (off, or no zone), 'unknown' (no tile loaded here, fails open), 'clear'
+  /// or 'no lookup' (not wired).
+  String _smartPingVerdict(Position position, BankedPingType kind) {
+    final check = checkRecentCoverage;
+    if (check == null) return 'no lookup';
+    if (isRecentCoverageActive?.call() == false) return 'inactive';
+    return check(position.latitude, position.longitude, kind).name;
+  }
+
   /// Schedule next auto ping after interval
   /// Reference: scheduleNextAutoPing() in wardrive.js
   void _scheduleNextAutoPing({int? delayMs}) {
-    if (!_autoPingEnabled || _passiveModeEnabled) {
+    if (_disposed || !_autoPingEnabled || _passiveModeEnabled) {
       debugLog(
           '[ACTIVE MODE] Not scheduling next auto ping - auto mode not running or Passive Mode');
       return;
@@ -1452,6 +1486,7 @@ class PingService {
 
     // Schedule the next ping
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
+      if (_disposed) return;
       debugLog('[ACTIVE MODE] Auto ping timer fired');
 
       // Guard: connection may have dropped since timer was scheduled
@@ -1861,6 +1896,14 @@ class PingService {
     await _wakelockService.disable();
   }
 
+  /// Count one scope request a repeater answered. The scope runner lives on
+  /// the provider, but the count sits with the other session stats so it
+  /// resets with them.
+  void recordScopeAnswer() {
+    _stats = _stats.copyWith(scopeCount: _stats.scopeCount + 1);
+    onStatsUpdated?.call(_stats);
+  }
+
   /// Reset statistics
   void resetStats() {
     _stats = const PingStats();
@@ -2104,7 +2147,8 @@ class PingService {
       }
 
       // Smart Pinging: a covered square gets no discovery request either.
-      if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+      if (checkRecentCoverage?.call(position.latitude, position.longitude,
+              BankedPingType.discovery) ==
           RecentCoverage.covered) {
         _skipReason = skipReasonRecentlyCovered;
         // A held TX ping keeps the slot (Hybrid): the first ping into a fresh
@@ -2126,14 +2170,22 @@ class PingService {
         return;
       }
 
+      // A square can be clear for discovery while still covered for TX, so
+      // ask about TX separately before deciding what the bank does.
+      final txCovered = checkRecentCoverage?.call(
+              position.latitude, position.longitude, BankedPingType.tx) ==
+          RecentCoverage.covered;
+
       // A held TX ping is never replaced by a discovery (Hybrid). The release
       // check could not see this fix: the in-progress latch above refuses it,
       // getFreshPosition() bypasses the stream, and it only releases on a
       // definite 'clear' while this lane also proceeds on 'unknown'. So this
-      // leg goes to the TX instead. The send itself is dispatched from the
-      // finally, once the latch is cleared, since sendTxPing takes it again.
+      // leg goes to the TX instead, unless the square is still covered for
+      // TX. The send itself is dispatched from the finally, once the latch is
+      // cleared, since sendTxPing takes it again.
       if (_hybridModeEnabled &&
           _bankedPing == BankedPingType.tx &&
+          !txCovered &&
           _gpsService.canPingAtPosition(position)) {
         debugLog('[DISC] Banked TX ping takes this leg, discovery not sent');
         _bankedPing = null;
@@ -2143,9 +2195,19 @@ class PingService {
         return;
       }
 
+      debugLog('[DISC] Discovery passed checks, smart ping: '
+          '${_smartPingVerdict(position, BankedPingType.discovery)}');
+
       // Clear skip reason since we're proceeding
       _skipReason = null;
-      _bankedPing = null;
+      // A held TX in a square still covered for TX keeps waiting for a clear
+      // one: this discovery does not stand in for it.
+      if (_bankedPing == BankedPingType.tx && txCovered) {
+        debugLog(
+            '[DISC] Square covered for TX only, discovery sent, banked TX kept');
+      } else {
+        _bankedPing = null;
+      }
 
       // Signal "Sending..." to UI (the flag itself was latched above)
       onPingProgressChanged?.call();
@@ -2207,8 +2269,14 @@ class PingService {
         // discovery pings too, not just TX (#501)
         _gpsService.markActivityPosition(position);
       } catch (e) {
-        _pingInProgress = false;
         debugError('[DISC] Failed to send discovery request: $e');
+        if (identical(_lastDiscPing, discPing)) _lastDiscPing = null;
+        onDiscPingAborted?.call(discPing);
+        // Torn down while the write was in flight (a force disable or a
+        // dispose on a radio drop): the lane is gone, so no retry, and the
+        // flag is left alone as on the fresh-fix bow-out (see _sendEpoch).
+        if (_disposed || epoch != _sendEpoch) return;
+        _pingInProgress = false;
         if (_pendingDisable) {
           await _executePendingDisable('discovery send failed');
           return;
@@ -2399,6 +2467,7 @@ class PingService {
   /// Schedule next discovery request
   /// Uses fixed 30-second interval (repeaters only respond 4 times per 2 minutes)
   void _scheduleNextDiscovery() {
+    if (_disposed) return;
     // In hybrid mode, route to hybrid scheduler instead
     if (_hybridModeEnabled) {
       _scheduleNextHybridPing();
@@ -2413,7 +2482,7 @@ class PingService {
     _discoveryTimer?.cancel();
     _discoveryTimer = Timer(_discoveryInterval, () {
       debugLog('[DISC] Discovery timer fired');
-      if (_autoPingEnabled && _passiveModeEnabled) {
+      if (!_disposed && _autoPingEnabled && _passiveModeEnabled) {
         _sendDiscoveryRequest();
       }
     });
@@ -2429,7 +2498,7 @@ class PingService {
   /// Schedule next hybrid ping (alternates discovery ↔ TX)
   /// Uses user-configured interval for both ping types
   void _scheduleNextHybridPing({int? delayMs}) {
-    if (!_autoPingEnabled || !_hybridModeEnabled) return;
+    if (_disposed || !_autoPingEnabled || !_hybridModeEnabled) return;
 
     _autoTimer?.cancel();
     _autoTimer = null;
@@ -2464,7 +2533,7 @@ class PingService {
         milliseconds: isNextDisc ? waitMs : waitMs + discoveryLegWaitMs));
 
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
-      if (!_autoPingEnabled || !_hybridModeEnabled) return;
+      if (_disposed || !_autoPingEnabled || !_hybridModeEnabled) return;
       if (_connection.currentStep != ConnectionStep.connected) {
         debugLog('[HYBRID] Not connected, ignoring timer');
         return;
@@ -2798,7 +2867,7 @@ class PingService {
 
   /// Schedule next targeted ping after interval
   void _scheduleNextTargetedPing() {
-    if (!_autoPingEnabled || !_targetedModeEnabled) {
+    if (_disposed || !_autoPingEnabled || !_targetedModeEnabled) {
       debugLog('[TRACE] Not in targeted mode, not scheduling next trace');
       return;
     }
@@ -2806,6 +2875,7 @@ class PingService {
     _targetedTimer?.cancel();
     _targetedTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[TRACE] Targeted ping timer fired');
+      if (_disposed) return;
       if (_connection.currentStep != ConnectionStep.connected) {
         debugLog('[TRACE] Not connected, ignoring timer');
         return;
@@ -2853,6 +2923,17 @@ class PingService {
 
   /// Dispose of resources
   void dispose() {
+    // A send suspended on its fresh fix or BLE write resumes after this. The
+    // epoch bump makes it bow out, and the cleared modes and [_disposed] stop
+    // any skip or failure path from re-arming a timer (the provider disposes
+    // on a radio drop without a force disable first).
+    _disposed = true;
+    _sendEpoch++;
+    _autoPingEnabled = false;
+    _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
+    _pendingDisable = false;
     if (!_txWindowFinalizing) {
       _cancelPendingTxWindow();
       _completeTxWindowGate();

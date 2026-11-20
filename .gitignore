@@ -46,6 +46,10 @@ android/key.properties
 *.jks
 *.keystore
 
+# App Store Connect API keys and Google Play service accounts (never commit)
+*.p8
+service-account*.json
+
 # iOS generated files
 /ios/Flutter/Flutter.framework
 /ios/Flutter/Flutter.podspec
@@ -73,6 +77,8 @@ ios/Flutter/flutter_export_environment.sh
 
 # Debug logs
 debug/
+!lib/debug/
+!test/debug/
 debuglog/
 meshmapper-debug-*.txt
 

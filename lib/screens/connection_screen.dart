@@ -11,11 +11,13 @@ import '../models/connection_state.dart';
 import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
+import '../services/precise_location_gate.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/slots_chip.dart';
 import '../utils/store_links.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../services/location_consent.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/transport/android_serial_service.dart';
 import '../services/transport/tcp_service.dart';
@@ -83,6 +85,19 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   Future<void> _requestLocationPermission(AppStateProvider appState) async {
     // Check current permission status
     LocationPermission permission = await Geolocator.checkPermission();
+
+    // The disclosure comes before every system prompt and until it is agreed
+    // to, even with location granted (Google Play), except on web.
+    if (!kIsWeb &&
+        LocationConsent.needsDisclosure(
+          agreed: await LocationConsent.hasAgreed(),
+          aboutToRequest: permission == LocationPermission.denied,
+        )) {
+      if (!mounted) return;
+      final agreed =
+          await PermissionDisclosureService.showLocationDisclosure(context);
+      if (!agreed) return;
+    }
 
     // If denied (not permanently), try requesting again
     if (permission == LocationPermission.denied) {
@@ -1531,12 +1546,21 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     String locationText;
     String? iataCode;
     Color locationColor;
+    VoidCallback? locationTap;
 
     // Airborne block applies in every mode, so it comes first
     if (appState.isAirborne) {
       locationIcon = Icons.airplanemode_active;
       locationText = 'Airborne';
       locationColor = Colors.red;
+      // Location off (Not Now on the disclosure, or not granted). This bar is
+      // on every tab, so tapping it is the way back to the disclosure and the
+      // system prompt; Offline Mode needs location too.
+    } else if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      locationIcon = Icons.location_disabled;
+      locationText = 'Location Off';
+      locationColor = Colors.orange;
+      locationTap = () => _requestLocationPermission(appState);
       // Offline mode: show greyed out with "-"
     } else if (appState.offlineMode) {
       locationIcon = Icons.gps_off;
@@ -1621,6 +1645,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                       icon: locationIcon,
                       text: locationText,
                       color: locationColor,
+                      onTap: locationTap,
                     ),
                   ),
 
@@ -1956,6 +1981,24 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
+    // Location not granted: no zone check can run, and Offline Mode needs
+    // location too.
+    if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.location_off,
+        iconColor: Colors.orange.withValues(alpha: 0.7),
+        title: 'Location Permission Required',
+        message: 'MeshMapper needs your location to check your zone and map '
+            'coverage.',
+        action: FilledButton.icon(
+          onPressed: () => _requestLocationPermission(appState),
+          icon: const Icon(Icons.location_on),
+          label: const Text('Enable Location'),
+        ),
+      );
+    }
+
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
       // Build message with nearest zone info if available
@@ -2089,6 +2132,26 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
             appState.zoneCheckErrorReason == 'gps_stale') {
           final isStale = appState.zoneCheckErrorReason == 'gps_stale';
+          // Approximate-only location never gets under the accuracy limit,
+          // so moving somewhere else would not help: point at the setting.
+          if (!isStale && appState.locationAccuracyReduced) {
+            return _buildMessageContent(
+              context: context,
+              icon: Icons.location_disabled,
+              iconColor: Colors.orange.withValues(alpha: 0.7),
+              title: preciseLocationOffTitle,
+              message: preciseLocationOffBody,
+              action: FilledButton.icon(
+                onPressed: Geolocator.openAppSettings,
+                icon: const Icon(Icons.settings),
+                label: const Text('Open Settings'),
+                style: FilledButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+            );
+          }
           return _buildMessageContent(
             context: context,
             icon: isStale ? Icons.schedule : Icons.gps_off,
@@ -2272,22 +2335,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                   icon: const Icon(Icons.settings),
                   label: const Text('Open Location Settings'),
                 ),
-        );
-      }
-
-      if (appState.gpsStatus == GpsStatus.permissionDenied) {
-        return _buildMessageContent(
-          context: context,
-          icon: Icons.location_off,
-          iconColor: Colors.orange.withValues(alpha: 0.7),
-          title: 'GPS Permission Required',
-          message:
-              'Location access is needed to verify you\'re in an allowed zone.',
-          action: ElevatedButton.icon(
-            onPressed: () => _requestLocationPermission(appState),
-            icon: const Icon(Icons.location_on),
-            label: const Text('Enable Location'),
-          ),
         );
       }
 

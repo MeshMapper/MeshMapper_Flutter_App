@@ -9,6 +9,7 @@ import 'package:mesh_mapper/screens/onboarding/onboarding_guide_pages.dart';
 import 'package:mesh_mapper/screens/onboarding/onboarding_guide_screen.dart';
 import 'package:mesh_mapper/utils/ping_colors.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 Widget host({TargetPlatform platform = TargetPlatform.android}) {
   return MaterialApp(
@@ -33,6 +34,9 @@ Future<void> openDetails(WidgetTester tester, String title) async {
 void main() {
   testWidgets('page 6 locks setup and swiping during completion',
       (tester) async {
+    // Location disclosure already agreed, so setup opens the background
+    // dialog straight away.
+    SharedPreferences.setMockInitialValues({'location_disclosure_shown': true});
     final persistence = Completer<bool>();
     final appState = _UnusedAppState();
     addTearDown(appState.dispose);

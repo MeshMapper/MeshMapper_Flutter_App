@@ -92,9 +92,14 @@ double _metersBetween(double lat1, double lon1, double lat2, double lon2) {
   return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a));
 }
 
+/// The colour of a covered cell: green is a heard TX echo, cyan an answered
+/// discovery (the tile's `st` 1 and 2).
+enum CoverageColor { green, cyan }
+
 class _Tile {
-  /// 'i,j' keys of the covered cells. Null until the first successful fetch.
-  Set<String>? cells;
+  /// 'i,j' keys of the covered cells with their colour. Null until the first
+  /// successful fetch.
+  Map<String, CoverageColor>? cells;
   DateTime? fetchedAt;
   DateTime? lastAttemptAt;
   bool loading = false;
@@ -122,9 +127,10 @@ class RecentCoverageService {
   int _days = 14;
   String? _radioKey;
   bool _enabled = false;
+  bool _floodOnly = false;
 
   final Map<String, _Tile> _tiles = {}; // 'x/y'
-  final Set<String> _sessionCells = {}; // 'i,j'
+  final Map<String, CoverageColor> _sessionCells = {}; // 'i,j'
 
   /// Squares already reported as deferred this API session, on the fixed
   /// 300 m grid whatever the user's Coverage Grid setting. The server dedupes
@@ -139,6 +145,9 @@ class RecentCoverageService {
   /// True when the feature is on and a zone is known.
   bool get isActive => _enabled && _zone != null && _zone!.isNotEmpty;
 
+  /// True when only green cells hold a TX and a discovery is never held.
+  bool get floodOnly => _floodOnly;
+
   /// Loaded (successfully fetched) tiles. Test hook.
   int get loadedTileCount => _tiles.values.where((t) => t.loaded).length;
 
@@ -147,6 +156,8 @@ class RecentCoverageService {
   /// question. [radioKey] is `radioFilterKey(...)` from
   /// `lib/utils/radio_filter.dart` (the fetch itself carries the filter
   /// through ApiService; this only decides when loaded tiles go stale).
+  /// [floodOnly] is not part of that: tiles hold both colours, so flipping it
+  /// keeps them and only changes how [isCovered] reads them.
   ///
   /// Called on every zone check (every 100 m while disconnected), so an
   /// identical reconfigure is silent: it logs only when the zone, grid,
@@ -157,8 +168,10 @@ class RecentCoverageService {
     required int days,
     required bool enabled,
     String? radioKey,
+    bool floodOnly = false,
   }) {
     final wasActive = isActive;
+    final floodOnlyChanged = floodOnly != _floodOnly;
     final changed = zone != _zone ||
         gridSize != _gridSize ||
         days != _days ||
@@ -168,12 +181,13 @@ class RecentCoverageService {
     _days = days;
     _radioKey = radioKey;
     _enabled = enabled;
+    _floodOnly = floodOnly;
     if (changed || !isActive) {
       clear();
     }
-    if (changed || isActive != wasActive) {
+    if (changed || isActive != wasActive || floodOnlyChanged) {
       debugLog(
-          '[COVERAGE] Smart pinging ${isActive ? 'active' : 'inactive'}: zone=${zone ?? '-'} grid=${gridSize}m window=${days}d preset=${radioKey ?? 'any'} enabled=$enabled');
+          '[COVERAGE] Smart pinging ${isActive ? 'active' : 'inactive'}: zone=${zone ?? '-'} grid=${gridSize}m window=${days}d preset=${radioKey ?? 'any'} enabled=$enabled floodOnly=$floodOnly');
     }
   }
 
@@ -188,12 +202,14 @@ class RecentCoverageService {
 
   /// The covered cell of a result this session got (a heard TX, an answered
   /// discovery), so the phone does not wait for the server tile to catch up.
-  void markCovered(double lat, double lon) {
+  /// Green wins: a later cyan mark never downgrades a green one.
+  void markCovered(double lat, double lon, CoverageColor color) {
     if (!isActive) return;
     final key = _cellKey(lat, lon);
-    if (_sessionCells.add(key)) {
-      debugLog('[COVERAGE] Session covered cell $key');
-    }
+    final had = _sessionCells[key];
+    if (had == CoverageColor.green || had == color) return;
+    _sessionCells[key] = color;
+    debugLog('[COVERAGE] Session covered cell $key (${color.name})');
   }
 
   /// Record that smart pinging held a ping on this fix's fixed 300 m square.
@@ -210,18 +226,25 @@ class RecentCoverageService {
   /// session), because the server credits one square per session id.
   void clearDeferred() => _deferredCells.clear();
 
-  /// Whether the cell under this fix is recently covered.
-  RecentCoverage isCovered(double lat, double lon) {
+  /// Whether the cell under this fix is recently covered for this kind of
+  /// ping ([forTx] true for a TX, false for a discovery). With [floodOnly] a
+  /// discovery is never held and only a green cell holds a TX.
+  RecentCoverage isCovered(double lat, double lon, {required bool forTx}) {
     if (!isActive) return RecentCoverage.clear;
+    if (_floodOnly && !forTx) return RecentCoverage.clear;
     final key = _cellKey(lat, lon);
-    if (_sessionCells.contains(key)) return RecentCoverage.covered;
+    if (_counts(_sessionCells[key])) return RecentCoverage.covered;
     final t = recentCoverageTile(lat, lon);
     final tile = _tiles['${t.x}/${t.y}'];
     if (tile == null || !tile.loaded) return RecentCoverage.unknown;
-    return tile.cells!.contains(key)
+    return _counts(tile.cells![key])
         ? RecentCoverage.covered
         : RecentCoverage.clear;
   }
+
+  /// Whether a cell of this colour (null: not covered) holds a ping.
+  bool _counts(CoverageColor? color) =>
+      color != null && (!_floodOnly || color == CoverageColor.green);
 
   /// Keep every tile within 500 m of the fix loaded and fresh. Cheap when the
   /// phone has not moved 100 m since the last call. Fetches run one at a
@@ -300,10 +323,12 @@ class RecentCoverageService {
           // say every cell inside it is covered. Leave it out: those cells
           // read clear and the ping goes out, the fail-open answer. z13
           // tiles carry no blocks today.
-          tile.cells = cells
-              .where((c) => !c.isBlock)
-              .map((c) => '${c.i},${c.j}')
-              .toSet();
+          tile.cells = {
+            for (final c in cells)
+              if (!c.isBlock)
+                '${c.i},${c.j}':
+                    c.st == 2 ? CoverageColor.cyan : CoverageColor.green,
+          };
           tile.fetchedAt = _now();
           debugLog(
               '[COVERAGE] Recent tile $key loaded: ${tile.cells!.length} covered cells');

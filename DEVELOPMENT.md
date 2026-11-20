@@ -174,6 +174,22 @@ pixels) for every ID length and state, on both map modes and in the detail
 popup header. Cluster badges remain circular. The matching server change is
 implemented in the server repository.
 
+### GPS Marker Color
+
+Settings > Map > Markers > GPS Marker Color (`UserPreferences.gpsMarkerColor`,
+JSON key `gpsMarkerColor`: `default` or `green`; anything else reads as
+`default`). It applies to every GPS marker style. `default` keeps each style's
+own colour (blue, cyan for Chomper). The colours live in `GpsMarkerColors`
+(`lib/utils/gps_marker_colors.dart`) and the painters in `map_widget.dart` take
+them as a parameter. `_registerMapImages` bakes every style in every colour
+(`gps_car`, `gps_car_green`, ...) in its one existing pass, so a colour change
+only swaps the puck's `iconImage`, through the same version-gated GPS sync a
+style change uses. The marker colour does not follow Color Vision, the same as
+the blue never did: it is the user's own pick and carries no meaning, and every
+style's white outline is what separates it from the coverage under any palette.
+The green is a dark one, so it also stands apart from the pale green
+bidirectional squares of the default palette.
+
 ### Repeater Identity and Collision Handling
 
 Repeater identity is the cleaned full public key. The server's short `id`
@@ -188,6 +204,27 @@ repeater's effective address width. The provider also caches full keys with a
 conflict warning, since a wider-addressable device may still share two bytes.
 These use the existing duplicate marker style. No collision pass runs on a
 position tick or map rebuild. Load completion uses `_notifyMapNow()`.
+
+A heard hop id carries the width its sender chose, so a 3-byte region can
+still hear repeater `A81EA4` as `A8`. Top Heard (and through it the watch,
+Live Activity and CarPlay rows) shows and groups such an id as the one
+repeater it can mean: `ShortHopIds` (`lib/utils/short_hop_ids.dart`) follows
+the server's `rc_resolve_token` rule (key = hex id, else legacy id; matches
+whose keys form one prefix chain are one device; anything else stays the
+short id) and widens a match to the wider of its advertised width and the
+device/region hop width. The provider builds it once per repeater list
+(prefix map for 1-3 byte ids). Logs, RX pins and uploads keep the raw hop id,
+and the server resolves it again itself.
+
+Stored coverage is read with the same rule. `RepeaterLookup`
+(`coverage_summary.dart`) matches each stored hop id through `ShortHopIds`:
+the exact full key, else the repeaters whose key starts with the whole id,
+else the legacy id key. The cell summary uses a single match, repeater stats
+and the tile lines take every match and settle an ambiguous id with the
+coordinates stamped on the hop. An id that no key starts with matches
+nothing. The region's `/auth` `hop_bytes` only sets the radio's path width
+and never takes part in a lookup, so a stored ping reads the same in a 1, 2
+or 3 byte region.
 
 Labels and detail/Manage sheets use each repeater's `advert_bytes`, falling
 back to `hop_bytes`, independently of regional TX path-width enforcement.
@@ -393,6 +430,39 @@ iOS and web skip the resync. The history view answers
 re-syncs (the marker data version reads it) and the cleanup loop takes the
 now-unwanted pins off the map.
 
+### Remembered Map View
+
+The map comes back the way the user left it (#470). `MapViewState`
+(`lib/models/map_view_state.dart`) holds the last camera zoom and the panel fold
+state: the control panel minimised (both orientations), the landscape control
+panel closed, the landscape map control column open, and the portrait map control
+column open. It is its own key, `map_view_state`, in the `user_preferences` Hive
+box, NOT a `UserPreferences` field: it changes during a pinch, so a write must not
+run the settings save path or notify anything keyed on the preferences. A missing
+or malformed entry reads as today's defaults (no zoom, panel expanded, portrait
+column open), so a first launch is unchanged. `AppStateProvider` reads it in
+`_loadPreferences` (which now ends with `_notifyMapNow()` so the cached map
+applies its saved toggles on the next build) and owns it; `HomeScreen`'s
+`_isControlsMinimized` / `_showControlPanel` / `_mapControlsExpanded` are getters
+and setters over it. Store capture mode keeps its fold state local and never
+writes. Writes go through a 1.5 s `Debouncer` (`lib/utils/debouncer.dart`),
+flushed when the app is paused.
+
+Zoom: `_onCameraIdle` calls `_rememberCameraZoom`, which skips a focus camera
+(`_cameraFocusActive`: tapped ping, cell or repeater) and the history session fit,
+and the provider drops a zoom within 0.01 of the stored one (auto-follow ends
+every GPS tick in a camera idle at the same zoom). `MapViewState.clampZoom` clamps
+to the map's 3..17 range and nudges an integer zoom off the integer. The restored
+zoom replaces the first-launch zooms only: `initialCameraPosition` (15), the
+one-time zoom to the last known position (15) and the one-time zoom to the first
+GPS fix (16). With auto-follow on, that GPS zoom also seeds
+`_autoFollowDesiredZoom`, so a follow tick landing mid-animation aims at it, and
+the next camera idle hands zoom back to the camera as before. Until a startup
+zoom has run, a camera idle at the creation zoom is not recorded (the map may
+have been created before preferences loaded and would overwrite the zoom about
+to be restored); a user zoom off the creation zoom is. Tap-to-follow still jumps
+to max zoom, and that zoom is then remembered like any other.
+
 ### 9-Step Connection Workflow
 
 Critical safety: The connection sequence MUST complete in order.
@@ -508,15 +578,31 @@ with Active or Trace mode in practice, since only Passive and Hybrid ever hold t
 ### GPS & Zone Validation
 
 - Uses `geolocator` package with high accuracy and continuous tracking
+- **Stream cadence**: a 10 m distance filter on every platform, and on Android a 1 s interval for both location providers (`gpsStreamSettings` in `lib/services/gps_service.dart`). Left unset, the Android plugin asks every 5 s, and pings while driving reused the previous fix.
 - **Zone Validation**: Server-side — client sends GPS coordinates to the API, server returns zone status (in-zone, nearest zone, or error)
 - **Min Distance Filter**: 25m between pings prevents spam
 - **Airborne block** (`GpsService.positionLooksAirborne`): a fix counts as in the air when its altitude, less its own vertical accuracy, is above 6,000 m (higher than any road on Earth, below airliner cruise) OR its ground speed is above 250 km/h (catches take-off, approach and most small aircraft; a high-speed train trips it too, by design). The altitude test only counts when the same fix's speed is unknown (`speedOrNull`) or at least 150 km/h (`airborneAltitudeMinSpeedMetersPerSecond`): nothing above 6,000 m flies slower, so a known slow speed marks the altitude as the bad reading (an iOS fix once read 18,490 m in a car at 8 km/h). One helper decides it for both the test and the recorded `airborneGate`; a fast car with a bogus altitude would still latch. Three consecutive airborne fixes set `GpsService.isAirborne`, three consecutive ground fixes clear it, and one fix of the other kind restarts the count. The latch records which test fired (`airborneGate`) and BOTH readings of the fix that set it (`airborneAltitude`, `airborneSpeed`, each null when unknown; `speedOrNull` mirrors `altitudeOrNull`), and reports every flip once through `onAirborneChanged`. Unknown altitude and speed arrive from geolocator as 0.0 and never qualify (fail open). Every accepted fix feeds the latch (`trackAirborne`): the position stream, the simulator and `getFreshPosition()`, which TX, discovery and trace sends all take. A fix handed over twice (stream plus fresh read, same platform timestamp) counts once, so the streak really is three distinct fixes. The latch resets whenever the fix source restarts (`startWatching`, `enableSimulator`), because the stream only fires on movement and a phone left on a desk after a simulated flight would otherwise stay locked out. `GpsService.altitudeOrNull` is the shared "does this fix know its altitude" test (only the 0.0/0.0 pair means unknown; Android omits the accuracy on fixes that do carry an altitude).
 - **What the block does**: `AppStateProvider._checkAirborne()` is level-triggered from the position listener and from the auto-ping scheduling hook (on iOS the position stream is quiet in the background, so the fresh fix each ping takes is the only sample then). With a live session it calls `_endSessionForAirborne()`: disconnect alert, error-log entry with the altitude or speed in the user's units, then `disconnect(closeApp: false, releaseExtras: ...)`, the normal user-disconnect path (auto-ping off, RX logging off, queue cleared, offline session kept in Offline Mode, API session released, no auto-reconnect). It defers while a zone transfer is in progress, since that flow re-acquires a session after its awaits with no cancellation check. The listener returns early on that tick so it cannot run a zone check on the way out, and the 100 m zone recheck while disconnected is skipped while airborne (a flight would otherwise POST once a second for hours). The four connect entry points refuse via `_refuseConnectIfAirborne()` (which sets no `connectionError`: the Connection screen's Airborne panel outranks the error card, and a message set there would survive the landing until the next attempt), the Connection screen disables Connect and shows "Airborne" with the reading that set the latch (`airborneCause`, "Your altitude is 10000m." or "You are moving at 300 km/h."), the map's GPS chip shows the fix's altitude when known, `PingValidation.airborne` blocks all three validators, the discovery and trace send lanes read the latch again after their own fresh fix and bow out without transmitting (a TX is already covered by `canPing()`, which re-reads it after the same suspension; on iOS in the background that fresh fix is the sample that sets the latch, so without the re-read each of those lanes put one more packet on the air after the block engaged, and neither reschedules, since the provider's handler is ending the session), Siri and the watch get `ExternalCommandReasonCode.airborne`, and auto-reconnect abandons instead of retrying into a flight (same alert, error-log entry and release telemetry, preserved queue dropped; the check sits below the reconnect prep so the foreground service and RX-side objects are torn down first). The check skips while `_isConnecting`, because the step flips to connected before `_postConnectionSetup` finishes and a disconnect inside that window would null objects the setup still uses; the next fix catches it. The release call carries `disconnect_cause: airborne`, `airborne_gate` (the test that fired) and `airborne_value` (its reading, raw meters or km/h), plus `airborne_alt_m` and `airborne_speed_kmh`, BOTH readings of the fix that set the latch (each omitted when the platform did not know it, metric ints regardless of the unit setting), so a speed-gate fire can be told apart from a high-speed train; built by the pure `airborneReleaseInfo` in `lib/services/airborne_release.dart` and logged by the server. In Offline Mode the offline recording is paused for as long as the latch is set (`ApiQueueService.setOfflineRecordingPaused`, driven by `GpsService.onAirborneChanged`, logged once on pause and once on resume), so the RX flush at disconnect and any straggler row cannot land in the offline file; the server owner chose the app as the only control on that path. Known gaps: a small aircraft below both limits passes. Thresholds are compiled in (server-delivered limits and a server-side guard were considered and left out). Logged under `[GPS]`, `[APP]`, `[CONN]`.
 
+### Precise Location at Connect
+
+With iOS "Precise Location" off, or Android 12+ granting only approximate location, fixes are off by hundreds of metres to kilometres, and the server refuses every fix worse than 50 m (`gps_inaccurate`), so such a session maps nothing. The four connect front doors (`connectToDevice`, `connectViaTcp`, `connectViaUsb`, `connectWithTransport`) therefore run `_refuseConnectIfImprecise()` right after the airborne refusal. That covers the Connection screen's BLE, TCP and USB buttons, the remembered-companion button, the anonymous-mode reconnect and the Siri/App Intent "connect last companion" path (it goes through `reconnectToRememberedDevice`). It is checked only at Connect, never at launch or in onboarding.
+
+- **Decision**: the pure `decidePreciseLocationStep` in `lib/services/precise_location_gate.dart`, run by `PreciseLocationGate.allowsConnect`. Web and the GPS simulator skip (the same cases `_gpsPolicyApplies` leaves out); no location permission skips too, leaving the existing denied path unchanged; `Geolocator.getLocationAccuracy()` precise, or an unreadable answer (fail open), connects; reduced asks once, then blocks.
+- **iOS ask**: `Geolocator.requestTemporaryFullAccuracy(purposeKey: 'CoverageMapping')`, the key in `NSLocationTemporaryUsageDescriptionDictionary` (`ios/Runner/Info.plist`). Allowed continues the connect. A prompt that throws counts as declined.
+- **Android ask**: `AppStateProvider.preciseLocationUpgradeRequester`, registered by `MainScaffold` on Android only. It shows the usual location disclosure (Google Play wants it before every system location prompt; there is no new disclosure), then `Permission.locationWhenInUse.request()`, which Android 12+ answers with its "precise" upgrade dialog while only COARSE is granted. Skipped when the permission is permanently denied. permission_handler reports this group `denied` while FINE is missing, so the plain request reaches the system.
+- **Prompts only on screen**: with the app not resumed (a background Siri run) or no requester registered, reduced blocks without asking.
+- **Block**: no connect, no `connectionError` (as with airborne); `preciseLocationPromptDue` makes `MainScaffold` show "Precise Location needed" with Cancel and Open settings (`Geolocator.openAppSettings()`), after the onboarding lane like its sibling prompts. Siri answers `preciseLocationVoiceMessage`.
+- **Auto-reconnect** does not prompt: `_attemptReconnect` re-reads the accuracy before each attempt (`canPrompt: false`) and, if it is now reduced, ends through `_abandonAutoReconnectForImpreciseLocation()` (alert, error-log entry, same dialog), instead of mapping rough fixes.
+- **GPS**: the check never starts GPS or sends a location, so the 1.4.2 background-location policy is untouched. The one GPS call is after an Android upgrade with a stream already running: `restartGpsAfterPermission(keepTracking: true)`, because a running Android request keeps the permission level it was registered with.
+- A tap during the check is ignored as a duplicate (`_preciseLocationCheckInFlight`). Logged under `[GPS]`.
+
 ### Smart Pinging
 
-Auto mode defers TX pings and discovery requests in a grid square that already has a recent
-bidir (green) or disc (cyan) result. A deferred ping is held rather than dropped: it waits in a
+Auto mode defers pings in a grid square that already has a recent bidir (green) or disc (cyan)
+result. By default ("Delay only flood pings", `smartPingFloodOnly`) only a green square holds a
+TX ping and a discovery request is never held; with it off, a green or cyan square holds both.
+A deferred ping is held rather than dropped: it waits in a
 one-slot bank and goes out at the first fix in a square with no recent coverage. RX logging is
 never deferred (it is free). Manual pings, Trace mode and the auto-mode start check are
 untouched. On by default with a 14 day window.
@@ -525,7 +611,10 @@ untouched. On by default with a 14 day window.
   (any whole number of days from 1 to 365, typed into a number field; default 14; bounds in
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
   hidden while the switch is off. An (i) button beside the switch opens `_showSmartPingInfo`,
-  a dialog explaining the deferral in user-facing words.
+  a dialog explaining the deferral in user-facing words. A second switch, `smartPingFloodOnly`
+  ("Delay only flood pings", default true), sits under the window tile while Smart Pinging is
+  on. It is locked in auto mode, like the main switch, so it never changes mid-session, and
+  locked (amber "Set by Regional Admin.") while the region enforces Smart Pinging.
 - **Map trail**: a deferral adds a hollow yellow marker (`PingColors.deferred`, with
   color-vision palette variants) whenever the phone has moved the configured minimum ping
   distance since the last deferred marker, the same rule a real ping answers to, so a drive
@@ -557,18 +646,21 @@ untouched. On by default with a 14 day window.
   clear its patch; patch bodies belong to a region/grid/radio/window context, and an
   in-flight fetch from an old context is discarded. This changes the coverage squares,
   not the session's ping markers or the Smart Pinging send rules.
-- **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int). When
-  `smart_ping` is true the switch is locked on and the window is the server's; otherwise the
-  user's own values apply. The preference is never overwritten: `AppStateProvider`
-  exposes effective getters (`smartPingEnabled`, `smartPingDays`, `enforceSmartPing`), the
-  `discDropEnabled` pattern. A missing or invalid field means not enforced, 14 days
-  (`ApiService.enforceSmartPing`, `apiSmartPingDays`).
+- **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int) and
+  `smart_ping_flood_only` (bool). When `smart_ping` is true the switch is locked on and the
+  window and the flood only setting are the server's; otherwise the user's own values apply. The preference is never overwritten: `AppStateProvider`
+  exposes effective getters (`smartPingEnabled`, `smartPingDays`, `smartPingFloodOnly`,
+  `enforceSmartPing`), the `discDropEnabled` pattern. A missing or invalid field means not
+  enforced, 14 days, flood only on (`ApiService.enforceSmartPing`, `apiSmartPingDays`,
+  `apiSmartPingFloodOnly`: only `false` or `0` reads off).
 - **Data source**: `vector_tile.php?z=13&gsize=<grid>&f_days=<days>&f_types=green,cyan`
   (`ApiService.fetchRecentCoverageTile`, read from the coverage host: the group's own site when
   the zone is grouped, see Multi-region groups), decoded by `decodeCoverageCells`. The square
   is the cell of the user's Coverage Grid setting (300 m or 100 m), so what is deferred matches
   what is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not
   used.
+  The tile keeps each cell's colour: its `st` is read as green (1) or cyan (2), and the filter
+  stays `f_types=green,cyan` so one tile serves both settings.
   The fetch also carries the radio preset filter (`f_freq`, `f_bw`, `f_sf`, see Coverage
   Overlay), and `RecentCoverageService.configure(radioKey:)` drops every loaded tile when the
   preset changes, since a tile fetched under the old preset answers for the wrong layer.
@@ -581,24 +673,34 @@ untouched. On by default with a 14 day window.
   back carrying any cell other than green or cyan is treated as unfiltered (a region server
   without the `f_*` filter support) and ignored, so the lookup stays `unknown` there. Cells this
   session covered itself (a heard TX, an answered discovery) are marked covered at once
-  (`markCovered`). `isCovered` is synchronous and returns `covered`, `clear` or `unknown`.
+  (`markCovered(lat, lon, CoverageColor)`: a heard TX echo is `CoverageColor.green`, an answered
+  discovery `CoverageColor.cyan`, and green wins, so a later cyan never downgrades a green
+  mark). `isCovered(lat, lon, {required forTx})` is synchronous and returns `covered`, `clear`
+  or `unknown`. With `floodOnly` (set through `configure(..., floodOnly:)`) a discovery
+  (`forTx` false) always reads `clear` and only a green cell holds a TX; with it off either
+  colour holds both. Tiles keep both colours, so flipping `floodOnly` keeps them and only
+  changes how they are read.
 - **Fail open**: `unknown` (no tile yet), a fetch failure, Offline Mode, no zone, or the
   feature off all let the ping go out.
-- **The deferral**: `PingService.checkRecentCoverage` (wired to `isCovered`) is consulted by
-  `canPing()` before the distance check (covered wins: a fix that is both reads Deferred, not
+- **The deferral**: `PingService.checkRecentCoverage(lat, lon, BankedPingType kind)` (wired to
+  `isCovered(forTx: kind == tx)`) asks per ping kind. It is consulted by `canPing()` (as `tx`) before the distance check (covered wins: a fix that is both reads Deferred, not
   Skipped, so parked on already mapped ground is held rather than rate limited, and both Hybrid
-  legs agree) and by the auto discovery path alongside its distance check. It yields
+  legs agree) and by the auto discovery path (as `discovery`) alongside its distance check. It yields
   `PingValidation.recentlyCovered` and the skip reason
   `'recently covered'` (`PingService.skipReasonRecentlyCovered`), which rides the existing
   `onAutoPingScheduled` hook, and it banks the ping instead of dropping it. The interval timer
   is untouched: the next attempt is still scheduled at the normal interval, so the timer stays
-  the backstop for a phone that never reaches a clear square.
+  the backstop for a phone that never reaches a clear square. In Hybrid the discovery leg also
+  asks about TX: a square that is clear for discovery but still covered for TX (flood only,
+  green square) sends the discovery and keeps the banked TX waiting, instead of handing the leg
+  to the TX.
 - **The bank**: one slot. `PingService._bankedPing` holds a `BankedPingType`, either `tx`
   (Active or Hybrid) or `discovery` (Passive or Hybrid), readable through `bankedPing`. A
   later deferral overwrites an earlier one, except that in Hybrid a held TX ping is never
   replaced by a discovery: a deferred discovery leaves the TX held (and its DEFER names the
   TX), and a discovery leg whose fresh fix is not covered (`clear` or `unknown`) and passes
-  the TX distance rule sends the held TX in its place. That leg clears the bank and the
+  the TX distance rule sends the held TX in its place (when the square is still covered for TX
+  the discovery goes out and the TX stays banked). That leg clears the bank and the
   in-progress latch, sets `_nextPingIsDiscovery` back to true and dispatches the TX from the
   attempt's `finally`, so the next leg is a discovery and the TX re-arms the lane itself. The
   release check alone cannot cover this: it is refused while the discovery holds the latch
@@ -609,8 +711,8 @@ untouched. On by default with a 14 day window.
   listener in `AppStateProvider` calls it on every fix, placed after the airborne early return,
   and on a true it also clears the countdown's skip reason so the label does not keep reading
   "Deferred" while the released ping is going out.
-- **What lets a banked ping go**: the fix must answer `RecentCoverage.clear` (`unknown` is not
-  enough, and the interval tick already fails open there) and must satisfy the same 25 m
+- **What lets a banked ping go**: the fix must answer `RecentCoverage.clear` when asked with the
+  banked kind (`unknown` is not enough, and the interval tick already fails open there) and must satisfy the same 25 m
   minimum-distance rule the send path enforces, measured against the last TX or the last
   discovery to match the banked type. The release is refused while auto mode is off, in
   targeted (Trace) mode, with a disable pending, with a ping already in progress, with the
@@ -665,7 +767,8 @@ untouched. On by default with a 14 day window.
   row heard with no mode running, absent only when no getter is wired, which the server reads
   as unknown, and never on a `DEFER`, which the factory cannot stamp). (3) One `DEFER` item
   per fixed 300 m square per API session, `{type, lat, lon, timestamp, held}` with `held`
-  `tx` or `disc` and nothing else (no antenna, noise floor, power or altitude: the server pays
+  `tx` or `disc` and nothing else (`disc` only appears with Delay only flood pings off, since a
+  discovery is never held otherwise) (no antenna, noise floor, power or altitude: the server pays
   for the square, not the reading). `PingService.onPingDeferred` fires at the two deferral
   sites (the TX auto branch and the discovery send) with the validated fix; the provider
   dedupes it through `RecentCoverageService.markDeferred` (always the 300 m grid, whatever the
@@ -1050,6 +1153,26 @@ Off by default until a region turns it on.
   Never `external_antenna`, `noisefloor`, `altitude` or `power`, and never stamped with the
   running auto mode, the same shape as `DEFER`. Logged under `[SCOPES]`.
 
+- **The status bar's Scopes chip**: `PingStats.scopeCount` counts the repeaters that answered a
+  scope request this session (log outcomes `answered` and `withheldHourlyCap`, one per answer,
+  the same rows the Log tab lists under SCP minus the ones nobody answered). It is counted by
+  `PingService.recordScopeAnswer`, called from `AppStateProvider._addScopeLogEntry`, so it
+  resets with TX/DISC/Trace (`resetStats`, a new `PingService` at connect) and is not cut by
+  Clear logs or the log's 500-entry cap. Trace and Scope share one chip
+  (`statusBarSharedSlot` in `lib/widgets/status_bar.dart`): Trace while `autoMode` is
+  `targeted`, else Scope while `scopeDiscoveryActive` or once `scopeCount > 0`, else no chip.
+
+### Top Status Bar
+
+`lib/widgets/status_bar.dart`: region chip, then TX, RX, DISC, the shared Trace/Scope slot
+(above) and Uploaded. Counts from 1000 are shortened by `formatCompactCount`
+(`lib/utils/compact_count.dart`: "1.4k", "12k", "1.2M", truncated, never rounded up). The
+stats group sits in an `Expanded` + `FittedBox(scaleDown)`, so with large Accessibility text it
+shrinks instead of overflowing. `test/widgets/status_bar_fit_test.dart` renders the real bar
+with the SDK's Roboto and Material Icons fonts at 320/375/393 px and requires 4-digit counts to
+fit a 375 pt phone at normal text without any shrinking; it skips the width cases when
+`$FLUTTER_ROOT/bin/cache/artifacts/material_fonts` is missing.
+
 ### API Queue System
 
 Three data flows (TX pings, RX observations, Discovery results) merge into unified API batch queue:
@@ -1085,6 +1208,7 @@ The app never checks its own version: it sends `APP-<x.y.z>` (store) or `APP-<ep
 - **Storage**: SharedPreferences with key `offline_sessions` — JSON-encoded list of session objects
 - **Session Format**: Each session has a filename (`YYYY-MM-DD.json`), creation timestamp, ping count, device info, and the wardrive data payload
 - **Upload**: Sessions can be uploaded from Settings → Data when connectivity is restored
+- **Export**: each session's download button writes its data payload as pretty JSON (`offlineSessionJson`, `lib/services/offline_session_export.dart`) to a temp file named after the session and opens the share sheet (`shareOfflineSession`); web downloads it instead. **Export all**, the last row of the Offline Sessions card (hidden when there are none), shares every session in one sheet, a file each with the same name and JSON (`shareAllOfflineSessions` through the pure `writeOfflineSessionExports`, which encodes off the UI isolate and suffixes a repeated name ` (2)` rather than overwrite it); web downloads each. The row shows a spinner and is disabled while the files are built and the sheet is open. Both pass the tapped row's rect as `sharePositionOrigin` (iPad). Exporting only reads: no session is deleted or marked uploaded, a dismissed sheet is not an error, and a failure shows `Error exporting: ...`. Logged under `[OFFLINE]`.
 - **Non-persistent**: Offline mode is never persisted — always off on app restart. Users must re-enable if needed.
 - **When pings are written**: pings collect in memory (`ApiQueueService` offline buffer, cleared on every app launch) and reach the session file at these points: a 60 s auto-save that runs for as long as Offline Mode is on (it stops only when Offline Mode is turned off or the switch back to online succeeds, never on a save), a snapshot whenever the app is backgrounded, and a final save on mode stop, mode switch, user disconnect and the BLE-drop cleanup after a reconnect gives up. The noise floor session is stored on those same teardowns, so a teardown that skipped the final save left a drive in Session History with no offline file. The final save finalizes the file, so the next connect starts a new one.
 - **Maintenance integration**: When maintenance mode is detected while disconnected, the UI suggests using Offline Mode
@@ -1093,17 +1217,22 @@ The app never checks its own version: it sends `APP-<x.y.z>` (store) or `APP-<ep
 
 ### Background Service
 
-Keeps BLE and GPS active when the app is backgrounded during auto-ping.
+Keeps BLE and GPS active while the app is in the background: for the whole radio session on Android, per mode on iOS.
 
-- **Android**: Foreground service via `flutter_background_service` with persistent low-importance notification (no sound/vibration). Notification shows live stats: `TX: N | RX: M | Queue: P` (Active/Hybrid) or `RX: M | Queue: P` (Passive). Foreground types: `location + connectedDevice`.
-- **iOS**: Uses declared background modes (`bluetooth-central`, `location`). Users can enable "Background Location" in Settings to upgrade to "Always" location permission, which prevents iOS throttling during extended sessions. This must be manually enabled — a disclosure dialog explains the feature, then the system permission prompt appears.
+- **Android**: the app's own `MeshMapperSessionService` (`android/app/src/main/kotlin/net/meshmapper/app/`, in `MainActivity`'s package), a foreground service of types `location + connectedDevice`. `BackgroundServiceManager` drives it over the `meshmapper/session_service` channel (`start`, `update`, `stop`, `status`; the handler is `SessionServiceChannel`, in the same Kotlin file). The `flutter_background_service` plugin's Android service and receivers are removed from the manifest, so the plugin never runs there. Because the service keeps the app's GPS stream running in the background, Android needs only "While in use" location: the manifest removes `ACCESS_BACKGROUND_LOCATION`, and the Background Location setting is iOS-only.
+  - **Runs for the whole radio session, not per mode.** It starts on screen at the Connect tap (`AppStateProvider._syncConnectionService`, on the notify that follows the tap's state change, with no `await` between them) and keeps running through reconnects, zone grace periods and mode switches. Its low-importance notification (no sound/vibration) reads `MeshMapper - Connected` between modes, the mode's stats while one runs (`TX: N | RX: M | Queue: P` for Active/Hybrid, `Trace: N | RX: M | Queue: P` for Trace, `RX: M | Queue: P` for Passive), `MeshMapper - Reconnecting`, or `MeshMapper - Outside zone` (`_serviceNotificationNow`, `lib/services/status/android_notification.dart`). On Android 13+ with notifications denied, Android drops the post.
+  - **A start needs the app on screen.** Android grants a foreground service while-in-use location only if the app is on screen when it starts, so `shouldStartConnectionService` (`lib/services/background_location_policy.dart`) requires the lifecycle to be resumed, a live session that is not disconnecting, and location permission granted with the disclosure agreed. `mayStart` is asked again right before the channel call. A start the service refuses (`startForeground` throws) is logged under `[BACKGROUND]` and not retried until the app is back on screen, where `healAfterResume` also reconciles the service with the session. `_checkStartStatus` asks the service 1.5 s after a start whether it came up, because the channel answers the start before the service tries `startForeground`.
+  - **It holds a wake lock only while a mode runs** (a partial lock, `MeshMapper:session`), including a reconnect or a zone grace period that has paused one that will resume (`_keepServiceAwake`), so their own timers (the reconnect's 30 s give-up, the grace period's 5 s polling) do not drift with the screen off. Between modes the service stays up without a wake lock.
+  - **It stops when the radio session is over**: at the end of the disconnect cleanup, after the queue upload and the session release, so the backgrounded process cannot freeze halfway through them (`shouldStopServiceAtCleanupEnd`; a cleanup followed by a reconnect or a connect re-run leaves it up). Also on a failed connect that nothing carries on, on swipe-away (`android:stopWithTask`), when `MainActivity` is destroyed (not for a configuration change), on Exit app, and at a cold start (`cleanupOrphanedService`). `_syncConnectionService` itself never stops it. There is no boot start, no watchdog and no restart: `onStartCommand` answers `START_NOT_STICKY`.
+  - **A stop sent before the service has promoted itself is deferred natively.** The channel answers `start` before `onStartCommand` runs, and stopping a service started with `startForegroundService` before it has called `startForeground` crashes the app. While a start is pending, `stop` only sets a flag, and the service stops itself right after `startForeground`. A `start` that arrives while one is pending clears the flag, and a `start` while the service is running only takes the new content.
+- **iOS**: per mode, through the plugin, unchanged. `startService()` runs when a mode starts and `stopService()` when it stops, switches or the radio disconnects. Uses declared background modes (`bluetooth-central`, `location`). Users can enable "Background Location" in Settings to upgrade to "Always" location permission, which prevents iOS throttling during extended sessions. This must be manually enabled — a disclosure dialog explains the feature, then the system permission prompt appears.
 - **Web**: No-op (Web Bluetooth requires active tab)
-- **Lifecycle**: Lazy-initialized on first `startService()` call (triggered by auto-ping start), stopped on disconnect or auto-ping stop
-- **It MUST outlive the auto-reconnect window.** On Android the foreground service is the only thing holding the process alive, so `_startAutoReconnect` only re-titles it ("Reconnecting") and never stops it. Stopping it there froze the app within about three seconds and every Dart timer stalled with it, the 30 second reconnect timeout included: one user's reconnect gave up 18 to 21 minutes late, when they picked the phone back up, which is why the disconnect alert beeped on their return to the car instead of when the radio went out of range (the GPS stream, the 15 second batch timer and the reconnect timeout all resumed in the same millisecond). The service is stopped on the abandon path through `_fullDisconnectCleanup`, and by `_onReconnectSuccess` when there is no auto-ping to restore. A success that does restore auto-ping re-uses the running service, since `startService` folds into `updateNotification` when it is already up.
+- **Lifecycle**: Android: as above; `initialize()` returns at once there, and the plugin's `configure()` never runs. iOS: lazy-initialized on the first `startService()` call (a mode starting), stopped on mode stop, mode switch and disconnect.
+- **It MUST outlive the auto-reconnect window.** On Android the foreground service is the only thing holding the process alive, so `_startAutoReconnect` only re-titles it ("Reconnecting", with the wake lock kept if a mode was running) and never stops it. Stopping it there froze the app within about three seconds and every Dart timer stalled with it, the 30 second reconnect timeout included: one user's reconnect gave up 18 to 21 minutes late, when they picked the phone back up, which is why the disconnect alert beeped on their return to the car instead of when the radio went out of range (the GPS stream, the 15 second batch timer and the reconnect timeout all resumed in the same millisecond). The service is stopped on the abandon path through `_fullDisconnectCleanup`. `_onReconnectSuccess` leaves it running on Android, and the notification goes back to Connected or to the restored mode's stats. On iOS, where `_startAutoReconnect` also leaves the per-mode service running, `_onReconnectSuccess` stops it when there is no auto-ping to restore, and a success that does restore auto-ping re-uses it, since `startService` folds into `updateNotification` when it is already up.
 - **The disconnect alert is dated to its cause, not to when it plays.** `AppStateProvider._playDisconnectAlert(occurredAt)` refuses to beep once the event is older than `maxDisconnectAlertAge` (`lib/services/disconnect_alert_decision.dart`, 2 minutes) and writes an error-log entry naming the real delay instead. The reconnect abandon passes `_reconnectStartedAt` (the BLE drop); every other caller is event-driven and passes the current moment. This is the backstop for phones that freeze anyway, not the fix. `_logStuckTimers` also reports a reconnect window still open past twice its budget, under `[CONN]`.
-- **A stop must finish before the next start.** `'stop'` is fire-and-forget: the service isolate answers it with `stopSelf()` a few milliseconds later, and a start sent in that gap re-uses the dying service, which then stops anyway while the app still thinks it is running. With only "while in use" location the phone then gets no GPS fixes in the background. Two paths hit it: `initialize()` finding a service left running after `configure()`, and a mode switch (stop the old mode, start the new one). Both now poll `isRunning()` every 100 ms, for at most 2 s, until the old service is gone (`waitUntilStopped`, logged under `[BACKGROUND]` with how long it took, a warning at the bound), Android only. A start also re-checks `isRunning()` one second later; if the service is gone while the app still wants it (a stale `stopSelf()` that landed after the 2 s bound), it is started once more, one retry only, logged under `[BACKGROUND]`. Every `stopService()` bumps a stop generation, even with nothing marked running, and a start (or that retry) whose generation moved while it waited abandons itself, so a disconnect during a mode switch's wait cannot leave an orphan service behind.
-- **Orphan cleanup**: `cleanupOrphanedService()` detects and stops stale foreground services from previous sessions
-- **File**: `lib/services/background_service.dart`
+- **A stop must not be overtaken by a start, or the reverse.** Android: every `stopService()` bumps a stop generation, even with nothing counted as running, and always sends the channel `stop`, since a start may still be on its way. A start that finds the generation moved when the channel answers does not count the service as running, because its stop is already queued natively (see the deferred stop above). If `_checkStartStatus` finds the service gone while the session still wants it, the provider marks the start failed and does not retry until the app is back on screen. iOS: `'stop'` is fire-and-forget (the plugin's isolate answers it with `stopSelf()` a few milliseconds later), so `initialize()`, finding a service left running after `configure()`, sends it and polls `isRunning()` every 100 ms, for at most 2 s, until it is gone (`waitUntilStopped`, logged under `[BACKGROUND]` with how long it took, a warning at the bound), so that late stop cannot take down the start that follows. A start waiting on `initialize()` abandons itself when a `stopService()` came in meanwhile.
+- **Orphan cleanup**: `cleanupOrphanedService()` runs from a cold `main()`. Android stops the session service, since the notification of a foreground service can only be stopped, not cancelled, and one can outlive the engine that started it. iOS cancels the old notification (id 888) after initializing the local-notifications plugin, because `cancel()` is a silent no-op before that.
+- **Files**: `lib/services/background_service.dart`, `android/app/src/main/kotlin/net/meshmapper/app/MeshMapperSessionService.kt`
 
 ### Noise Floor Measurement
 
@@ -1111,6 +1240,7 @@ Continuous RSSI measurement of the idle channel, providing ambient noise data fo
 
 - **Polling**: 5-second interval via `MeshCoreConnection.getNoiseFloor()` (MeshCore stats request for radio stats, parses int16LE). After 3 consecutive failures it backs off to a 30-second interval instead of stopping, and returns to 5 seconds on the next success. On Android a write refused with `ERROR_GATT_WRITE_REQUEST_BUSY` (usually a second app talking to the same radio) is retried up to 3 times, 50 to 150 ms apart, in its place in the write queue (`writeRetryingGattBusy` in `lib/services/bluetooth/mobile_bluetooth.dart`).
 - **Sessions**: `NoiseFloorSession` (HiveType 13) records samples + ping event markers over time. Each sample has a timestamp and noise floor value (dBm).
+- **Storage** (`lib/services/noise_floor_session_store.dart`, box `noise_floor_sessions`): History keeps the last 10 ended sessions. The running session is checkpointed into the same box under its own id every 3 minutes and when the app is paused (`NoiseFloorCheckpoint`; a write with no new sample or marker is skipped, since each write rewrites the whole session). A launch closes any session left without an `endTime` by a kill, at its last sample or marker (`loadStoredNoiseFloorSessions`), then trims to 10. The normal end overwrites the checkpoint, so a session is never counted twice.
 - **Event Markers**: `PingEventMarker` records ping events overlaid on the noise floor graph:
   - `txSuccess` (Green) — TX heard by repeater
   - `txFail` (Red) — TX not heard
@@ -1166,9 +1296,9 @@ Two-service system for capturing debug logs and submitting bug reports.
 
 **DebugSubmitService** — 4-step bug report workflow:
 1. **Create Ticket** (0-20%): POST to `/debug/submitdebug.php/create-ticket` → returns `issue_number`, `issue_url`
-2. **Request Upload** (per file, 20-90%): POST `/request-upload` → returns `upload_url`, `session_id`
-3. **Upload File**: POST multipart to `upload_url` — splits large files at newline boundaries, uploads chunks sequentially with retry (3 attempts, exponential backoff)
-4. **Complete Upload** (90-100%): POST `/upload-complete` with issue reference
+2. **Request Upload** (per file, 20-90%): POST `/request-upload` → returns `upload_url`, `session_id`. A dropped connection or timeout is retried twice (1 s, 2 s backoff); a server refusal is not.
+3. **Upload File**: POST multipart to `upload_url`. Splits large files at newline boundaries, uploads chunks sequentially with retry (3 attempts, exponential backoff). An HTTP 400 `Session Closed` after an earlier attempt lost its answer means the file most likely landed, so the upload goes on to step 4 and lets the server's hash check decide; if upload-complete then does not confirm, the upload is reported as failed. A `Session Closed` with no earlier lost answer fails at once, without the retries, since the closed session takes no more uploads.
+4. **Complete Upload** (90-100%): POST `/upload-complete` with issue reference or user notes
 
 - **Accessible via**: Settings → About & Support
 - **Files**: `lib/services/debug_file_logger.dart`, `lib/services/debug_submit_service.dart`
@@ -2699,13 +2829,12 @@ when MeshMapper is disconnected.
 ### Android
 - Requires permissions: Bluetooth, Location (for BLE scanning)
 - minSdkVersion: 24 (Flutter's `flutter.minSdkVersion` default; MapLibre GL needs 23+)
-- Background location permission for continuous tracking
 - Uses `flutter_blue_plus` package
 - URL scheme `meshmapper-auth` (host `callback`) registered on MainActivity via a VIEW/DEFAULT/BROWSABLE intent-filter — the portal sign-in return. The bare `meshmapper://` scheme is deliberately NOT registered: it is a paste-only clipboard format (`docs/CUSTOM_API_ENDPOINT.md`).
 - `android:fullBackupContent` / `android:dataExtractionRules` exclude the `MeshMapperSecure` secure-prefs file from backup
 
 ### iOS
-- Requires Info.plist entries: NSBluetoothAlwaysUsageDescription, NSLocationWhenInUseUsageDescription
+- Requires Info.plist entries: NSBluetoothAlwaysUsageDescription, NSLocationWhenInUseUsageDescription, NSLocationTemporaryUsageDescriptionDictionary (purpose key `CoverageMapping`, see Precise Location at Connect)
 - Deployment target: 15.0 (the minimum Flutter 3.47.5 supports; iOS 13 and 14 devices cannot install the app)
 - Background modes: bluetooth-central, location
 - Uses `flutter_blue_plus` package
@@ -3002,9 +3131,9 @@ All API endpoints may return maintenance mode:
 3. **Control locking during ping lifecycle** - `sendPing()` disables all controls until API post completes. Must call unlock in ALL code paths (success/error).
 
 4. **Disconnect cleanup has 3 different flows**:
-   - **User disconnect**: Full cleanup — stop auto-ping → end noise floor session → stop background service → flush RX logger → clear API queue → release session (`/auth` with `reason: disconnect`) → delete wardriving channel (while BLE still connected) → close BLE → dispose all services → reset state
-   - **Unexpected BLE disconnect**: Partial cleanup — preserves API session, API queue, and noise floor session for reconnection. Stops timers and background service, disposes BLE-dependent objects, then starts auto-reconnect with exponential backoff (max 30s timeout). On reconnect success, restores auto-ping if it was active.
-   - **Reconnect failure / abandoned**: Falls back to full disconnect cleanup — flushes and clears API queue, releases session, resets antenna preference (user must re-select)
+   - **User disconnect**: Full cleanup — stop auto-ping → end noise floor session → stop the iOS per-mode background service → flush RX logger → clear API queue → release session (`/auth` with `reason: disconnect`) → delete wardriving channel (while BLE still connected) → close BLE → dispose all services → reset state; Android's session service stops last, after the queue upload and the session release
+   - **Unexpected BLE disconnect**: Partial cleanup: preserves API session, API queue, and noise floor session for reconnection. Stops timers, disposes BLE-dependent objects (Android's session service and iOS's per-mode service keep running, so the process stays alive through the reconnect window), then starts auto-reconnect with exponential backoff (max 30s timeout; a connect still in flight when it runs out gets one 15 s grace). On reconnect success, restores auto-ping if it was active. The provider disposes the `PingService` here without a force disable, so `PingService.dispose()` itself bumps the send epoch and clears the modes, and no parked send can re-arm a lane. Three drops in a row each within 30 s of a reconnect success give up (`ReconnectFlapGuard`, error-log entry naming the radio's power and battery).
+   - **Reconnect failure / abandoned**: Falls back to full disconnect cleanup: flushes and clears API queue, releases session, resets antenna preference (user must re-select). An abandon that catches a connect in flight bumps `_connectGeneration` and cancels the BLE connect, so the stale attempt touches nothing a newer connection owns: a disposed `MeshCoreConnection` writes no frame and leaves the transport alone when its workflow fails. The abandon disposes the stale attempt's connection at once, not at the end of the cleanup's awaits, and that attempt's auth callback answers `superseded` without calling the API (an answer already on its way is not stored as the app's session). A connect the user starts during the cleanup moves the generation, and the cleanup's end then disposes only the connection, ping service and transport it started with, leaving the new ones alone. `connectViaTcp` checks the generation as `connectToDevice` does: a superseded TCP attempt moves no step, shows no error card and closes only the socket it opened. A user Cancel plays no disconnect alert.
 
    Critical: Channel deletion MUST happen while BLE is still connected to avoid GATT errors. API queue is cleared on user disconnect (pings won't have valid session) but preserved during auto-reconnect.
 

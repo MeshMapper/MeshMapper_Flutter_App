@@ -3,6 +3,17 @@ import 'dart:typed_data';
 import '../../utils/debug_logger_io.dart';
 import 'protocol_constants.dart';
 
+/// Thrown by [PacketMetadata.fromLogRxData] when the bytes end before the
+/// header, path length or path they announce. A truncated packet off the
+/// air is routine, so callers skip it quietly instead of logging an error.
+class PacketTooShortException implements Exception {
+  final String message;
+  const PacketTooShortException(this.message);
+
+  @override
+  String toString() => 'Packet too short: $message';
+}
+
 /// Packet metadata extracted from BLE LogRxData events
 /// Reference: parseRxPacketMetadata() in wardrive.js (lines 3155-3195)
 class PacketMetadata {
@@ -72,6 +83,10 @@ class PacketMetadata {
         .join(' ');
     debugLog('[RX PARSE] RAW Packet (${raw.length} bytes): $rawHex');
 
+    if (raw.isEmpty) {
+      throw const PacketTooShortException('empty packet');
+    }
+
     // Extract header byte from raw[0]
     final int header = raw[0];
     final int routeType = header & PacketHeader.routeMask;
@@ -85,6 +100,11 @@ class PacketMetadata {
     if (routeType == RouteType.reserved1 || routeType == RouteType.reserved2) {
       // TransportFlood or TransportDirect - has 4-byte transport codes
       pathLengthOffset = 5;
+    }
+
+    if (pathLengthOffset >= raw.length) {
+      throw PacketTooShortException(
+          'path length offset $pathLengthOffset exceeds packet length ${raw.length}');
     }
 
     // Extract raw pathLen byte and decode multi-byte path encoding
@@ -109,8 +129,8 @@ class PacketMetadata {
     // Extract encrypted payload after path data
     final int payloadOffset = pathDataOffset + pathByteLen;
     if (payloadOffset > raw.length) {
-      throw RangeError(
-          'Packet too short: payload offset $payloadOffset exceeds packet length ${raw.length}');
+      throw PacketTooShortException(
+          'payload offset $payloadOffset exceeds packet length ${raw.length}');
     }
     final Uint8List encryptedPayload = raw.sublist(payloadOffset);
 

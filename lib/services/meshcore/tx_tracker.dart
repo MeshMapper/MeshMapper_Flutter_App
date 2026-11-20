@@ -254,6 +254,12 @@ class TxTracker {
 
         try {
           final encryptedMessage = metadata.encryptedPayload.sublist(3);
+          if (!CryptoService.isValidCiphertextLength(
+              encryptedMessage.length)) {
+            debugLog('[MESSAGE_CORRELATION] ❌ REJECT: ciphertext length '
+                '${encryptedMessage.length} is not a multiple of 16');
+            return TxEchoResult.notEcho;
+          }
           final decryptedBytes = CryptoService.decryptChannelMessage(
             encryptedMessage,
             channelKey!,

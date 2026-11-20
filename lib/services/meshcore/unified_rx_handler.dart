@@ -115,6 +115,9 @@ class UnifiedRxHandler {
 
       // If neither active, packet is received but ignored
       // Listener stays on, just not processing for wardriving
+    } on PacketTooShortException catch (e) {
+      // Truncated packets are routine on air: skip without an error.
+      debugLog('[UNIFIED RX] Skipped short packet: ${e.message}');
     } catch (error, stackTrace) {
       debugError('[UNIFIED RX] Error processing rx_log entry: $error');
       debugError('[UNIFIED RX] Stack trace: $stackTrace');
