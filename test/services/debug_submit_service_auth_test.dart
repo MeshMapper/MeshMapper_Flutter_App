@@ -201,6 +201,98 @@ void main() {
     expect(h.bodies[2].containsKey('upload_token'), isFalse);
   });
 
+  group('upload-complete decides', () {
+    /// A server whose upload-complete gives the next entry of [completes]
+    /// (an exception is thrown, a response is returned).
+    ({DebugSubmitService service, List<String> calls}) withCompletes(
+        List<Object> completes) {
+      final calls = <String>[];
+      var index = 0;
+      final client = MockClient((request) async {
+        final route = routeOf(request);
+        calls.add(route);
+        if (route == 'request') {
+          return answer({
+            'upload_url': 'https://meshmapper.net/debug/submitdebug.php'
+                '/upload/?session_id=s1',
+            'session_id': 's1',
+            'expires_at': 0,
+            'upload_token': 'token-1',
+          });
+        }
+        if (route == 'upload') return answer({'success': true});
+        final next = completes[index++];
+        if (next is Exception) throw next;
+        return next as http.Response;
+      });
+      return (
+        service: DebugSubmitService(
+          client: client,
+          retryDelayUnit: const Duration(milliseconds: 1),
+          apiKey: apiKey,
+        ),
+        calls: calls,
+      );
+    }
+
+    final confirmed = answer({'success': true, 'hash_match': true});
+
+    test('a dropped answer is asked again', () async {
+      final h = withCompletes([
+        http.ClientException('connection reset'),
+        confirmed,
+      ]);
+
+      expect(await upload(h.service), isTrue);
+      expect(h.calls, ['request', 'upload', 'complete', 'complete']);
+    });
+
+    test('three dropped answers fail the upload', () async {
+      final h = withCompletes([
+        http.ClientException('connection reset'),
+        http.ClientException('connection reset'),
+        http.ClientException('connection reset'),
+      ]);
+
+      expect(await upload(h.service), isFalse);
+      expect(h.calls,
+          ['request', 'upload', 'complete', 'complete', 'complete']);
+    });
+
+    test('a server error fails the upload and is not retried', () async {
+      final h = withCompletes([
+        answer({'success': false, 'message': 'Server error'}, 500),
+      ]);
+
+      expect(await upload(h.service), isFalse);
+      expect(h.calls, ['request', 'upload', 'complete']);
+    });
+
+    test('a hash that does not match fails the upload', () async {
+      final h = withCompletes([
+        answer({'success': true, 'hash_match': false}),
+      ]);
+
+      expect(await upload(h.service), isFalse);
+    });
+  });
+
+  test('a refused bug report shows what the server said', () async {
+    final service = DebugSubmitService(
+      client: MockClient((_) async => answer({
+            'success': false,
+            'message': 'The title is too long (200 characters at most).',
+          }, 400)),
+      apiKey: apiKey,
+    );
+
+    final result = await report(service);
+
+    expect(result.success, isFalse);
+    expect(result.errorMessage,
+        'The title is too long (200 characters at most).');
+  });
+
   group('a 401 shows the server message and is not retried', () {
     const message = 'This app build is not allowed to send reports.';
 

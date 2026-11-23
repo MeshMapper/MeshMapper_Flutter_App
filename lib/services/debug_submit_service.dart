@@ -170,6 +170,10 @@ class DebugSubmitService {
   /// error.
   static const int _requestUploadAttempts = 3;
 
+  /// Attempts at upload-complete: the first plus two retries on a transport
+  /// error. The server gives the same answer when asked again.
+  static const int _completeAttempts = 3;
+
   /// Attempts at the file upload itself.
   static const int _uploadAttempts = 3;
 
@@ -529,25 +533,13 @@ class DebugSubmitService {
         userNotes: userNotes,
       );
 
-      if (!completeSuccess && _refusalMessage != null) {
-        debugError('[BUG REPORT] FAILED: Server refused to confirm $filename');
-        return false;
-      }
-      if (!completeSuccess && upload == _UploadStepResult.landedUnconfirmed) {
-        // No attempt was ever acknowledged, so without the server's
-        // confirmation there is no evidence the file landed.
-        debugError('[BUG REPORT] FAILED: Server did not confirm $filename '
-            'after a closed session');
-        return false;
-      }
       if (!completeSuccess) {
-        debugWarn(
-            '[BUG REPORT] WARNING: Upload confirmation failed for: $filename');
-        debugWarn(
-            '[BUG REPORT] File was uploaded but confirmation failed - treating as success');
-      } else {
-        debugLog('[BUG REPORT] SUCCESS: Upload confirmed');
+        // Without the server's confirmation the file is not hash-checked and
+        // its notes are not stored, so the upload did not succeed.
+        debugError('[BUG REPORT] FAILED: Server did not confirm $filename');
+        return false;
       }
+      debugLog('[BUG REPORT] SUCCESS: Upload confirmed');
 
       return true;
     } catch (e, stackTrace) {
@@ -602,9 +594,12 @@ class DebugSubmitService {
       if (response.statusCode != 200) {
         debugError('[BUG REPORT] HTTP error: ${response.statusCode}');
         debugError('[BUG REPORT] Response body: ${response.body}');
+        // The server says why in `message` (a title that is too long, too
+        // many reports); show that when it is there.
         return {
           'success': false,
-          'message': 'Server error: ${response.statusCode}'
+          'message': _serverMessage(response.body) ??
+              'Server error: ${response.statusCode}'
         };
       }
 
@@ -815,6 +810,18 @@ class DebugSubmitService {
     }
   }
 
+  /// The `message` of a server answer, or null when it has none.
+  static String? _serverMessage(String body) {
+    try {
+      final data = json.decode(body);
+      if (data is Map && data['message'] is String) {
+        final text = (data['message'] as String).trim();
+        if (text.isNotEmpty) return text;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static bool _isSessionClosed(String body) {
     try {
       final data = json.decode(body);
@@ -826,7 +833,11 @@ class DebugSubmitService {
     return false;
   }
 
-  /// Step 4: Confirm upload completion
+  /// Step 4: Confirm upload completion.
+  ///
+  /// True only when the server confirms the file and its hash matches. A
+  /// dropped connection is retried (the server answers the same when asked
+  /// again); a refusal is not.
   Future<bool> completeUpload({
     required String deviceId,
     required String publicKey,
@@ -859,13 +870,27 @@ class DebugSubmitService {
       }
 
       final stopwatch = Stopwatch()..start();
-      final response = await _client
-          .post(
-            Uri.parse(url),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      http.Response? response;
+      for (int attempt = 1; response == null; attempt++) {
+        try {
+          response = await _client
+              .post(
+                Uri.parse(url),
+                headers: {'Content-Type': 'application/json'},
+                body: json.encode(payload),
+              )
+              .timeout(const Duration(seconds: 30));
+        } on Exception catch (e) {
+          if (!_isTransportError(e) || attempt >= _completeAttempts) {
+            rethrow;
+          }
+          final delay = _retryDelayUnit * attempt; // 1s, 2s backoff
+          debugWarn('[BUG REPORT] Upload-complete attempt '
+              '$attempt/$_completeAttempts got no answer ($e), '
+              'retrying in ${delay.inMilliseconds / 1000}s...');
+          await Future.delayed(delay);
+        }
+      }
       stopwatch.stop();
 
       debugLog(
@@ -887,7 +912,9 @@ class DebugSubmitService {
         debugLog('[BUG REPORT]   message: ${data['message']}');
       }
 
-      final completed = data['success'] == true;
+      // hash_match false: the stored file is not the one that was hashed
+      // here, so the upload failed even though the call itself worked.
+      final completed = data['success'] == true && data['hash_match'] != false;
       return completed;
     } catch (e, stackTrace) {
       debugError('[BUG REPORT] Complete upload exception: $e');
@@ -1017,24 +1044,13 @@ class DebugSubmitService {
             userNotes: userNotes ?? 'Direct debug log upload',
           );
 
-          if (!completeSuccess && _refusalMessage != null) {
-            debugError('[DEBUG UPLOAD] FAILED: Server refused to confirm '
+          if (!completeSuccess) {
+            // Without the server's confirmation the file is not hash-checked
+            // and its notes are not stored, so the upload did not succeed.
+            debugError('[DEBUG UPLOAD] FAILED: Server did not confirm '
                 '$chunkName');
             allSucceeded = false;
             break;
-          }
-          if (!completeSuccess &&
-              upload == _UploadStepResult.landedUnconfirmed) {
-            // No attempt was ever acknowledged, so without the server's
-            // confirmation there is no evidence the file landed.
-            debugError('[DEBUG UPLOAD] FAILED: Server did not confirm '
-                '$chunkName after a closed session');
-            allSucceeded = false;
-            break;
-          }
-          if (!completeSuccess) {
-            debugWarn(
-                '[DEBUG UPLOAD] Confirmation failed but file was uploaded');
           }
 
           debugLog('[DEBUG UPLOAD] Chunk ${i + 1}/$totalChunks complete');
