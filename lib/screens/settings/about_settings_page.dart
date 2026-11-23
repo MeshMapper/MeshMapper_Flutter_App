@@ -43,6 +43,9 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
       if (result.failedCount > 0) {
         message += ' (${result.failedCount} failed)';
       }
+      if (result.refusalMessage != null) {
+        message += '. ${result.refusalMessage}';
+      }
       AppToast.success(context, message);
     } else if (result.errorMessage != null) {
       AppToast.error(context, result.errorMessage!);
@@ -326,6 +329,10 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
       }
       if (result.failedFileCount > 0) {
         message += ' (${result.failedFileCount} failed)';
+      }
+      if (result.errorMessage != null) {
+        // The server's own words when it refused the log files.
+        message += '. ${result.errorMessage}';
       }
 
       AppToast.success(

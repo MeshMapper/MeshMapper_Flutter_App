@@ -1300,6 +1300,15 @@ Two-service system for capturing debug logs and submitting bug reports.
 3. **Upload File**: POST multipart to `upload_url`. Splits large files at newline boundaries, uploads chunks sequentially with retry (3 attempts, exponential backoff). An HTTP 400 `Session Closed` after an earlier attempt lost its answer means the file most likely landed, so the upload goes on to step 4 and lets the server's hash check decide; if upload-complete then does not confirm, the upload is reported as failed. A `Session Closed` with no earlier lost answer fails at once, without the retries, since the closed session takes no more uploads.
 4. **Complete Upload** (90-100%): POST `/upload-complete` with issue reference or user notes
 
+Every one of the four calls carries the app's API key as `key` (a JSON body field, a form field on
+the multipart upload), the same key the wardrive API takes. `request-upload` answers with an
+`upload_token` for that session; the app sends it back as a form field with the file and in the
+`upload-complete` body. Each piece of a split file opens its own session, so each has its own
+token. The key and the token never go in an address and are never written to the debug log. An
+HTTP 401 means the server refused the key or the token: the app shows the server's `message` as it
+is, does not retry, and skips the remaining pieces and files. Contract:
+`MeshMapper_Server/docs/APP_API.md`, appendix A.
+
 - **Accessible via**: Settings → About & Support
 - **Files**: `lib/services/debug_file_logger.dart`, `lib/services/debug_submit_service.dart`
 

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 import '../utils/debug_logger_io.dart';
+import 'api_service.dart';
 import 'debug_file_logger.dart';
 
 /// Progress update during bug report submission
@@ -57,16 +58,25 @@ class UploadSession {
   final String sessionId;
   final int expiresAt;
 
+  /// Proves this phone opened the session: sent back with the file and with
+  /// upload-complete, in the body and never in an address. Null from a server
+  /// that does not hand one out. Never logged.
+  final String? uploadToken;
+
   const UploadSession({
     required this.uploadUrl,
     required this.sessionId,
     required this.expiresAt,
+    this.uploadToken,
   });
 
   factory UploadSession.fromJson(Map<String, dynamic> json) => UploadSession(
         uploadUrl: json['upload_url'] as String,
         sessionId: json['session_id'] as String,
         expiresAt: json['expires_at'] as int,
+        uploadToken: json['upload_token'] is String
+            ? json['upload_token'] as String
+            : null,
       );
 }
 
@@ -82,6 +92,10 @@ enum UploadAttemptOutcome {
   /// HTTP 400 "Session Closed": the server no longer accepts uploads for
   /// this session, which it does once a file has landed.
   sessionClosed,
+
+  /// HTTP 401: the server does not accept this app's key or the session's
+  /// upload token. Never retried; the server's message is shown as is.
+  refused,
 
   /// Any other refusal.
   failed,
@@ -101,11 +115,27 @@ enum _UploadStepResult {
   failed,
 }
 
-/// Service for submitting bug reports and uploading debug files
+/// Service for submitting bug reports and uploading debug files.
+///
+/// Every call carries the app's API key (`key`), and each upload session's
+/// `upload_token` goes back with its file and its upload-complete. Both travel
+/// in the request body, never in an address, and neither is logged. Contract:
+/// MeshMapper_Server/docs/APP_API.md, appendix A.
 class DebugSubmitService {
   static const String baseUrl = 'https://meshmapper.net/debug/submitdebug.php';
 
   final http.Client _client;
+
+  /// The app's API key, as sent on every wardrive API call.
+  final String _apiKey;
+
+  String? _refusalMessage;
+
+  /// The server's own words from its last HTTP 401, or null. Set when the
+  /// server refuses this app's key or an upload token; cleared when
+  /// [submitBugReport] or [uploadDebugFileOnly] starts. A refusal is final:
+  /// nothing is retried and the remaining pieces are not sent.
+  String? get refusalMessage => _refusalMessage;
 
   /// Base step for retry backoff. Tests shorten it; the app uses 1 s.
   final Duration _retryDelayUnit;
@@ -113,8 +143,28 @@ class DebugSubmitService {
   DebugSubmitService({
     http.Client? client,
     Duration retryDelayUnit = const Duration(seconds: 1),
+    String? apiKey,
   })  : _client = client ?? http.Client(),
-        _retryDelayUnit = retryDelayUnit;
+        _retryDelayUnit = retryDelayUnit,
+        _apiKey = apiKey ?? ApiService.apiKey;
+
+  /// Records an HTTP 401 and returns the message to show: the server's
+  /// `message` as it is. Returns null for any other status.
+  String? _noteRefusal(http.Response response) {
+    if (response.statusCode != 401) return null;
+    var message = 'The server refused this request.';
+    try {
+      final data = json.decode(response.body);
+      if (data is Map && data['message'] is String) {
+        final text = (data['message'] as String).trim();
+        if (text.isNotEmpty) message = text;
+      }
+    } catch (_) {}
+    _refusalMessage = message;
+    debugWarn('[BUG REPORT] Refused by the server (401), not retrying: '
+        '$message');
+    return message;
+  }
 
   /// Attempts at request-upload: the first plus two retries on a transport
   /// error.
@@ -134,8 +184,14 @@ class DebugSubmitService {
       final outcome = await uploadFileAttempt(
         uploadUrl: session.uploadUrl,
         file: file,
+        uploadToken: session.uploadToken,
       );
 
+      if (outcome == UploadAttemptOutcome.refused) {
+        // A refusal is the server's final word; another attempt would only
+        // be refused again.
+        return _UploadStepResult.failed;
+      }
       if (outcome == UploadAttemptOutcome.success) {
         debugLog('$tag File data uploaded');
         return _UploadStepResult.uploaded;
@@ -200,6 +256,7 @@ class DebugSubmitService {
       ));
     }
 
+    _refusalMessage = null;
     debugLog('[BUG REPORT] ========================================');
     debugLog('[BUG REPORT] Starting bug report submission');
     debugLog('[BUG REPORT] Title: $title');
@@ -291,6 +348,14 @@ class DebugSubmitService {
           reportProgress(
               'Failed to upload $filename', fileProgress + progressPerFile,
               currentFile: i + 1);
+          if (_refusalMessage != null) {
+            // The server refused this app; the other files would be refused
+            // the same way.
+            failedCount += totalFiles - i - 1;
+            debugWarn('[BUG REPORT] Server refused the upload; skipping the '
+                'remaining files');
+            break;
+          }
         }
       }
 
@@ -314,6 +379,7 @@ class DebugSubmitService {
       success: true,
       issueUrl: issueUrl,
       issueNumber: issueNumber,
+      errorMessage: _refusalMessage,
       uploadedFileCount: uploadedCount,
       failedFileCount: failedCount,
     );
@@ -458,10 +524,15 @@ class DebugSubmitService {
         deviceId: deviceId,
         publicKey: publicKey,
         sessionId: session.sessionId,
+        uploadToken: session.uploadToken,
         success: true,
         userNotes: userNotes,
       );
 
+      if (!completeSuccess && _refusalMessage != null) {
+        debugError('[BUG REPORT] FAILED: Server refused to confirm $filename');
+        return false;
+      }
       if (!completeSuccess && upload == _UploadStepResult.landedUnconfirmed) {
         // No attempt was ever acknowledged, so without the server's
         // confirmation there is no evidence the file landed.
@@ -495,6 +566,7 @@ class DebugSubmitService {
   }) async {
     try {
       final payload = {
+        'key': _apiKey,
         'title': title,
         'body': body,
         'platform': platform,
@@ -523,6 +595,10 @@ class DebugSubmitService {
           '[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
+      final refusal = _noteRefusal(response);
+      if (refusal != null) {
+        return {'success': false, 'message': refusal};
+      }
       if (response.statusCode != 200) {
         debugError('[BUG REPORT] HTTP error: ${response.statusCode}');
         debugError('[BUG REPORT] Response body: ${response.body}');
@@ -561,6 +637,7 @@ class DebugSubmitService {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final payload = {
+        'key': _apiKey,
         'device_id': deviceId,
         'public_key': publicKey,
         'timestamp': timestamp,
@@ -611,6 +688,7 @@ class DebugSubmitService {
           '[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
+      if (_noteRefusal(response) != null) return null;
       if (response.statusCode != 200) {
         debugError('[BUG REPORT] HTTP error: ${response.statusCode}');
         debugError('[BUG REPORT] Response body: ${response.body}');
@@ -626,7 +704,8 @@ class DebugSubmitService {
 
       if (data['upload_url'] == null || data['session_id'] == null) {
         debugError('[BUG REPORT] Missing required fields in response');
-        debugError('[BUG REPORT] Full response: $data');
+        // Field names only: the answer can hold the session's upload token.
+        debugError('[BUG REPORT] Response fields: ${data.keys.join(', ')}');
         return null;
       }
 
@@ -649,15 +728,21 @@ class DebugSubmitService {
   Future<bool> uploadFile({
     required String uploadUrl,
     required File file,
+    String? uploadToken,
   }) async =>
-      await uploadFileAttempt(uploadUrl: uploadUrl, file: file) ==
+      await uploadFileAttempt(
+          uploadUrl: uploadUrl, file: file, uploadToken: uploadToken) ==
       UploadAttemptOutcome.success;
 
   /// One upload attempt, saying how it went so the caller can tell a lost
   /// answer from a refusal.
+  ///
+  /// The key and the session's [uploadToken] go as form fields beside the
+  /// file, never in [uploadUrl].
   Future<UploadAttemptOutcome> uploadFileAttempt({
     required String uploadUrl,
     required File file,
+    String? uploadToken,
   }) async {
     try {
       final filename = file.path.split('/').last;
@@ -669,6 +754,8 @@ class DebugSubmitService {
       debugLog('[BUG REPORT] Content-Type: multipart/form-data');
 
       final request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
+      request.fields['key'] = _apiKey;
+      if (uploadToken != null) request.fields['upload_token'] = uploadToken;
 
       request.files.add(await http.MultipartFile.fromPath(
         'debug_file',
@@ -692,6 +779,7 @@ class DebugSubmitService {
           '[BUG REPORT] Upload completed in ${durationSec}s ($speedKbps KB/s)');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
+      if (_noteRefusal(response) != null) return UploadAttemptOutcome.refused;
       if (response.statusCode != 200) {
         if (response.statusCode == 400 && _isSessionClosed(response.body)) {
           debugWarn('[BUG REPORT] Upload refused: session closed');
@@ -744,11 +832,14 @@ class DebugSubmitService {
     required String publicKey,
     required String sessionId,
     required bool success,
+    String? uploadToken,
     String? userNotes,
   }) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final payload = {
+        'key': _apiKey,
+        if (uploadToken != null) 'upload_token': uploadToken,
         'device_id': deviceId,
         'public_key': publicKey,
         'session_id': sessionId,
@@ -781,6 +872,7 @@ class DebugSubmitService {
           '[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
+      if (_noteRefusal(response) != null) return false;
       if (response.statusCode != 200) {
         debugError('[BUG REPORT] HTTP error: ${response.statusCode}');
         debugError('[BUG REPORT] Response body: ${response.body}');
@@ -817,6 +909,7 @@ class DebugSubmitService {
   }) async {
     final filename = file.path.split('/').last;
 
+    _refusalMessage = null;
     debugLog('[DEBUG UPLOAD] ========================================');
     debugLog('[DEBUG UPLOAD] Starting single file upload');
     debugLog('[DEBUG UPLOAD] File: $filename');
@@ -919,10 +1012,17 @@ class DebugSubmitService {
             deviceId: deviceId,
             publicKey: publicKey,
             sessionId: session.sessionId,
+            uploadToken: session.uploadToken,
             success: true,
             userNotes: userNotes ?? 'Direct debug log upload',
           );
 
+          if (!completeSuccess && _refusalMessage != null) {
+            debugError('[DEBUG UPLOAD] FAILED: Server refused to confirm '
+                '$chunkName');
+            allSucceeded = false;
+            break;
+          }
           if (!completeSuccess &&
               upload == _UploadStepResult.landedUnconfirmed) {
             // No attempt was ever acknowledged, so without the server's

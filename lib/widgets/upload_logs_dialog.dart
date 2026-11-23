@@ -15,11 +15,15 @@ class UploadLogsResult {
   final int failedCount;
   final String? errorMessage;
 
+  /// The server's own message when it refused the upload (HTTP 401).
+  final String? refusalMessage;
+
   const UploadLogsResult({
     required this.success,
     this.uploadedCount = 0,
     this.failedCount = 0,
     this.errorMessage,
+    this.refusalMessage,
   });
 }
 
@@ -190,6 +194,7 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
 
       int uploadedCount = 0;
       int failedCount = 0;
+      String? refusalMessage;
       final totalFiles = filesToUpload.length;
 
       for (int i = 0; i < totalFiles; i++) {
@@ -226,6 +231,13 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
           uploadedCount++;
         } else {
           failedCount++;
+          if (service.refusalMessage != null) {
+            // The server refused this app (HTTP 401). Its message is shown as
+            // it is, and the other files would be refused the same way.
+            refusalMessage = service.refusalMessage;
+            failedCount += totalFiles - i - 1;
+            break;
+          }
         }
       }
 
@@ -237,8 +249,9 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
         success: uploadedCount > 0,
         uploadedCount: uploadedCount,
         failedCount: failedCount,
-        errorMessage:
-            failedCount > 0 ? '$failedCount file(s) failed to upload' : null,
+        errorMessage: refusalMessage ??
+            (failedCount > 0 ? '$failedCount file(s) failed to upload' : null),
+        refusalMessage: refusalMessage,
       );
 
       Navigator.of(context).pop(result);
