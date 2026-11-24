@@ -1,8 +1,10 @@
 import AppIntents
+import CarPlay
 import Flutter
 import MapLibre
 import UIKit
 import UserNotifications
+import WidgetKit
 import flutter_background_service_ios
 
 /// URLProtocol that fails fast for MapLibre tile/style/glyph/sprite requests
@@ -67,7 +69,7 @@ class IOSMapOfflineBridge {
 }
 
 @main
-@objc class AppDelegate: FlutterAppDelegate {
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let mapOfflineBridge = IOSMapOfflineBridge()
   private let liveActivityManager = LiveActivityManager()
   private let watchSessionManager = WatchSessionManager()
@@ -84,7 +86,6 @@ class IOSMapOfflineBridge {
       // The package registers its own background tasks
     }
 
-    GeneratedPluginRegistrant.register(with: self)
     UNUserNotificationCenter.current().delegate = self
 
     // App Shortcut metadata is extracted at build time, but asking the system
@@ -97,14 +98,57 @@ class IOSMapOfflineBridge {
     // Register background service
     SwiftFlutterBackgroundServicePlugin.taskIdentifier = "net.meshmapper.app.background"
 
-    if let controller = window?.rootViewController as? FlutterViewController {
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func application(
+    _ application: UIApplication,
+    configurationForConnecting connectingSceneSession: UISceneSession,
+    options: UIScene.ConnectionOptions
+  ) -> UISceneConfiguration {
+    if connectingSceneSession.role == .windowApplication {
+      let configuration = UISceneConfiguration(
+        name: "flutter",
+        sessionRole: connectingSceneSession.role
+      )
+      configuration.sceneClass = UIWindowScene.self
+      configuration.delegateClass = SceneDelegate.self
+      configuration.storyboard = UIStoryboard(name: "Main", bundle: nil)
+      return configuration
+    }
+
+    if connectingSceneSession.role == .carTemplateApplication {
+      let configuration = UISceneConfiguration(
+        name: "CarPlay",
+        sessionRole: connectingSceneSession.role
+      )
+      configuration.sceneClass = CPTemplateApplicationScene.self
+      if #available(iOS 16.0, *) {
+        configuration.delegateClass = CarPlaySceneDelegate.self
+      }
+      return configuration
+    }
+
+    return UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+  }
+
+  /// Flutter creates the engine from the scene's storyboard on iOS 13 and
+  /// later. Register plugins and application channels only after that engine
+  /// exists; accessing AppDelegate.window during launch is invalid with the
+  /// UIScene lifecycle and is a fatal error on iOS 27.
+  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    configureFlutterChannels(messenger: engineBridge.applicationRegistrar.messenger())
+  }
+
+  private func configureFlutterChannels(messenger: FlutterBinaryMessenger) {
       // Method channel: iOS map offline mode bridge. Dart calls
       // `setOffline` from map_widget.dart to toggle the URLProtocol
       // interceptor that forces tile requests to fail fast, letting
       // MapLibre-iOS serve only cached/downloaded tiles.
       let offlineChannel = FlutterMethodChannel(
         name: "meshmapper/ios_map_offline",
-        binaryMessenger: controller.binaryMessenger
+        binaryMessenger: messenger
       )
       offlineChannel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else {
@@ -127,7 +171,7 @@ class IOSMapOfflineBridge {
       // and compact system/CarPlay presentations from these snapshots.
       let liveActivityChannel = FlutterMethodChannel(
         name: "meshmapper/live_activity",
-        binaryMessenger: controller.binaryMessenger
+        binaryMessenger: messenger
       )
       liveActivityChannel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else {
@@ -142,7 +186,7 @@ class IOSMapOfflineBridge {
       // channel. Unlike the Live Activity, this needs no entitlement.
       let watchChannel = FlutterMethodChannel(
         name: "meshmapper/watch",
-        binaryMessenger: controller.binaryMessenger
+        binaryMessenger: messenger
       )
       watchChannel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else {
@@ -158,7 +202,7 @@ class IOSMapOfflineBridge {
       // intents that must not launch Flutter.
       let appIntentChannel = FlutterMethodChannel(
         name: "meshmapper/app_intents",
-        binaryMessenger: controller.binaryMessenger
+        binaryMessenger: messenger
       )
       appIntentChannel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else {
@@ -169,6 +213,13 @@ class IOSMapOfflineBridge {
         case "publishSnapshot":
           do {
             try self.siriSnapshotStore.writeFlutterPayload(call.arguments)
+            WidgetCenter.shared.reloadTimelines(
+              ofKind: "MeshMapperStatusWidget"
+            )
+            NotificationCenter.default.post(
+              name: .meshMapperSnapshotDidChange,
+              object: nil
+            )
             result(nil)
           } catch {
             result(FlutterError(
@@ -188,7 +239,7 @@ class IOSMapOfflineBridge {
       // from the Offline Maps screen's Tile Cache card.
       let tileCacheChannel = FlutterMethodChannel(
         name: "meshmapper/tile_cache",
-        binaryMessenger: controller.binaryMessenger
+        binaryMessenger: messenger
       )
       tileCacheChannel.setMethodCallHandler { call, result in
         switch call.method {
@@ -222,9 +273,6 @@ class IOSMapOfflineBridge {
           result(FlutterMethodNotImplemented)
         }
       }
-    }
-
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   /// Per-region downloaded byte counts, keyed by the Dart-side region ID that

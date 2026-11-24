@@ -18,6 +18,9 @@ struct MeshMapperSiriConnection: Codable, Sendable {
   let isConnected: Bool
   let deviceName: String?
   let batteryPercent: Int?
+  /// User-selected or radio-detected transmit power. Optional for v1 snapshots
+  /// written by an older app build.
+  let powerWatts: Double?
   let gpsStatus: String
 }
 
