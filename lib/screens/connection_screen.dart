@@ -12,6 +12,7 @@ import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../services/precise_location_gate.dart';
+import '../services/server_config.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/slots_chip.dart';
@@ -2605,7 +2606,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   }
 
   void _launchOnboardingUrl() async {
-    final uri = Uri.parse('https://meshmapper.net/?onboarding');
+    final uri = Uri.parse(ServerConfig.onboardingUrl);
     try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {

@@ -9,6 +9,7 @@ import '../models/device_model.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
 import 'device_model_matcher.dart';
+import 'server_config.dart';
 
 typedef DeviceCatalogFetcher = Future<DeviceCatalog?> Function();
 typedef UnknownDeviceReporter = Future<DeviceReportAcknowledgement?> Function(
@@ -46,11 +47,17 @@ class SharedPreferencesDeviceCatalogStorage implements DeviceCatalogStorage {
 
 /// Owns the validated launch cache, one shared refresh and unknown reports.
 class DeviceModelService {
-  static const String catalogCacheKey = 'device_catalog_v1';
-  static const String _catalogPointerKey = 'device_catalog_active_slot_v1';
-  static const String _catalogSlotAKey = 'device_catalog_slot_a_v1';
-  static const String _catalogSlotBKey = 'device_catalog_slot_b_v1';
-  static const String outboxKey = 'device_catalog_unknown_outbox_v1';
+  // Kept per server (see [ServerConfig.scoped]): one server's catalog and
+  // its queued unknown-device reports never reach another.
+  static String get catalogCacheKey => ServerConfig.scoped('device_catalog_v1');
+  static String get _catalogPointerKey =>
+      ServerConfig.scoped('device_catalog_active_slot_v1');
+  static String get _catalogSlotAKey =>
+      ServerConfig.scoped('device_catalog_slot_a_v1');
+  static String get _catalogSlotBKey =>
+      ServerConfig.scoped('device_catalog_slot_b_v1');
+  static String get outboxKey =>
+      ServerConfig.scoped('device_catalog_unknown_outbox_v1');
 
   /// A connect-time retry never starts sooner than this after the previous
   /// refresh ended, so a dead link cannot turn every connect into a fetch.
@@ -150,6 +157,16 @@ class DeviceModelService {
     _startRefresh();
   }
 
+  /// The active server changed (see [ServerConfig]): forget the previous
+  /// server's catalog and load the new server's, as at launch.
+  Future<void> reloadForServer() {
+    _catalog = null;
+    _storage = null;
+    _initializeFuture = null;
+    _lastRefreshEnded = null;
+    return initialize();
+  }
+
   /// Arms one refresh with a fresh deadline. Callers check the guards first.
   void _startRefresh() {
     _refreshInFlight = true;
@@ -168,6 +185,7 @@ class DeviceModelService {
   Future<void> loadModels() => initialize();
 
   Future<void> _refresh() async {
+    final serverRevision = ServerConfig.revision.value;
     try {
       DeviceCatalog? fetched;
       try {
@@ -177,6 +195,9 @@ class DeviceModelService {
         return;
       }
       if (fetched == null) return;
+      // An answer from the server that was active when this started is not
+      // saved or used once another server is.
+      if (ServerConfig.revision.value != serverRevision) return;
       final encoded = fetched.toJsonString();
       if (utf8.encode(encoded).length > DeviceCatalog.maxEncodedBytes) return;
       if (!await _persist(encoded)) {

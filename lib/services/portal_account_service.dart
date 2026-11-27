@@ -9,6 +9,7 @@ import '../utils/constants.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/pkce.dart';
 import 'portal_token_store.dart';
+import 'server_config.dart';
 
 /// The MyMeshMapper portal wire contract.
 ///
@@ -18,7 +19,7 @@ import 'portal_token_store.dart';
 class PortalApi {
   PortalApi._();
 
-  static const String baseUrl = 'https://portal.meshmapper.net';
+  static String get baseUrl => ServerConfig.portalUrl;
   static const String authorizePath = '/portal.php';
   static const String apiPath = '/portal_app_api.php';
 
@@ -461,6 +462,26 @@ class PortalAccountService {
 
   /// Restore the cached overview from Hive. Does NOT fire `onAccountChanged`.
   void hydrateOverview(PortalOverview? overview) => _overview = overview;
+
+  /// The active server changed (see [ServerConfig]). Forgets everything held
+  /// in memory for the previous server, without touching what is stored for
+  /// it, then reads the new server's sign-in. No sign-out event fires:
+  /// nobody signed out, and the stored sign-in of the previous server is
+  /// there again when the app returns to it.
+  Future<void> reloadForServer() async {
+    _token = null;
+    _account = null;
+    _linkedPubkeys = const [];
+    _overview = null;
+    _lastMeAt = null;
+    _pendingPkce = null;
+    _lastCode = null;
+    _consumedCodes.clear();
+    _consumedErrorStates.clear();
+    _rateLimitedUntil.clear();
+    _token = await _store.readToken();
+    _log('server changed: signedIn=${_token != null}');
+  }
 
   Future<void> init() async {
     _token = await _store.readToken();
@@ -1027,10 +1048,18 @@ class PortalAccountService {
       headers['X-MM-App-Token'] = token;
     }
 
+    // The address and the token above belong to the server active NOW. An
+    // answer that arrives after the server changed is for the old one and
+    // must not touch the new one's state: it reads as a network failure.
+    final serverRevision = ServerConfig.revision.value;
     try {
       final response = await _client
           .post(PortalApi.action(action), headers: headers, body: body)
           .timeout(PortalApi.requestTimeout);
+      if (ServerConfig.revision.value != serverRevision) {
+        _warn('$action answered after the server changed, dropped');
+        return const _PortalResponse(0, {}, 'network');
+      }
 
       var json = const <String, dynamic>{};
       try {

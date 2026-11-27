@@ -26,11 +26,34 @@ class ApiEndpointsSettingsPage extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
           if (isAutoMode) const AutoPingLockBanner(),
-          const SettingsSectionCard(title: 'MeshMapper', children: [
+          if (appState.customServerActive)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.deepOrange.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: Colors.deepOrange.withValues(alpha: 0.3)),
+                ),
+                child: Text(
+                  'Forwarding is suspended while the app is on the test '
+                  'server ${appState.serverName}. Nothing recorded there is '
+                  'sent to your endpoint.',
+                  style:
+                      const TextStyle(fontSize: 12, color: Colors.deepOrange),
+                ),
+              ),
+            ),
+          SettingsSectionCard(title: 'MeshMapper', children: [
             ListTile(
-              leading: Icon(Icons.cloud_done, color: Colors.green),
-              title: Text('MeshMapper API'),
-              subtitle: Text('Always active'),
+              leading: const Icon(Icons.cloud_done, color: Colors.green),
+              title: const Text('MeshMapper API'),
+              subtitle: Text(appState.customServerActive
+                  ? 'Always active (test server ${appState.serverName})'
+                  : 'Always active'),
             ),
           ]),
           SettingsSectionCard(title: 'Custom Endpoint', children: [

@@ -4,6 +4,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../utils/debug_logger_io.dart';
 import '../utils/public_key.dart';
+import 'server_config.dart';
+import 'server_settings_store.dart';
 
 /// The half-finished PKCE handshake for one sign-in attempt.
 ///
@@ -69,9 +71,13 @@ abstract class RepeaterPasswordStore {
 }
 
 /// Keychain (iOS) / Keystore-backed EncryptedSharedPreferences (Android).
-class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
-  static const String tokenKey = 'portal_app_token';
-  static const String pendingPkceKey = 'portal_pending_pkce';
+class SecureTokenStore
+    implements PortalTokenStore, RepeaterPasswordStore, ServerKeyStore {
+  // Kept per server (see [ServerConfig.scoped]): a sign-in on one server is
+  // never read, sent or cleared while another is active.
+  static String get tokenKey => ServerConfig.scoped('portal_app_token');
+  static String get pendingPkceKey =>
+      ServerConfig.scoped('portal_pending_pkce');
 
   /// Named explicitly so the Android backup-exclusion rules can point at the
   /// exact file (`res/xml/backup_rules.xml`, `res/xml/data_extraction_rules.xml`).
@@ -203,6 +209,19 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
   @override
   Future<void> deletePendingPkce() => _deleteSafely(pendingPkceKey);
 
+  /// The developer's custom server app key (Developer Tools). One entry:
+  /// there is one custom server at a time.
+  static const String serverKeyKey = 'developer_server_api_key';
+
+  @override
+  Future<String?> readServerKey() => _readSafely(serverKeyKey);
+
+  @override
+  Future<void> writeServerKey(String key) => _writeSafely(serverKeyKey, key);
+
+  @override
+  Future<void> deleteServerKey() => _deleteSafely(serverKeyKey);
+
   static const String repeaterPasswordPrefix = 'repeater_admin_pw_';
 
   static String repeaterPasswordKey(String repeaterHex) =>
@@ -234,10 +253,33 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
 }
 
 /// Test double. Also useful as a null-object on platforms with no keystore.
-class InMemoryTokenStore implements PortalTokenStore, RepeaterPasswordStore {
-  String? token;
-  PendingPkce? pending;
+class InMemoryTokenStore
+    implements PortalTokenStore, RepeaterPasswordStore, ServerKeyStore {
+  // Kept per server, like the real store: what one server's sign-in wrote
+  // is not there while another server is active.
+  final Map<String, String> _tokens = {};
+  final Map<String, PendingPkce> _pendings = {};
+
+  String? get token => _tokens[ServerConfig.storageSuffix];
+  set token(String? value) => value == null
+      ? _tokens.remove(ServerConfig.storageSuffix)
+      : _tokens[ServerConfig.storageSuffix] = value;
+
+  PendingPkce? get pending => _pendings[ServerConfig.storageSuffix];
+  set pending(PendingPkce? value) => value == null
+      ? _pendings.remove(ServerConfig.storageSuffix)
+      : _pendings[ServerConfig.storageSuffix] = value;
   final Map<String, String> repeaterPasswords = {};
+  String? serverKey;
+
+  @override
+  Future<String?> readServerKey() async => serverKey;
+
+  @override
+  Future<void> writeServerKey(String key) async => serverKey = key;
+
+  @override
+  Future<void> deleteServerKey() async => serverKey = null;
 
   @override
   Future<String?> readToken() async => token;

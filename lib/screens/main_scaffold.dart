@@ -13,6 +13,7 @@ import '../services/location_consent.dart';
 import '../services/permission_disclosure_service.dart';
 import '../services/portal_account_service.dart';
 import '../services/precise_location_gate.dart';
+import '../services/server_config.dart';
 import '../utils/debug_logger_io.dart';
 import '../widgets/app_toast.dart';
 import 'home_screen.dart';
@@ -354,7 +355,7 @@ class _MainScaffoldState extends State<MainScaffold> {
             content: Text(
               'This radio is in a group of ${outcome.adoptionDeviceCount} '
               'that a region admin set up before accounts existed. To claim '
-              'it, sign in at portal.meshmapper.net, choose Link a companion '
+              'it, sign in at ${ServerConfig.portalHost}, choose Link a companion '
               'and link this same radio over Bluetooth. All '
               '${outcome.adoptionDeviceCount} radios in the group move to '
               'your account together.',

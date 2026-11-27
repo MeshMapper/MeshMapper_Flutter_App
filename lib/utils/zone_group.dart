@@ -6,7 +6,7 @@
 /// session everywhere else.
 class ZoneGroup {
   /// Upper-case group code, never empty, letters and digits only. Also the
-  /// subdomain of the group's own site (`<code>.meshmapper.net`).
+  /// subdomain of the group's own site (see `ServerConfig.regionHost`).
   final String code;
 
   /// Display name, or null when the server sent none.

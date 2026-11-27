@@ -12,6 +12,7 @@ import '../../services/gps_simulator_service.dart';
 import '../../utils/debug_logger_io.dart';
 import '../../utils/distance_formatter.dart';
 import '../../widgets/app_toast.dart';
+import 'server_settings_card.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: Developer Tools.
@@ -35,13 +36,20 @@ class DeveloperSettingsPage extends StatelessWidget {
             SwitchListTile(
               secondary: const Icon(Icons.developer_mode),
               title: const Text('Developer Mode'),
-              subtitle: const Text('Disable to hide developer tools'),
+              subtitle: Text(appState.customServerActive
+                  ? 'Disable to hide developer tools and return to the live '
+                      'server'
+                  : 'Disable to hide developer tools'),
               value: appState.developerModeEnabled,
-              onChanged: (value) {
-                appState.setDeveloperMode(value);
+              onChanged: (value) async {
+                final refused = await appState.setDeveloperMode(value);
+                if (refused != null && context.mounted) {
+                  AppToast.error(context, refused);
+                }
               },
             ),
           ]),
+          if (appState.developerModeEnabled) const ServerSettingsCard(),
           SettingsSectionCard(title: 'GPS Simulator', children: [
             SwitchListTile(
               secondary: Icon(

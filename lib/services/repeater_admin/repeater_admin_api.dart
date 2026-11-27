@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import '../../utils/debug_logger_io.dart';
 import '../../utils/public_key.dart';
 import '../api_service.dart';
+import '../server_config.dart';
 import 'repeater_admin_models.dart';
 
 enum RepeaterAdminFailureKind {
@@ -98,8 +99,7 @@ class RepeaterAdminResult {
 /// Every body carries `radio_freq`, the radio's configuration tag, when the
 /// radio reported one.
 class RepeaterAdminApi {
-  static const String endpoint =
-      '${ApiService.baseUrl}/wardrive-api.php/repeater';
+  static String get endpoint => ServerConfig.wardriveApiUrl('repeater');
   static const Set<String> forbiddenTopLevelKeys = {
     'data',
     'public_key',

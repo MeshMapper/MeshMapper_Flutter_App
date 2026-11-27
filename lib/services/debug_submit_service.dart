@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
 import 'debug_file_logger.dart';
+import 'server_config.dart';
 
 /// Progress update during bug report submission
 class BugReportProgress {
@@ -122,12 +123,16 @@ enum _UploadStepResult {
 /// in the request body, never in an address, and neither is logged. Contract:
 /// MeshMapper_Server/docs/APP_API.md, appendix A.
 class DebugSubmitService {
-  static const String baseUrl = 'https://meshmapper.net/debug/submitdebug.php';
+  static String get baseUrl => ServerConfig.debugSubmitUrl;
 
   final http.Client _client;
 
-  /// The app's API key, as sent on every wardrive API call.
-  final String _apiKey;
+  /// A fixed key for tests. The app passes none.
+  final String? _apiKeyOverride;
+
+  /// The app's API key, as sent on every wardrive API call. Read at send
+  /// time, so it is always the key of the server the request goes to.
+  String get _apiKey => _apiKeyOverride ?? ApiService.apiKey;
 
   String? _refusalMessage;
 
@@ -146,7 +151,7 @@ class DebugSubmitService {
     String? apiKey,
   })  : _client = client ?? http.Client(),
         _retryDelayUnit = retryDelayUnit,
-        _apiKey = apiKey ?? ApiService.apiKey;
+        _apiKeyOverride = apiKey;
 
   /// Records an HTTP 401 and returns the message to show: the server's
   /// `message` as it is. Returns null for any other status.
@@ -565,7 +570,7 @@ class DebugSubmitService {
         'ticket_type': ticketType,
       };
 
-      const url = '$baseUrl/create-ticket';
+      final url = '$baseUrl/create-ticket';
       debugLog('[BUG REPORT] POST $url');
       debugLog('[BUG REPORT] Request payload:');
       debugLog('[BUG REPORT]   title: $title');
@@ -642,7 +647,7 @@ class DebugSubmitService {
         'platform': platform,
       };
 
-      const url = '$baseUrl/request-upload';
+      final url = '$baseUrl/request-upload';
       final fileSizeKb = (fileSizeBytes / 1024).toStringAsFixed(1);
       debugLog('[BUG REPORT] POST $url');
       debugLog('[BUG REPORT] Request payload:');
@@ -859,7 +864,7 @@ class DebugSubmitService {
         if (userNotes != null) 'user_notes': userNotes,
       };
 
-      const url = '$baseUrl/upload-complete';
+      final url = '$baseUrl/upload-complete';
       debugLog('[BUG REPORT] POST $url');
       debugLog('[BUG REPORT] Request payload:');
       debugLog('[BUG REPORT]   device_id: $deviceId');

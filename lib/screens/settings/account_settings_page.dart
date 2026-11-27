@@ -7,6 +7,7 @@ import '../../models/repeater.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/portal_account_service.dart';
 import '../../services/repeater_admin/repeater_admin_models.dart';
+import '../../services/server_config.dart';
 import '../../utils/debug_logger_io.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/repeater_admin_sheet.dart';
@@ -257,7 +258,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         AppToast.warning(
           context,
           'Claim your ${outcome.adoptionDeviceCount} placeholder device(s) at '
-          'portal.meshmapper.net first',
+          '${ServerConfig.portalHost} first',
           duration: const Duration(seconds: 6),
         );
       case PortalLinkStatus.alreadyLinkedOtherAccount:

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/debug_logger_io.dart';
+import 'server_config.dart';
 
 /// Represents an offline wardriving session stored locally
 class OfflineSession {
@@ -24,6 +25,11 @@ class OfflineSession {
       placementCounts; // Per-IATA counts the server routed this upload into
   final int? tooFarRegion; // Pings dropped for being >50km outside every region
 
+  /// Base domain of the custom server this drive was recorded on, or null
+  /// for the live server (every session saved before the tag existed is a
+  /// live one). A session only ever uploads to the server it names.
+  final String? server;
+
   OfflineSession({
     required this.filename,
     required this.createdAt,
@@ -39,6 +45,7 @@ class OfflineSession {
     this.uploaded = false,
     this.placementCounts,
     this.tooFarRegion,
+    this.server,
   });
 
   /// Create from stored JSON
@@ -59,8 +66,12 @@ class OfflineSession {
       placementCounts: (json['placementCounts'] as Map?)
           ?.map((k, v) => MapEntry(k.toString(), (v as num).toInt())),
       tooFarRegion: json['tooFarRegion'] as int?,
+      server: _serverTag(json['server']),
     );
   }
+
+  static String? _serverTag(Object? raw) =>
+      raw is String && raw.trim().isNotEmpty ? raw.trim().toLowerCase() : null;
 
   /// Convert to JSON for storage
   Map<String, dynamic> toJson() {
@@ -79,6 +90,7 @@ class OfflineSession {
       'uploaded': uploaded,
       'placementCounts': placementCounts,
       'tooFarRegion': tooFarRegion,
+      if (server != null) 'server': server,
     };
   }
 
@@ -105,6 +117,7 @@ class OfflineSession {
       uploaded: uploaded ?? this.uploaded,
       placementCounts: placementCounts ?? this.placementCounts,
       tooFarRegion: tooFarRegion ?? this.tooFarRegion,
+      server: server,
     );
   }
 
@@ -130,11 +143,25 @@ class OfflineSessionService {
   /// Callback when sessions list changes
   void Function(List<OfflineSession> sessions)? onSessionsUpdated;
 
-  /// Get all stored sessions
-  List<OfflineSession> get sessions => List.unmodifiable(_sessions);
+  /// Whether [session] was recorded on the server that is active now.
+  static bool belongsToActiveServer(OfflineSession session) =>
+      ServerConfig.ownsRecord(session.server);
 
-  /// Get count of stored sessions
-  int get sessionCount => _sessions.length;
+  /// The stored sessions of the ACTIVE server. Sessions recorded on another
+  /// server stay on disk untouched and are not listed, uploaded, deleted or
+  /// cleared until that server is active again.
+  List<OfflineSession> get sessions =>
+      List.unmodifiable(_sessions.where(belongsToActiveServer));
+
+  /// Get count of stored sessions (active server only)
+  int get sessionCount => _sessions.where(belongsToActiveServer).length;
+
+  /// The active server changed: drop the in-progress tracker (it names a
+  /// session of the old server) and hand listeners the new server's list.
+  void onServerChanged() {
+    _currentSessionFilename = null;
+    onSessionsUpdated?.call(sessions);
+  }
 
   /// Initialize the service
   Future<void> init() async {
@@ -167,7 +194,7 @@ class OfflineSessionService {
   Future<void> _saveSessions() async {
     final sessionsJson = _sessions.map((s) => jsonEncode(s.toJson())).toList();
     await _prefs?.setStringList(_sessionsKey, sessionsJson);
-    onSessionsUpdated?.call(_sessions);
+    onSessionsUpdated?.call(sessions);
   }
 
   /// Generate filename for new session
@@ -236,6 +263,7 @@ class OfflineSessionService {
       deviceModel: deviceModel,
       powerLevel: powerLevel,
       appVersion: appVersion,
+      server: ServerConfig.recordTag,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
@@ -265,8 +293,7 @@ class OfflineSessionService {
 
     // If we have a tracked session, update it in-place
     if (_currentSessionFilename != null) {
-      final index =
-          _sessions.indexWhere((s) => s.filename == _currentSessionFilename);
+      final index = _indexOfOwned(_currentSessionFilename!);
       if (index != -1) {
         final existing = _sessions[index];
         final updatedData = Map<String, dynamic>.from(existing.data);
@@ -301,6 +328,7 @@ class OfflineSessionService {
           deviceModel: effectiveDeviceModel,
           powerLevel: effectivePowerLevel,
           appVersion: effectiveAppVersion,
+          server: existing.server,
         );
         await _saveSessions();
         debugLog(
@@ -325,7 +353,7 @@ class OfflineSessionService {
       appVersion: appVersion,
     );
     // saveSession inserts at index 0 (newest first)
-    if (_sessions.isNotEmpty) {
+    if (_sessions.isNotEmpty && belongsToActiveServer(_sessions.first)) {
       _currentSessionFilename = _sessions.first.filename;
       debugLog(
           '[OFFLINE] Tracking new auto-save session: $_currentSessionFilename');
@@ -348,7 +376,7 @@ class OfflineSessionService {
     Map<String, int>? placementCounts,
     int? tooFarRegion,
   }) async {
-    final index = _sessions.indexWhere((s) => s.filename == filename);
+    final index = _indexOfOwned(filename);
     if (index == -1) {
       debugLog('[OFFLINE] Session not found for marking uploaded: $filename');
       return;
@@ -367,7 +395,7 @@ class OfflineSessionService {
   /// Called after partial upload so retries don't re-send already-processed data.
   /// Returns the number of remaining pings, or null if session not found.
   Future<int?> removeProcessedPings(String filename, int processedCount) async {
-    final index = _sessions.indexWhere((s) => s.filename == filename);
+    final index = _indexOfOwned(filename);
     if (index == -1) {
       debugWarn('[OFFLINE] Session not found for ping removal: $filename');
       return null;
@@ -406,7 +434,7 @@ class OfflineSessionService {
   /// that are actually sent.
   Future<void> replacePings(
       String filename, List<Map<String, dynamic>> pings) async {
-    final index = _sessions.indexWhere((s) => s.filename == filename);
+    final index = _indexOfOwned(filename);
     if (index == -1) {
       debugWarn('[OFFLINE] Session not found for ping replacement: $filename');
       return;
@@ -426,34 +454,34 @@ class OfflineSessionService {
         '[OFFLINE] Replaced pings for $filename: ${pings.length} remain');
   }
 
+  /// Index of the active server's session named [filename], or -1. A
+  /// session of another server is never found, so nothing here can read,
+  /// change or upload one.
+  int _indexOfOwned(String filename) => _sessions.indexWhere(
+      (s) => s.filename == filename && belongsToActiveServer(s));
+
   /// Get a session by filename
   OfflineSession? getSession(String filename) {
-    try {
-      return _sessions.firstWhere((s) => s.filename == filename);
-    } catch (e) {
-      return null;
-    }
+    final index = _indexOfOwned(filename);
+    return index == -1 ? null : _sessions[index];
   }
 
   /// Delete a session
   Future<void> deleteSession(String filename) async {
-    _sessions.removeWhere((s) => s.filename == filename);
+    _sessions.removeWhere(
+        (s) => s.filename == filename && belongsToActiveServer(s));
     await _saveSessions();
     debugLog('[OFFLINE] Deleted session: $filename');
   }
 
   /// Get session data for upload
   Map<String, dynamic>? getSessionData(String filename) {
-    try {
-      return _sessions.firstWhere((s) => s.filename == filename).data;
-    } catch (e) {
-      return null;
-    }
+    return getSession(filename)?.data;
   }
 
-  /// Clear all sessions
+  /// Clear all sessions of the active server
   Future<void> clearAll() async {
-    _sessions.clear();
+    _sessions.removeWhere(belongsToActiveServer);
     await _saveSessions();
     debugLog('[OFFLINE] Cleared all sessions');
   }

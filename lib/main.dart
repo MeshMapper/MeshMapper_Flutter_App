@@ -19,6 +19,7 @@ import 'services/background_service.dart';
 import 'services/app_intents/app_intent_bridge_service.dart';
 import 'services/debug_file_logger.dart';
 import 'services/offline_map_service.dart';
+import 'services/server_settings_store.dart';
 import 'services/watch/watch_bridge_service.dart';
 import 'utils/debug_logger_io.dart';
 
@@ -77,6 +78,10 @@ void main() async {
       DebugFileLogger.discardCapture();
     }
   }
+
+  // Which server this launch talks to. Read before anything can make a
+  // request; Live unless a developer chose a custom server.
+  await ServerSettingsStore().applyAtStartup();
 
   // Register noise floor session adapters before opening any boxes
   // Note: MarkerRepeaterInfo (14) must be registered before PingEventMarker (12)

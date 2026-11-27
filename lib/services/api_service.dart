@@ -14,6 +14,7 @@ import 'api_queue_service.dart' show altitudeLabelSummary;
 import 'border_loader.dart' show BorderAnswer;
 import 'meshcore/regional_carpeater_filter.dart';
 import 'network_state_service.dart';
+import 'server_config.dart';
 
 /// Result of a batch upload attempt
 ///
@@ -109,18 +110,20 @@ class RepeaterFetchException implements Exception {
 /// - POST /wardrive-api.php/auth - Acquire/release session (geo-auth)
 /// - POST /wardrive-api.php/wardrive - Submit wardrive data + heartbeat
 class ApiService {
-  /// Base URL for MeshMapper API
-  static const String baseUrl = 'https://meshmapper.net';
+  /// Base URL of the active server's main site. Read on every use: the
+  /// server can change at runtime (see [ServerConfig]).
+  static String get baseUrl => ServerConfig.siteUrl;
 
   /// Wardrive API endpoints
-  static const String wardriveEndpoint = '$baseUrl/wardrive-api.php/wardrive';
-  static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
-  static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
-  static const String borderUrl = '$baseUrl/wardrive-api.php/border';
-  static const String deviceCatalogUrl = '$baseUrl/wardrive-api.php/devices';
+  static String get wardriveEndpoint => ServerConfig.wardriveApiUrl('wardrive');
+  static String get geoAuthStatusUrl => ServerConfig.wardriveApiUrl('status');
+  static String get geoAuthUrl => ServerConfig.wardriveApiUrl('auth');
+  static String get borderUrl => ServerConfig.wardriveApiUrl('border');
+  static String get deviceCatalogUrl => ServerConfig.wardriveApiUrl('devices');
 
-  /// API key — injected at build time via --dart-define=API_KEY=...
-  static const String apiKey = String.fromEnvironment('API_KEY');
+  /// The app key for the active server: the build-time key on Live, the
+  /// developer's own key on a custom server. Never one for the other.
+  static String get apiKey => ServerConfig.apiKey;
 
   /// Heartbeat buffer - schedule heartbeat 1 minute before session expiry
   static const Duration heartbeatBuffer = Duration(minutes: 1);
@@ -1822,6 +1825,16 @@ class ApiService {
         : '[API] Session cleared');
   }
 
+  /// The active server changed (see [ServerConfig]). Nothing learned from
+  /// the previous server may be used on the new one: the session, its zone
+  /// policy, the per-host read holds and the region's CARpeater list all go.
+  void resetForServerChange() {
+    _clearSession();
+    _repeaterReadHolds.clear();
+    _regionalCarpeaters = const [];
+    _lastCarpeaterError = null;
+  }
+
   /// Forgets the session and its zone policy in full. For a caller that
   /// released with `keepPolicy` and then could not mint: with no session to
   /// follow, the kept policy would otherwise outlive the session it came
@@ -1961,7 +1974,7 @@ class ApiService {
     final filter = '${_radioFilterSuffix()}'
         '${recentDays == null ? '' : '&f_days=$recentDays'}';
     final url =
-        Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
+        Uri.parse('${ServerConfig.regionUrl(zone)}/vector_tile.php'
             '?z=$z&x=$x&y=$y&gsize=$gsize&cf=$kCoverageTileFormat&fresh=1$filter');
     final verdictOnly = z >= 11 && z <= 13;
     final sw = Stopwatch()..start();
@@ -2022,7 +2035,7 @@ class ApiService {
     const z = 13;
     final filter = _radioFilterParams();
     final url =
-        Uri.https('${zone.toLowerCase()}.meshmapper.net', '/vector_tile.php', {
+        Uri.https(ServerConfig.regionHost(zone), '/vector_tile.php', {
       'z': '$z',
       'x': '$x',
       'y': '$y',
@@ -2190,7 +2203,7 @@ class ApiService {
   Future<List<Repeater>> fetchRepeaters(String iata) async {
     final stopwatch = Stopwatch()..start();
     const endpoint = '/get_repeaters.php';
-    final host = '${iata.toLowerCase()}.meshmapper.net';
+    final host = ServerConfig.regionHost(iata);
     final hold = _repeaterReadHolds[host];
     if (hold != null && _now().isBefore(hold.until)) throw hold.failure;
     _repeaterReadHolds.remove(host);
@@ -2200,7 +2213,7 @@ class ApiService {
 
       final response = await _send(
         'GET $endpoint',
-        () => _client.get(url, headers: const {'X-API-Key': apiKey}).timeout(
+        () => _client.get(url, headers: {'X-API-Key': apiKey}).timeout(
             const Duration(seconds: 15)),
       );
 
@@ -2315,7 +2328,7 @@ class ApiService {
     );
   }
 
-  /// Shared POST to `https://<zone>.meshmapper.net/app_coverage.php` with the app
+  /// Shared POST to `app_coverage.php` on the zone's own host with the app
   /// key in the JSON body.
   ///
   /// Returns the point maps on success, which may legitimately be an EMPTY list
@@ -2329,7 +2342,7 @@ class ApiService {
     required Map<String, dynamic> body,
   }) async {
     final z = zone.toLowerCase();
-    final url = Uri.parse('https://$z.meshmapper.net/app_coverage.php');
+    final url = Uri.parse('${ServerConfig.regionUrl(z)}/app_coverage.php');
     final sw = Stopwatch()..start();
     final filter = _radioFilterSuffix();
     debugLog(

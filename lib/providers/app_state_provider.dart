@@ -100,6 +100,10 @@ import '../services/scope_discovery/scope_discovery_rules.dart';
 import '../services/scope_discovery/scope_lifecycle.dart';
 import '../services/scope_discovery/scope_provider_support.dart';
 import '../services/scope_discovery/scope_runner.dart';
+import '../services/server_config.dart';
+import '../services/server_probe.dart';
+import '../services/server_settings_store.dart';
+import '../services/server_switch_rules.dart';
 import '../services/session_recovery_join.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_claim_unclaim.dart';
@@ -954,11 +958,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// nonce and network failures, which say nothing about what the radio signs.
   final Map<String, int> _portalBadSignatureStrikes = {};
 
-  static const String _portalAccountKey = 'portal_account_info';
-  static const String _portalLinkedPubkeysKey = 'portal_linked_pubkeys';
-  static const String _portalCompanionsKey = 'portal_companions';
-  static const String _portalOverviewKey = 'portal_overview';
-  static const String _portalDeclinedKey = 'portal_link_declined_devices';
+  final ServerSettingsStore _serverSettingsStore = ServerSettingsStore();
+  ServerSettings _serverSettings = ServerSettings.live;
+  bool _serverSwitchInProgress = false;
+
+  static String get _portalAccountKey =>
+      ServerConfig.scoped('portal_account_info');
+  static String get _portalLinkedPubkeysKey =>
+      ServerConfig.scoped('portal_linked_pubkeys');
+  static String get _portalCompanionsKey =>
+      ServerConfig.scoped('portal_companions');
+  static String get _portalOverviewKey =>
+      ServerConfig.scoped('portal_overview');
+  static String get _portalDeclinedKey =>
+      ServerConfig.scoped('portal_link_declined_devices');
   static const String _portalSignUnsupportedKey =
       'portal_sign_unsupported_devices';
 
@@ -1061,7 +1074,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Scope discovery (background scope runner)
   // ============================================
   static const String _scopeHourBudgetKey = 'scope_hour_budget';
-  static const String _scopeQueryCacheKey = 'scope_query_cache';
+  static String get _scopeQueryCacheKey =>
+      ServerConfig.scoped('scope_query_cache');
   ScopeQueryCache _scopeQueryCache = ScopeQueryCache.fromJson(null);
   late ScopeHourlyBudget _scopeHourlyBudget =
       ScopeHourlyBudget(save: _saveScopeHourBudget);
@@ -1113,7 +1127,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Box key for the cached list; replaced in full on every auth, read at
   /// startup so Offline Mode has the last copy.
-  static const String _regionalCarpeatersKey = 'regional_carpeaters';
+  static String get _regionalCarpeatersKey =>
+      ServerConfig.scoped('regional_carpeaters');
   List<String> _regionalCarpeaters = const [];
   RegionalCarpeaterFilter _regionalCarpeaterFilter = RegionalCarpeaterFilter();
 
@@ -1295,7 +1310,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // One live session at most; the claims cache is keyed by companion pubkey
   // so the detail sheet can say "You administer this repeater" offline. All
   // notifies here are UI-only (Rule 9).
-  static const String _repeaterClaimsKey = 'repeater_claims';
+  static String get _repeaterClaimsKey =>
+      ServerConfig.scoped('repeater_claims');
   RepeaterAdminSession? _repeaterAdminSession;
   RepeaterClaimsCache _repeaterClaimsCache = RepeaterClaimsCache({});
   late final RepeaterAdminApi _repeaterAdminApi;
@@ -2092,7 +2108,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Name to show for the zone: the group's when the server sent one.
   String? get displayZoneName => zoneGroup?.name ?? zoneName;
 
-  /// Subdomain coverage is read from (`<code>.meshmapper.net`): the group's
+  /// Subdomain coverage is read from (see `ServerConfig.regionHost`): the group's
   /// own site merges every member. Repeaters and borders are still fetched
   /// from the member's site (which already answers for the whole group) but
   /// are keyed on this code, see [_repeaterContextKey].
@@ -4435,6 +4451,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // for it before it is created, so it can open on the user's area (or a
     // world view) instead of a placeholder city.
     await _loadLastPosition();
+    await _loadServerSettings();
     await _loadRegionalCarpeaters();
     await _loadRepeaterNicknames();
     await _loadRepeaterClaims();
@@ -11415,11 +11432,222 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Set developer mode (unlocked by tapping version 7 times)
-  void setDeveloperMode(bool enabled) {
+  /// Turns developer mode on or off. Returns null on success, or a sentence
+  /// saying why it was refused.
+  ///
+  /// Turning it off returns the app to the live server and sets the stored
+  /// choice back to Live, so a custom server is never active outside
+  /// developer mode. That is a change of server, refused under the same
+  /// rule as any other (see [serverChangeBlockedReason]).
+  Future<String?> setDeveloperMode(bool enabled) async {
+    if (!enabled && ServerConfig.isCustom) {
+      final blocked = serverChangeBlockedReason;
+      if (blocked != null) return blocked;
+    }
     _preferences = _preferences.copyWith(developerModeEnabled: enabled);
     debugLog('[APP] Developer mode ${enabled ? 'enabled' : 'disabled'}');
     notifyListeners();
-    _savePreferences();
+    await _savePreferences();
+    if (enabled) {
+      await _loadServerSettings();
+      if (!_isDisposed) notifyListeners();
+    }
+    if (!enabled && _serverSettings.custom) {
+      return setServer(ServerSettings(
+        custom: false,
+        domain: _serverSettings.domain,
+        key: _serverSettings.key,
+      ));
+    }
+    return null;
+  }
+
+  // ============================================
+  // Server (Developer Tools)
+  // ============================================
+
+  /// What is stored on the Developer Tools page. Custom may be selected
+  /// there without being active (a field is still empty).
+  ServerSettings get serverSettings => _serverSettings;
+
+  /// True while the app talks to a custom server instead of Live.
+  bool get customServerActive => ServerConfig.isCustom;
+
+  /// Base domain of the server the app talks to now.
+  String get serverName => ServerConfig.baseDomain;
+
+  String get _badKeyMessage => badKeyMessage();
+
+  /// Why the server cannot be changed right now, or null when it can.
+  String? get serverChangeBlockedReason {
+    if (_serverSwitchInProgress) return 'The server is being changed.';
+    return serverSwitchBlockReason(
+      radioConnected: isConnected,
+      connecting: _connectionStep != ConnectionStep.disconnected ||
+          _isAutoReconnecting,
+      sessionActive:
+          _apiService.hasSession || _autoPingEnabled || _autoPingStarting,
+      queuedUploads: _apiQueueService.queueSize,
+      uploading: _apiQueueService.isUploading || _isUploadingOfflineSession,
+      unsavedOfflinePings: _apiQueueService.offlinePingCount,
+    );
+  }
+
+  /// Stores the developer's server choice and, when it names a different
+  /// server than the active one, switches to it. Returns null on success or
+  /// a sentence saying why nothing was changed.
+  ///
+  /// Custom is only active with developer mode on, a valid host name and a
+  /// key; a Custom choice with a field missing is stored and the app stays
+  /// on Live.
+  Future<String?> setServer(ServerSettings wanted) async {
+    final typed = wanted.domain.trim();
+    final domain = typed.isEmpty ? '' : ServerConfig.normalizeDomain(typed);
+    if (domain == null) return ServerConfig.domainProblem(typed);
+    final next = ServerSettings(
+      custom: wanted.custom,
+      domain: domain,
+      key: wanted.key.trim(),
+    );
+
+    final custom = _preferences.developerModeEnabled && next.customActive;
+    final changesServer = custom != ServerConfig.isCustom ||
+        (custom &&
+            (next.domain != ServerConfig.baseDomain ||
+                next.key != ServerConfig.apiKey));
+    if (changesServer) {
+      final blocked = serverChangeBlockedReason;
+      if (blocked != null) return blocked;
+    }
+
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return 'The setting could not be saved.';
+    _serverSwitchInProgress = true;
+    try {
+      await _serverSettingsStore.save(box, next);
+      _serverSettings = next;
+      if (changesServer) await _switchServer(next);
+    } catch (e) {
+      debugError('[SERVER] Server change failed: ${e.runtimeType}');
+      return 'The setting could not be saved.';
+    } finally {
+      _serverSwitchInProgress = false;
+      if (!_isDisposed) notifyListeners();
+    }
+    return null;
+  }
+
+  /// The Test button: asks the server typed on the Developer Tools page (not
+  /// the active one) for the zone at the current fix, and returns the answer
+  /// in words. Changes nothing.
+  Future<String> testServer({
+    required String domain,
+    required String key,
+  }) async {
+    final problem = ServerConfig.domainProblem(domain);
+    if (problem != null) return problem;
+    if (key.trim().isEmpty) return 'Enter the API key first.';
+    final position = _currentPosition;
+    if (position == null) {
+      return 'No GPS fix yet. The test asks the server where you are, so '
+          'wait for a fix and try again.';
+    }
+    final client = http.Client();
+    try {
+      return await probeServer(
+        client: client,
+        domain: domain,
+        key: key,
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyMeters: position.accuracy,
+        appVersion: _appVersion,
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Leaves the active server for the one [settings] describe. Only called
+  /// with nothing of the old server in flight (see
+  /// [serverChangeBlockedReason]).
+  ///
+  /// Everything held in memory that came from the old server is dropped
+  /// BEFORE the new one becomes active, and everything stored per server is
+  /// then read again under the new server's names, so nothing recorded on or
+  /// learned from one server is ever sent to, or shown for, the other.
+  Future<void> _switchServer(ServerSettings settings) async {
+    final from = ServerConfig.baseDomain;
+
+    await _apiQueueService.clear();
+    _apiService.resetForServerChange();
+
+    _clearZoneCheckError();
+    _stopMaintenancePolling();
+    _maintenanceMode = false;
+    _maintenanceMessage = null;
+    _maintenanceUrl = null;
+    _inZone = null;
+    _currentZone = null;
+    _nearestZone = null;
+    _lastZoneCheckPosition = null;
+    _authType = null;
+    _regionBorders = [];
+    _borderLoader.forget();
+    _vectorFreshTimer?.cancel();
+    _pendingFreshCoords.clear();
+    _pendingFreshZone = null;
+    clearCoveragePatch();
+    _syncRecentCoverage();
+    _invalidateRepeatersForContext();
+
+    _portalAccount = null;
+    _portalLinkedPubkeys = [];
+    _portalCompanions = [];
+    _portalOverview = null;
+    _portalLinkDeclinedDevices = {};
+    _portalSignInError = null;
+    _regionalCarpeaters = const [];
+    _repeaterClaimsCache = RepeaterClaimsCache({});
+
+    ServerSettingsStore.apply(settings,
+        developerMode: _preferences.developerModeEnabled);
+    debugLog('[SERVER] Server changed from $from to ${ServerConfig.baseDomain}');
+
+    try {
+      await _portalAccountService.reloadForServer();
+    } catch (e) {
+      debugWarn('[ACCOUNT] Reload after a server change failed: '
+          '${e.runtimeType}');
+    }
+    await _loadPortalAccountState();
+    await _loadRegionalCarpeaters();
+    await _loadRepeaterClaims();
+    await _loadScopeDiscoveryState();
+    try {
+      await _deviceModelService.reloadForServer();
+    } catch (e) {
+      debugError('[MODEL] Device catalog reload failed: $e');
+    }
+    _offlineSessionService.onServerChanged();
+
+    if (_isDisposed) return;
+    _notifyMapNow();
+    notifyListeners();
+    if (_currentPosition != null && !_preferences.offlineMode) {
+      unawaited(checkZoneStatus());
+    }
+  }
+
+  /// Reads the stored server choice for the Developer Tools page. Which
+  /// server is ACTIVE was already decided before the app started (see
+  /// `ServerSettingsStore.applyAtStartup`); with developer mode off the
+  /// keystore is not read at all.
+  Future<void> _loadServerSettings() async {
+    if (!_preferences.developerModeEnabled) return;
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    _serverSettings = await _serverSettingsStore.load(box);
   }
 
   /// Set map style (dark, light, satellite) and persist.
@@ -11670,7 +11898,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'gps_inaccurate':
         return 'GPS signal is weak (need <50m). Waiting for a stronger signal...';
       case 'bad_key':
-        return 'Invalid API key. Please check configuration.';
+        return _badKeyMessage;
       case 'invalid_request':
         return serverMessage ?? 'Invalid request to API.';
       case 'session_expired':
@@ -11687,7 +11915,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'session_revoked':
         return 'Session was revoked. Please reconnect.';
       case 'invalid_key':
-        return 'Invalid API key. Please check configuration.';
+        return _badKeyMessage;
       case 'unauthorized':
         return 'Unauthorized. Please reconnect.';
       case 'rate_limited':
@@ -12147,6 +12375,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           '[GEOFENCE] Making API call to check zone at ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
 
+      final serverRevision = ServerConfig.revision.value;
       final result = await _apiService.checkZoneStatus(
         lat: position.latitude,
         lon: position.longitude,
@@ -12154,6 +12383,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         appVersion: _appVersion,
         radioFreq: liveRadioConfig ?? _lastRadioConfig,
       );
+      if (ServerConfig.revision.value != serverRevision) {
+        // The server changed while this was on the wire: the answer is the
+        // old server's and says nothing about the new one. Ask again.
+        debugLog('[GEOFENCE] Zone answer dropped: the server changed');
+        scheduleMicrotask(() {
+          if (!_isDisposed) unawaited(checkZoneStatus());
+        });
+        return;
+      }
 
       debugLog(
           '[GEOFENCE] API response received: ${result != null ? 'valid' : 'null'}');
@@ -13321,7 +13559,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     var asked = false;
     final result = await _borderLoader.ensure(
-      contextKey: key,
+      // Per server: one server's saved borders are never shown for another.
+      contextKey: ServerConfig.scoped(key),
       borderHash: hash is String && hash.isNotEmpty ? hash : null,
       onStale: () {
         if (_regionBorders.isEmpty) return;

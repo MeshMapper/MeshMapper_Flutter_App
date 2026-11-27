@@ -21,6 +21,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
+import '../services/server_config.dart';
 import '../utils/async_callback_boundary.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
@@ -745,6 +746,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // retry succeeded), _addCoverageOverlay would otherwise never re-run and the
   // coverage layer would stay missing.
   String? _lastOverlayHostCode;
+
+  /// What the coverage overlay's tiles are fetched for: the host code AND the
+  /// server it is a code on. The same code on another server (see
+  /// [ServerConfig]) is a different overlay and must be rebuilt.
+  static String? _overlayHostKey(AppStateProvider appState) {
+    final code = appState.coverageHostCode;
+    return code == null ? null : ServerConfig.scoped(code);
+  }
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
   // the current preference in _onCoverageOpacityNotify to detect slider
   // changes and apply them live via _applyCoverageOverlayOpacity (no layer
@@ -2448,7 +2457,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // gps_inaccurate, the style loads with coverageHostCode=null and the
     // overlay is skipped. When a later retry sets the zone, nothing else
     // would trigger the coverage layer.
-    final zoneChanged = appState.coverageHostCode != _lastOverlayHostCode &&
+    final zoneChanged = _overlayHostKey(appState) != _lastOverlayHostCode &&
         _isMapReady &&
         _styleLoaded;
     // Grid size is baked into the tile URL and the CVD palette into the layer
@@ -2485,7 +2494,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     if (zoneChanged || overlayPrefChanged || radioChanged) {
       if (zoneChanged) {
-        _lastOverlayHostCode = appState.coverageHostCode;
+        _lastOverlayHostCode = _overlayHostKey(appState);
         // The session patch belongs to the old region's (or group's) grid.
         appState.clearCoveragePatch();
       }
@@ -3539,7 +3548,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (!_canContinueStyleRestore()) return;
       await _refreshCoverageOverlay(appState);
       if (!_canContinueStyleRestore()) return;
-      _lastOverlayHostCode = appState.coverageHostCode;
+      _lastOverlayHostCode = _overlayHostKey(appState);
 
       // Regional boundary layer — style reload wipes custom sources/layers.
       // Reset the signature so the build()-driven watcher will repaint even
@@ -3955,7 +3964,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // `k`); only send it while the decoder, the patch filter and the paint
       // all handle blocks.
       final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize&cf=$kCoverageTileFormat$radioSuffix$recentSuffix';
+          '${ServerConfig.regionUrl(zone)}/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize&cf=$kCoverageTileFormat$radioSuffix$recentSuffix';
       debugLog(
           '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
       // minzoom 2: the server answers z2 and up, zoomed-out tiles as blocks

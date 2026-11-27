@@ -11,6 +11,7 @@ import '../widgets/connection_panel.dart';
 import '../widgets/map_widget.dart';
 import '../widgets/ping_controls.dart';
 import '../widgets/status_bar.dart';
+import 'settings/server_settings_card.dart';
 
 /// Main wardrive interface
 /// Single unified layout with full-screen map and collapsible bottom control panel
@@ -506,6 +507,12 @@ class _HomeScreenState extends State<HomeScreen> {
         Column(
           children: [
             if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
+            // Always a child here (never inserted or removed), so the map
+            // below keeps its place in the tree when the server changes.
+            if (appState.customServerActive)
+              CustomServerBanner(serverName: appState.serverName)
+            else
+              const SizedBox.shrink(),
             Expanded(
               // The MapLibre map is the most expensive subtree in the app.
               // Isolate it from the provider's high-frequency UI-only notifies
@@ -526,7 +533,7 @@ class _HomeScreenState extends State<HomeScreen> {
         // Landscape: floating status bar overlay (hidden during history view)
         if (isLandscape && !appState.viewingHistorySession)
           Positioned(
-            top: 16,
+            top: appState.customServerActive ? 44 : 16,
             left: leftInset + 72,
             right: 60,
             child: Center(

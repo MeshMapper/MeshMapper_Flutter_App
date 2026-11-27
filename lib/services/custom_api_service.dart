@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import '../models/user_preferences.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_queue_service.dart' show kAltitudeReferences;
+import 'server_config.dart';
 
 /// Service for forwarding wardrive ping payloads to a user-configured
 /// third-party API endpoint. Fire-and-forget: never blocks MeshMapper uploads.
@@ -54,6 +55,14 @@ class CustomApiService {
 
     final prefs = _prefsGetter();
     if (!prefs.customApiEnabled) return;
+
+    // On a custom (test) server nothing is forwarded: test data must never
+    // reach somebody's real endpoint.
+    if (ServerConfig.isCustom) {
+      debugLog('[CUSTOM API] Forward skipped ($source): suspended on a '
+          'custom server');
+      return;
+    }
 
     debugLog(
         '[CUSTOM API] Forward requested ($source): ${pings.length} item(s)');
