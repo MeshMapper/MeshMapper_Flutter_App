@@ -56,11 +56,11 @@ class CustomApiService {
     final prefs = _prefsGetter();
     if (!prefs.customApiEnabled) return;
 
-    // On a custom (test) server nothing is forwarded: test data must never
+    // On the dev server nothing is forwarded: test data must never
     // reach somebody's real endpoint.
-    if (ServerConfig.isCustom) {
-      debugLog('[CUSTOM API] Forward skipped ($source): suspended on a '
-          'custom server');
+    if (ServerConfig.isDev) {
+      debugLog('[CUSTOM API] Forward skipped ($source): suspended on the '
+          'dev server');
       return;
     }
 

@@ -7,11 +7,13 @@ import '../../services/server_settings_store.dart';
 import '../../widgets/app_toast.dart';
 import 'settings_section_card.dart';
 
-/// Developer Tools: which server the app talks to.
+/// Developer Tools: Live or the dev server.
 ///
-/// Live is the default. Custom takes a server URL and that server's app key
-/// and is only active once both are filled and saved. A change of server is
-/// refused while a session is active or anything is waiting to upload.
+/// Live is the default. The dev server is one fixed address (see
+/// [ServerConfig]); the app cannot be pointed anywhere else. It needs the
+/// dev server's own app key and is only active once the switch is on, the
+/// key is entered and both are saved. A change of server is refused while a
+/// session is active or anything is waiting to upload.
 class ServerSettingsCard extends StatefulWidget {
   const ServerSettingsCard({super.key});
 
@@ -20,40 +22,32 @@ class ServerSettingsCard extends StatefulWidget {
 }
 
 class _ServerSettingsCardState extends State<ServerSettingsCard> {
-  final _domainController = TextEditingController();
   final _keyController = TextEditingController();
-  bool _custom = false;
+  bool _dev = false;
   ServerSettings? _seededFrom;
   bool _busy = false;
   String? _testResult;
 
   @override
   void dispose() {
-    _domainController.dispose();
     _keyController.dispose();
     super.dispose();
   }
 
   void _seed(ServerSettings stored) {
-    _custom = stored.custom;
-    _domainController.text = stored.domain;
+    _dev = stored.dev;
     _keyController.text = stored.key;
     _seededFrom = stored;
   }
 
   bool _differs(ServerSettings stored) =>
-      _custom != stored.custom ||
-      _domainController.text.trim() != stored.domain ||
-      _keyController.text.trim() != stored.key;
+      _dev != stored.dev || _keyController.text.trim() != stored.key;
 
   Future<void> _save(AppStateProvider appState) async {
     FocusScope.of(context).unfocus();
     setState(() => _busy = true);
-    final error = await appState.setServer(ServerSettings(
-      custom: _custom,
-      domain: _domainController.text,
-      key: _keyController.text,
-    ));
+    final error = await appState.setServer(
+        ServerSettings(dev: _dev, key: _keyController.text));
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -61,10 +55,10 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
     });
     if (error != null) {
       AppToast.error(context, error);
-    } else if (appState.customServerActive) {
+    } else if (appState.devServerActive) {
       AppToast.warning(context, 'Now using ${appState.serverName}');
-    } else if (_custom) {
-      AppToast.info(context, 'Saved. Still on Live until both fields are set');
+    } else if (_dev) {
+      AppToast.info(context, 'Saved. Still on Live until the key is entered');
     } else {
       AppToast.success(context, 'Now using the live server');
     }
@@ -76,10 +70,7 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
       _busy = true;
       _testResult = null;
     });
-    final result = await appState.testServer(
-      domain: _domainController.text,
-      key: _keyController.text,
-    );
+    final result = await appState.testServer(key: _keyController.text);
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -96,12 +87,9 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
     // what is stored, so it is never overwritten.
     if (!identical(stored, _seededFrom)) _seed(stored);
 
-    final active = appState.customServerActive;
+    final active = appState.devServerActive;
     final blocked = appState.serverChangeBlockedReason;
     final dirty = _differs(stored);
-    final typedDomain = _domainController.text.trim();
-    final domainError =
-        typedDomain.isEmpty ? null : ServerConfig.domainProblem(typedDomain);
 
     return SettingsSectionCard(title: 'Server', children: [
       ListTile(
@@ -109,46 +97,23 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
           active ? Icons.science : Icons.cloud_done,
           color: active ? Colors.deepOrange : Colors.green,
         ),
-        title: Text(active ? 'Custom server' : 'Live server'),
+        title: Text(active ? 'Dev server' : 'Live server'),
         subtitle: Text(appState.serverName),
       ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-        child: SegmentedButton<bool>(
-          segments: const [
-            ButtonSegment(value: false, label: Text('Live')),
-            ButtonSegment(value: true, label: Text('Custom')),
-          ],
-          selected: {_custom},
-          onSelectionChanged: _busy
-              ? null
-              : (choice) => setState(() {
-                    _custom = choice.first;
-                    _testResult = null;
-                  }),
-        ),
+      SwitchListTile(
+        secondary: const Icon(Icons.dns),
+        title: const Text('Use dev server'),
+        subtitle: const Text('${ServerConfig.devDomain}. Needs its own API '
+            'key'),
+        value: _dev,
+        onChanged: _busy
+            ? null
+            : (value) => setState(() {
+                  _dev = value;
+                  _testResult = null;
+                }),
       ),
-      if (_custom) ...[
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-          child: TextField(
-            controller: _domainController,
-            enabled: !_busy,
-            autocorrect: false,
-            enableSuggestions: false,
-            keyboardType: TextInputType.url,
-            textInputAction: TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: 'Server URL',
-              hintText: 'dev.example.org',
-              helperText: 'https only. Host name, no path',
-              errorText: domainError,
-              border: const OutlineInputBorder(),
-              isDense: true,
-            ),
-            onChanged: (_) => setState(() => _testResult = null),
-          ),
-        ),
+      if (_dev) ...[
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
           child: TextField(
@@ -158,8 +123,8 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
             autocorrect: false,
             enableSuggestions: false,
             decoration: const InputDecoration(
-              labelText: 'API key',
-              helperText: 'The key of that server. Stored on this device',
+              labelText: 'Dev API key',
+              helperText: 'The dev server\'s app key. Stored on this device',
               border: OutlineInputBorder(),
               isDense: true,
             ),
@@ -193,7 +158,7 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
         child: Row(
           children: [
-            if (_custom)
+            if (_dev)
               OutlinedButton(
                 onPressed: _busy ? null : () => _test(appState),
                 child: const Text('Test'),
@@ -209,9 +174,7 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
                 ),
               ),
             FilledButton(
-              onPressed: _busy || !dirty || domainError != null
-                  ? null
-                  : () => _save(appState),
+              onPressed: _busy || !dirty ? null : () => _save(appState),
               child: const Text('Save'),
             ),
           ],
@@ -221,21 +184,21 @@ class _ServerSettingsCardState extends State<ServerSettingsCard> {
   }
 }
 
-/// Shown at the top of the map for as long as a custom server is active, so
-/// a real drive is never recorded on a test server by accident. It has no
+/// Shown at the top of the map for as long as the dev server is active, so
+/// a real drive is never recorded on the dev server by accident. It has no
 /// close button and cannot be dismissed: it goes when the app is back on
 /// Live.
-class CustomServerBanner extends StatelessWidget {
+class DevServerBanner extends StatelessWidget {
   final String serverName;
 
-  const CustomServerBanner({super.key, required this.serverName});
+  const DevServerBanner({super.key, required this.serverName});
 
   @override
   Widget build(BuildContext context) {
     final inset = MediaQuery.of(context).padding;
     return Semantics(
       liveRegion: true,
-      label: 'Test server $serverName. Nothing recorded now goes to the '
+      label: 'Dev server $serverName. Nothing recorded now goes to the '
           'live map.',
       child: Container(
         width: double.infinity,
@@ -248,7 +211,7 @@ class CustomServerBanner extends StatelessWidget {
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                'TEST SERVER  $serverName',
+                'DEV SERVER  $serverName',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(

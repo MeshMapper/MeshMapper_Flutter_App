@@ -9,17 +9,15 @@ import 'package:mesh_mapper/services/server_config.dart';
 import 'package:mesh_mapper/services/server_probe.dart';
 
 const _liveKey = 'live-key-for-tests';
-const _customKey = 'custom-key-for-tests';
+const _devKey = 'dev-key-for-tests';
 
 Future<String> _probe(
   MockClientHandler handler, {
-  String domain = 'dev.example.org',
-  String key = _customKey,
+  String key = _devKey,
   Duration timeout = const Duration(seconds: 10),
 }) =>
-    probeServer(
+    probeDevServer(
       client: MockClient(handler),
-      domain: domain,
       key: key,
       lat: 45.4,
       lon: -75.7,
@@ -39,37 +37,41 @@ void main() {
   });
   tearDown(ServerConfig.resetForTest);
 
-  test('asks the TYPED server with the TYPED key, not the active ones',
-      () async {
+  test('always asks the fixed dev server, with the TYPED key', () async {
     late http.Request sent;
     await _probe((request) async {
       sent = request;
       return http.Response('{"success":true,"in_zone":false}', 200);
-    }, domain: 'https://Dev.Example.org/');
-    expect(ServerConfig.isCustom, isFalse, reason: 'a test changes nothing');
+    });
+    expect(ServerConfig.isDev, isFalse, reason: 'a test changes nothing');
     expect(sent.url.toString(),
-        'https://dev.example.org/wardrive-api.php/status');
+        'https://dev.meshmapper.net/wardrive-api.php/status');
     final body = jsonDecode(sent.body) as Map<String, dynamic>;
-    expect(body['key'], _customKey);
+    expect(body['key'], _devKey);
     expect(sent.body, isNot(contains(_liveKey)));
     expect(body.keys,
         containsAll(['lat', 'lng', 'accuracy_m', 'ver', 'timestamp', 'key']));
   });
 
-  test('never sends anything for the live domain or a bad address', () async {
-    var sent = 0;
-    Future<http.Response> count(http.Request request) async {
-      sent++;
-      return http.Response('{}', 200);
+  test('a typed key can never be sent to live, whatever is typed', () async {
+    final hosts = <String>[];
+    for (final typed in [_devKey, 'meshmapper.net', 'https://meshmapper.net']) {
+      await _probe((request) async {
+        hosts.add(request.url.host);
+        return http.Response('{}', 200);
+      }, key: typed);
     }
+    expect(hosts, everyElement('dev.meshmapper.net'));
+  });
 
-    expect(await _probe(count, domain: 'meshmapper.net'),
-        contains('live server'));
-    expect(await _probe(count, domain: 'http://dev.example.org'),
-        contains('https'));
-    expect(await _probe(count, domain: 'dev.example.org/x'),
-        contains('host name'));
-    expect(await _probe(count, key: '  '), contains('API key'));
+  test('sends nothing without a key', () async {
+    var sent = 0;
+    expect(
+        await _probe((request) async {
+          sent++;
+          return http.Response('{}', 200);
+        }, key: '  '),
+        contains('API key'));
     expect(sent, 0);
   });
 
@@ -80,7 +82,7 @@ void main() {
         'in_zone': true,
         'zone': {'name': 'Ottawa', 'code': 'YOW'},
       })),
-      'Working. dev.example.org accepted the key and places you in Ottawa '
+      'Working. dev.meshmapper.net accepted the key and places you in Ottawa '
       '(YOW).',
     );
   });
@@ -92,13 +94,13 @@ void main() {
         'in_zone': false,
         'nearest_zone': {'name': 'Montreal', 'distance_km': 12.34},
       })),
-      'Working. dev.example.org accepted the key. You are outside every '
+      'Working. dev.meshmapper.net accepted the key. You are outside every '
       'region there. The nearest is Montreal, 12.3 km away.',
     );
   });
 
   test('a refused key, by reason or by 401', () async {
-    const words = 'dev.example.org answered, but this key is not valid there.';
+    const words = 'dev.meshmapper.net answered, but this key is not valid there.';
     expect(
         await _probe(_answer({'success': false, 'reason': 'bad_key'})), words);
     expect(await _probe(_answer({'error': 'unauthorized'}, 401)), words);
@@ -116,28 +118,28 @@ void main() {
         'reason': 'gps_inaccurate',
         'message': 'GPS accuracy too low',
       })),
-      'dev.example.org accepted the request but refused it: GPS accuracy too '
+      'dev.meshmapper.net accepted the request but refused it: GPS accuracy too '
       'low',
     );
   });
 
   test('something that is not a MeshMapper server', () async {
     expect(await _probe(_answer('<html>hello</html>', 404)),
-        'dev.example.org answered (HTTP 404), but not as a MeshMapper server.');
+        'dev.meshmapper.net answered (HTTP 404), but not as a MeshMapper server.');
   });
 
   test('unreachable, a bad certificate, and no answer in time', () async {
     expect(
         await _probe((_) async => throw const SocketException('no route')),
-        contains('Could not reach dev.example.org'));
+        contains('Could not reach dev.meshmapper.net'));
     expect(
         await _probe(
             (_) async => throw const HandshakeException('bad certificate')),
-        'The certificate of dev.example.org was not accepted.');
+        'The certificate of dev.meshmapper.net was not accepted.');
     expect(
         await _probe((_) => Completer<http.Response>().future,
             timeout: const Duration(milliseconds: 20)),
-        contains('No answer from dev.example.org'));
+        contains('No answer from dev.meshmapper.net'));
   });
 
   test('no answer ever contains the key', () async {
@@ -147,7 +149,7 @@ void main() {
       await _probe((_) async => throw const SocketException('x')),
     ];
     for (final answer in answers) {
-      expect(answer, isNot(contains(_customKey)));
+      expect(answer, isNot(contains(_devKey)));
     }
   });
 }

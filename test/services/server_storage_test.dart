@@ -14,7 +14,7 @@ import 'package:mesh_mapper/services/server_settings_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _liveKey = 'live-key-for-tests';
-const _customKey = 'custom-key-for-tests';
+const _devKey = 'dev-key-for-tests';
 
 /// The keystore as a plain map, so the names written can be inspected.
 class _MapSecureStorage extends FlutterSecureStorage {
@@ -64,8 +64,7 @@ class _MapSecureStorage extends FlutterSecureStorage {
   }
 }
 
-void _useCustom([String domain = 'dev.example.org']) =>
-    ServerConfig.useCustom(domain: domain, key: _customKey);
+void _useDev() => ServerConfig.useDev(key: _devKey);
 
 List<Map<String, dynamic>> _pings(int n) =>
     List.generate(n, (i) => {'type': 'TX', 'seq': i});
@@ -89,41 +88,33 @@ void main() {
       await store.writeToken('live-token');
       await store.writePendingPkce(pending);
 
-      _useCustom();
+      _useDev();
       expect(await store.readToken(), isNull,
-          reason: 'the live sign-in is not visible on a custom server');
+          reason: 'the live sign-in is not visible on the dev server');
       expect(await store.readPendingPkce(), isNull);
-      await store.writeToken('custom-token');
-      expect(await store.readToken(), 'custom-token');
+      await store.writeToken('dev-token');
+      expect(await store.readToken(), 'dev-token');
 
       ServerConfig.useLive();
       expect(await store.readToken(), 'live-token');
       expect((await store.readPendingPkce())?.state, 'live-state');
 
       expect(storage.values['portal_app_token'], 'live-token');
-      expect(storage.values['portal_app_token@dev.example.org'],
-          'custom-token');
+      expect(storage.values['portal_app_token@dev.meshmapper.net'],
+          'dev-token');
     });
 
     test('signing out on one server leaves the other signed in', () async {
       final storage = _MapSecureStorage();
       final store = SecureTokenStore(storage: storage);
       await store.writeToken('live-token');
-      _useCustom();
-      await store.writeToken('custom-token');
+      _useDev();
+      await store.writeToken('dev-token');
       await store.deleteToken();
       await store.deletePendingPkce();
       expect(await store.readToken(), isNull);
       ServerConfig.useLive();
       expect(await store.readToken(), 'live-token');
-    });
-
-    test('two custom servers do not share a sign-in either', () async {
-      final store = SecureTokenStore(storage: _MapSecureStorage());
-      _useCustom('dev.example.org');
-      await store.writeToken('token-a');
-      _useCustom('staging.example.org');
-      expect(await store.readToken(), isNull);
     });
   });
 
@@ -162,7 +153,7 @@ void main() {
       await service.refreshMe(force: true);
       expect(service.account?.username, 'live-user');
 
-      _useCustom();
+      _useDev();
       await service.reloadForServer();
       expect(service.isSignedIn, isFalse);
       expect(service.account, isNull);
@@ -182,7 +173,7 @@ void main() {
     test('the token only ever goes to the portal of its own server',
         () async {
       store.token = 'L' * 64;
-      _useCustom();
+      _useDev();
       store.token = 'C' * 64;
       ServerConfig.useLive();
 
@@ -195,14 +186,14 @@ void main() {
           200));
       await service.init();
       await service.refreshMe(force: true);
-      _useCustom();
+      _useDev();
       await service.reloadForServer();
       await service.refreshMe(force: true);
 
       expect(requests, hasLength(2));
       expect(requests[0].url.host, 'portal.meshmapper.net');
       expect(requests[0].headers['X-MM-App-Token'], 'L' * 64);
-      expect(requests[1].url.host, 'portal.dev.example.org');
+      expect(requests[1].url.host, 'portal.dev.meshmapper.net');
       expect(requests[1].headers['X-MM-App-Token'], 'C' * 64);
     });
 
@@ -210,7 +201,7 @@ void main() {
       store.token = 'L' * 64;
       final service = build((_) async {
         // The server changes while the request is on the wire.
-        _useCustom();
+        _useDev();
         return http.Response(
             jsonEncode({
               'ok': true,
@@ -225,7 +216,7 @@ void main() {
       final refreshed = await service.refreshMe(force: true);
       expect(refreshed, isFalse);
       expect(service.account, isNull,
-          reason: 'a live answer must not become the custom server state');
+          reason: 'a live answer must not become the dev server state');
       expect(service.linkedPubkeys, isEmpty);
     });
   });
@@ -248,12 +239,12 @@ void main() {
       expect(service.sessions.single.server, isNull);
     });
 
-    test('a session recorded on a custom server names it', () async {
+    test('a session recorded on the dev server names it', () async {
       SharedPreferences.setMockInitialValues({});
-      _useCustom();
+      _useDev();
       final service = await fresh();
       await service.saveSession(_pings(2));
-      expect(service.sessions.single.server, 'dev.example.org');
+      expect(service.sessions.single.server, 'dev.meshmapper.net');
       // The tag is storage metadata: it is not part of what is uploaded.
       expect(service.sessions.single.data.containsKey('server'), isFalse);
     });
@@ -271,7 +262,7 @@ void main() {
       });
       final service = await fresh();
       expect(service.sessions, hasLength(1));
-      _useCustom();
+      _useDev();
       service.onServerChanged();
       expect(service.sessions, isEmpty);
       expect(service.getSession('2026-01-01.json'), isNull);
@@ -285,13 +276,13 @@ void main() {
       await service.saveSession(_pings(3));
       final liveName = service.sessions.single.filename;
 
-      _useCustom();
+      _useDev();
       service.onServerChanged();
       expect(service.sessionCount, 0);
       await service.updateCurrentSession(_pings(4));
       service.finalizeCurrentSession();
-      final customName = service.sessions.single.filename;
-      expect(customName, isNot(liveName));
+      final devName = service.sessions.single.filename;
+      expect(devName, isNot(liveName));
 
       // From the custom server, the live session cannot be touched.
       await service.markAsUploaded(liveName);
@@ -311,7 +302,7 @@ void main() {
 
     test('the tag survives every rewrite of the session', () async {
       SharedPreferences.setMockInitialValues({});
-      _useCustom();
+      _useDev();
       final service = await fresh();
       await service.updateCurrentSession(_pings(2));
       await service.updateCurrentSession(_pings(5));
@@ -321,7 +312,7 @@ void main() {
       await service.markAsUploaded(name);
 
       final reloaded = await fresh();
-      expect(reloaded.sessions.single.server, 'dev.example.org');
+      expect(reloaded.sessions.single.server, 'dev.meshmapper.net');
       expect(reloaded.sessions.single.uploaded, isTrue);
     });
 
@@ -332,11 +323,11 @@ void main() {
       await service.updateCurrentSession(_pings(2));
       final liveName = service.sessions.single.filename;
 
-      _useCustom();
+      _useDev();
       service.onServerChanged();
       await service.updateCurrentSession(_pings(9));
       expect(service.sessions.single.filename, isNot(liveName));
-      expect(service.sessions.single.server, 'dev.example.org');
+      expect(service.sessions.single.server, 'dev.meshmapper.net');
 
       ServerConfig.useLive();
       service.onServerChanged();
@@ -349,7 +340,7 @@ void main() {
       await service.saveSession(_pings(1));
       List<OfflineSession>? seen;
       service.onSessionsUpdated = (sessions) => seen = sessions;
-      _useCustom();
+      _useDev();
       service.onServerChanged();
       expect(seen, isEmpty);
     });
@@ -377,111 +368,103 @@ void main() {
 
     test('nothing stored reads as Live', () async {
       final settings = await store.load(box);
-      expect(settings.custom, isFalse);
-      expect(settings.customActive, isFalse);
+      expect(settings.dev, isFalse);
+      expect(settings.devActive, isFalse);
     });
 
-    test('round trip: the host in the box, the key in the keystore only',
+    test('round trip: only the switch in the box, the key in the keystore',
         () async {
-      await store.save(
-          box,
-          const ServerSettings(
-              custom: true, domain: 'dev.example.org', key: _customKey));
-      expect(box.get('developer_server'),
-          {'custom': true, 'domain': 'dev.example.org'});
-      expect(box.toMap().toString(), isNot(contains(_customKey)),
+      await store.save(box, const ServerSettings(dev: true, key: _devKey));
+      expect(box.get('developer_server'), {'dev': true},
+          reason: 'no address is stored: the dev server is fixed');
+      expect(box.toMap().toString(), isNot(contains(_devKey)),
           reason: 'the key is never written to the preferences box');
-      expect(keys.serverKey, _customKey);
+      expect(keys.serverKey, _devKey);
 
       final settings = await store.load(box);
-      expect(settings.custom, isTrue);
-      expect(settings.domain, 'dev.example.org');
-      expect(settings.key, _customKey);
-      expect(settings.customActive, isTrue);
+      expect(settings.dev, isTrue);
+      expect(settings.key, _devKey);
+      expect(settings.devActive, isTrue);
     });
 
     test('the key never appears in the text form', () {
-      const settings = ServerSettings(
-          custom: true, domain: 'dev.example.org', key: _customKey);
-      expect(settings.toString(), isNot(contains(_customKey)));
+      const settings = ServerSettings(dev: true, key: _devKey);
+      expect(settings.toString(), isNot(contains(_devKey)));
     });
 
     test('clearing the key removes it from the keystore', () async {
-      await store.save(
-          box,
-          const ServerSettings(
-              custom: true, domain: 'dev.example.org', key: _customKey));
-      await store.save(box,
-          const ServerSettings(custom: true, domain: 'dev.example.org'));
+      await store.save(box, const ServerSettings(dev: true, key: _devKey));
+      await store.save(box, const ServerSettings(dev: true));
       expect(keys.serverKey, isNull);
     });
 
-    test('Custom is not active until both fields are filled', () {
-      const noKey = ServerSettings(custom: true, domain: 'dev.example.org');
-      const noHost = ServerSettings(custom: true, key: _customKey);
-      const badHost =
-          ServerSettings(custom: true, domain: 'http://x', key: _customKey);
-      const notChosen =
-          ServerSettings(domain: 'dev.example.org', key: _customKey);
-      for (final settings in [noKey, noHost, badHost, notChosen]) {
-        expect(settings.customActive, isFalse, reason: '$settings');
+    test('the dev server is not active until its key is entered', () {
+      const noKey = ServerSettings(dev: true);
+      const blankKey = ServerSettings(dev: true, key: '   ');
+      const notChosen = ServerSettings(key: _devKey);
+      for (final settings in [noKey, blankKey, notChosen]) {
+        expect(settings.devActive, isFalse, reason: '$settings');
         ServerSettingsStore.apply(settings, developerMode: true);
-        expect(ServerConfig.isCustom, isFalse, reason: '$settings');
+        expect(ServerConfig.isDev, isFalse, reason: '$settings');
         expect(ServerConfig.apiKey, _liveKey);
       }
     });
 
-    test('a complete Custom choice is only used with developer mode on', () {
-      const settings = ServerSettings(
-          custom: true, domain: 'dev.example.org', key: _customKey);
+    test('the dev server is only used with developer mode on', () {
+      const settings = ServerSettings(dev: true, key: _devKey);
       ServerSettingsStore.apply(settings, developerMode: false);
-      expect(ServerConfig.isCustom, isFalse);
+      expect(ServerConfig.isDev, isFalse);
       ServerSettingsStore.apply(settings, developerMode: true);
-      expect(ServerConfig.isCustom, isTrue);
-      expect(ServerConfig.baseDomain, 'dev.example.org');
+      expect(ServerConfig.isDev, isTrue);
+      expect(ServerConfig.baseDomain, 'dev.meshmapper.net');
       // Developer mode switched off: back to Live.
       ServerSettingsStore.apply(settings, developerMode: false);
-      expect(ServerConfig.isCustom, isFalse);
+      expect(ServerConfig.isDev, isFalse);
       expect(ServerConfig.apiKey, _liveKey);
     });
 
-    test('at startup: Live unless developer mode and a full Custom choice',
+    test('at startup: Live unless developer mode, the switch and the key',
         () async {
       await box.close();
       await store.applyAtStartup();
-      expect(ServerConfig.isCustom, isFalse, reason: 'a fresh install');
+      expect(ServerConfig.isDev, isFalse, reason: 'a fresh install');
 
       box = await Hive.openBox('user_preferences');
-      await store.save(
-          box,
-          const ServerSettings(
-              custom: true, domain: 'dev.example.org', key: _customKey));
+      await store.save(box, const ServerSettings(dev: true, key: _devKey));
       await box.put('preferences', {'developerModeEnabled': false});
       await store.applyAtStartup();
-      expect(ServerConfig.isCustom, isFalse, reason: 'developer mode is off');
+      expect(ServerConfig.isDev, isFalse, reason: 'developer mode is off');
 
       await box.put('preferences', {'developerModeEnabled': true});
       await store.applyAtStartup();
-      expect(ServerConfig.isCustom, isTrue);
-      expect(ServerConfig.baseDomain, 'dev.example.org');
-      expect(ServerConfig.apiKey, _customKey);
+      expect(ServerConfig.isDev, isTrue);
+      expect(ServerConfig.baseDomain, 'dev.meshmapper.net');
+      expect(ServerConfig.apiKey, _devKey);
 
-      await store.save(box,
-          const ServerSettings(custom: false, domain: 'dev.example.org'));
+      await store.save(box, const ServerSettings(dev: false, key: _devKey));
       await store.applyAtStartup();
-      expect(ServerConfig.isCustom, isFalse, reason: 'Live was chosen');
+      expect(ServerConfig.isDev, isFalse, reason: 'the switch is off');
     });
 
     test('a lost key (keystore wiped) falls back to Live at startup', () async {
-      await store.save(
-          box,
-          const ServerSettings(
-              custom: true, domain: 'dev.example.org', key: _customKey));
+      await store.save(box, const ServerSettings(dev: true, key: _devKey));
       await box.put('preferences', {'developerModeEnabled': true});
       keys.serverKey = null;
       await store.applyAtStartup();
-      expect(ServerConfig.isCustom, isFalse);
+      expect(ServerConfig.isDev, isFalse);
       expect(ServerConfig.apiKey, _liveKey);
+    });
+
+    test('a stored address from an earlier build is ignored: Live', () async {
+      // An earlier dev build stored a typed address. It is never honoured.
+      await box.put('developer_server',
+          {'custom': true, 'domain': 'somewhere.example.org'});
+      await box.put('preferences', {'developerModeEnabled': true});
+      keys.serverKey = _devKey;
+      await store.applyAtStartup();
+      expect(ServerConfig.isDev, isFalse);
+      expect(ServerConfig.baseDomain, 'meshmapper.net');
+      expect((await store.load(box)).dev, isFalse);
     });
   });
 }

@@ -36,7 +36,7 @@ class DeveloperSettingsPage extends StatelessWidget {
             SwitchListTile(
               secondary: const Icon(Icons.developer_mode),
               title: const Text('Developer Mode'),
-              subtitle: Text(appState.customServerActive
+              subtitle: Text(appState.devServerActive
                   ? 'Disable to hide developer tools and return to the live '
                       'server'
                   : 'Disable to hide developer tools'),

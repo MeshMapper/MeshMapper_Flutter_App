@@ -509,8 +509,8 @@ class _HomeScreenState extends State<HomeScreen> {
             if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
             // Always a child here (never inserted or removed), so the map
             // below keeps its place in the tree when the server changes.
-            if (appState.customServerActive)
-              CustomServerBanner(serverName: appState.serverName)
+            if (appState.devServerActive)
+              DevServerBanner(serverName: appState.serverName)
             else
               const SizedBox.shrink(),
             Expanded(
@@ -533,7 +533,7 @@ class _HomeScreenState extends State<HomeScreen> {
         // Landscape: floating status bar overlay (hidden during history view)
         if (isLandscape && !appState.viewingHistorySession)
           Positioned(
-            top: appState.customServerActive ? 44 : 16,
+            top: appState.devServerActive ? 44 : 16,
             left: leftInset + 72,
             right: 60,
             child: Center(

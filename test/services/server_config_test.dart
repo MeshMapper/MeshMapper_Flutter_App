@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/api_service.dart';
 import 'package:mesh_mapper/services/debug_submit_service.dart';
@@ -8,7 +10,7 @@ import 'package:mesh_mapper/services/repeater_admin/repeater_admin_api.dart';
 import 'package:mesh_mapper/services/server_config.dart';
 
 const _liveKey = 'live-key-for-tests';
-const _customKey = 'custom-key-for-tests';
+const _devKey = 'dev-key-for-tests';
 
 void main() {
   setUp(() {
@@ -19,7 +21,7 @@ void main() {
 
   group('Live (the default)', () {
     test('every address is the one the app has always used', () {
-      expect(ServerConfig.isCustom, isFalse);
+      expect(ServerConfig.isDev, isFalse);
       expect(ServerConfig.baseDomain, 'meshmapper.net');
       expect(ApiService.baseUrl, 'https://meshmapper.net');
       expect(ApiService.wardriveEndpoint,
@@ -59,72 +61,70 @@ void main() {
     });
   });
 
-  group('Custom', () {
+  group('Dev server', () {
     setUp(() {
-      expect(
-          ServerConfig.useCustom(
-              domain: 'https://Dev.Example.org/', key: ' $_customKey '),
-          isTrue);
+      expect(ServerConfig.useDev(key: ' $_devKey '), isTrue);
     });
 
-    test('every address derives from the one base domain', () {
-      expect(ServerConfig.isCustom, isTrue);
-      expect(ServerConfig.baseDomain, 'dev.example.org');
-      expect(ApiService.baseUrl, 'https://dev.example.org');
+    test('every address derives from the one fixed dev domain', () {
+      expect(ServerConfig.isDev, isTrue);
+      expect(ServerConfig.devDomain, 'dev.meshmapper.net');
+      expect(ServerConfig.baseDomain, 'dev.meshmapper.net');
+      expect(ApiService.baseUrl, 'https://dev.meshmapper.net');
       expect(ApiService.wardriveEndpoint,
-          'https://dev.example.org/wardrive-api.php/wardrive');
+          'https://dev.meshmapper.net/wardrive-api.php/wardrive');
       expect(ApiService.geoAuthStatusUrl,
-          'https://dev.example.org/wardrive-api.php/status');
+          'https://dev.meshmapper.net/wardrive-api.php/status');
       expect(ApiService.geoAuthUrl,
-          'https://dev.example.org/wardrive-api.php/auth');
+          'https://dev.meshmapper.net/wardrive-api.php/auth');
       expect(ApiService.borderUrl,
-          'https://dev.example.org/wardrive-api.php/border');
+          'https://dev.meshmapper.net/wardrive-api.php/border');
       expect(ApiService.deviceCatalogUrl,
-          'https://dev.example.org/wardrive-api.php/devices');
+          'https://dev.meshmapper.net/wardrive-api.php/devices');
       expect(RepeaterAdminApi.endpoint,
-          'https://dev.example.org/wardrive-api.php/repeater');
-      expect(ServerConfig.regionHost('YOW'), 'yow.dev.example.org');
-      expect(ServerConfig.regionUrl('yul'), 'https://yul.dev.example.org');
-      expect(PortalApi.baseUrl, 'https://portal.dev.example.org');
+          'https://dev.meshmapper.net/wardrive-api.php/repeater');
+      expect(ServerConfig.regionHost('YOW'), 'yow.dev.meshmapper.net');
+      expect(ServerConfig.regionUrl('yul'), 'https://yul.dev.meshmapper.net');
+      expect(PortalApi.baseUrl, 'https://portal.dev.meshmapper.net');
       expect(PortalApi.action('me').toString(),
-          'https://portal.dev.example.org/portal_app_api.php?action=me');
+          'https://portal.dev.meshmapper.net/portal_app_api.php?action=me');
       expect(DebugSubmitService.baseUrl,
-          'https://dev.example.org/debug/submitdebug.php');
+          'https://dev.meshmapper.net/debug/submitdebug.php');
     });
 
-    test('the key is the custom key, and Live gets its own back', () {
-      expect(ApiService.apiKey, _customKey);
+    test('the key is the dev key, and Live gets its own back', () {
+      expect(ApiService.apiKey, _devKey);
       ServerConfig.useLive();
       expect(ApiService.apiKey, _liveKey);
     });
 
     test('everything stored is named for the server', () {
-      expect(ServerConfig.storageSuffix, '@dev.example.org');
-      expect(SecureTokenStore.tokenKey, 'portal_app_token@dev.example.org');
+      expect(ServerConfig.storageSuffix, '@dev.meshmapper.net');
+      expect(SecureTokenStore.tokenKey, 'portal_app_token@dev.meshmapper.net');
       expect(SecureTokenStore.pendingPkceKey,
-          'portal_pending_pkce@dev.example.org');
+          'portal_pending_pkce@dev.meshmapper.net');
       expect(DeviceModelService.catalogCacheKey,
-          'device_catalog_v1@dev.example.org');
+          'device_catalog_v1@dev.meshmapper.net');
       expect(DeviceModelService.outboxKey,
-          'device_catalog_unknown_outbox_v1@dev.example.org');
-      expect(ServerConfig.recordTag, 'dev.example.org');
+          'device_catalog_unknown_outbox_v1@dev.meshmapper.net');
+      expect(ServerConfig.recordTag, 'dev.meshmapper.net');
     });
 
     test('a record only belongs to the server it names', () {
-      expect(ServerConfig.ownsRecord('dev.example.org'), isTrue);
+      expect(ServerConfig.ownsRecord('dev.meshmapper.net'), isTrue);
       expect(ServerConfig.ownsRecord(null), isFalse, reason: 'untagged = Live');
       expect(ServerConfig.ownsRecord('other.example.org'), isFalse);
       ServerConfig.useLive();
       expect(ServerConfig.ownsRecord(null), isTrue);
       expect(ServerConfig.ownsRecord(''), isTrue);
-      expect(ServerConfig.ownsRecord('dev.example.org'), isFalse);
+      expect(ServerConfig.ownsRecord('dev.meshmapper.net'), isFalse);
     });
 
     test('a change of server bumps the revision, a repeat does not', () {
       final before = ServerConfig.revision.value;
-      ServerConfig.useCustom(domain: 'dev.example.org', key: _customKey);
+      ServerConfig.useDev(key: _devKey);
       expect(ServerConfig.revision.value, before);
-      ServerConfig.useCustom(domain: 'dev.example.org', key: 'another-key');
+      ServerConfig.useDev(key: 'another-key');
       expect(ServerConfig.revision.value, before + 1);
       ServerConfig.useLive();
       expect(ServerConfig.revision.value, before + 2);
@@ -133,79 +133,43 @@ void main() {
     });
   });
 
-  group('Custom is refused unless both fields are usable', () {
-    test('no key', () {
-      expect(ServerConfig.useCustom(domain: 'dev.example.org', key: '  '),
-          isFalse);
-      expect(ServerConfig.isCustom, isFalse);
-      expect(ApiService.apiKey, _liveKey);
-    });
-
-    test('no usable host', () {
-      expect(ServerConfig.useCustom(domain: 'not a host', key: _customKey),
-          isFalse);
-      expect(ServerConfig.isCustom, isFalse);
-    });
-
-    test('the live domain itself: a custom key never goes to live', () {
-      for (final live in [
-        'meshmapper.net',
-        'https://meshmapper.net',
-        'MeshMapper.net/',
-        'www.meshmapper.net',
-      ]) {
-        expect(ServerConfig.useCustom(domain: live, key: _customKey), isFalse,
-            reason: live);
-        expect(ServerConfig.isCustom, isFalse);
-        expect(ServerConfig.domainProblem(live), contains('live server'));
+  group('the dev server needs its own key', () {
+    test('no key: refused, the app stays on Live with the live key', () {
+      for (final blank in ['', '   ']) {
+        expect(ServerConfig.useDev(key: blank), isFalse);
+        expect(ServerConfig.isDev, isFalse);
+        expect(ServerConfig.baseDomain, 'meshmapper.net');
+        expect(ApiService.apiKey, _liveKey);
       }
     });
   });
 
-  group('normalizeDomain', () {
-    test('accepts a host name, with or without https', () {
-      expect(ServerConfig.normalizeDomain('dev.meshmapper.net'),
-          'dev.meshmapper.net');
-      expect(ServerConfig.normalizeDomain('https://dev.meshmapper.net'),
-          'dev.meshmapper.net');
-      expect(ServerConfig.normalizeDomain('  HTTPS://Dev.Example.ORG/  '),
-          'dev.example.org');
-      expect(ServerConfig.normalizeDomain('a-b.example.co'), 'a-b.example.co');
+  group('the app cannot be pointed anywhere else', () {
+    test('there are exactly two base domains, both fixed', () {
+      expect(ServerConfig.baseDomain, ServerConfig.liveDomain);
+      ServerConfig.useDev(key: _devKey);
+      expect(ServerConfig.baseDomain, ServerConfig.devDomain);
+      ServerConfig.useDev(key: 'https://evil.example.org');
+      expect(ServerConfig.baseDomain, ServerConfig.devDomain,
+          reason: 'whatever is typed is only ever a key');
     });
 
-    test('refuses everything that is not a bare https host name', () {
-      for (final bad in [
-        '',
-        'http://dev.example.org',
-        'ftp://dev.example.org',
-        'dev.example.org/path',
-        'https://dev.example.org/wardrive-api.php',
-        'dev.example.org:8443',
-        'user@dev.example.org',
-        'user:pw@dev.example.org',
-        'dev.example.org?x=1',
-        'dev.example.org#x',
-        'localhost',
-        '192.168.1.10',
-        '100.64.0.1',
-        '[fe80::1]',
-        'dev..example.org',
-        '-dev.example.org',
-        'dev example.org',
-        'dev.example.org//',
-        '${'a' * 64}.example.org',
+    test('nothing under lib/ offers a way to type or store an address', () {
+      final source = [
+        'lib/services/server_config.dart',
+        'lib/services/server_settings_store.dart',
+        'lib/services/server_probe.dart',
+        'lib/screens/settings/server_settings_card.dart',
+      ].map((path) => File(path).readAsStringSync()).join('\n');
+      for (final gone in [
+        'normalizeDomain',
+        'useCustom',
+        'Server URL',
+        "'domain'",
+        'required String domain',
       ]) {
-        expect(ServerConfig.normalizeDomain(bad), isNull, reason: '"$bad"');
+        expect(source.contains(gone), isFalse, reason: gone);
       }
-    });
-
-    test('says why in words', () {
-      expect(ServerConfig.domainProblem('dev.example.org'), isNull);
-      expect(ServerConfig.domainProblem('http://dev.example.org'),
-          contains('https'));
-      expect(ServerConfig.domainProblem('dev.example.org/x'),
-          contains('host name'));
-      expect(ServerConfig.domainProblem(''), isNotNull);
     });
   });
 }

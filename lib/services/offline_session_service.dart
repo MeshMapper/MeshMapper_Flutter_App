@@ -25,7 +25,7 @@ class OfflineSession {
       placementCounts; // Per-IATA counts the server routed this upload into
   final int? tooFarRegion; // Pings dropped for being >50km outside every region
 
-  /// Base domain of the custom server this drive was recorded on, or null
+  /// Base domain of the dev server when this drive was recorded on it, or null
   /// for the live server (every session saved before the tag existed is a
   /// live one). A session only ever uploads to the server it names.
   final String? server;

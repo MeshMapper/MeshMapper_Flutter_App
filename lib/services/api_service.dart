@@ -122,7 +122,7 @@ class ApiService {
   static String get deviceCatalogUrl => ServerConfig.wardriveApiUrl('devices');
 
   /// The app key for the active server: the build-time key on Live, the
-  /// developer's own key on a custom server. Never one for the other.
+  /// dev server's own key on the dev server. Never one for the other.
   static String get apiKey => ServerConfig.apiKey;
 
   /// Heartbeat buffer - schedule heartbeat 1 minute before session expiry

@@ -12,7 +12,7 @@ import 'package:mesh_mapper/services/repeater_admin/repeater_admin_api.dart';
 import 'package:mesh_mapper/services/server_config.dart';
 
 const _liveKey = 'live-key-for-tests';
-const _customKey = 'custom-key-for-tests';
+const _devKey = 'dev-key-for-tests';
 
 /// Sends one of every request that carries the app key, and records each.
 Future<List<http.BaseRequest>> _sendEverything() async {
@@ -125,41 +125,42 @@ void main() {
     for (final request in requests) {
       final sent = _everythingSent(request);
       expect(request.url.host, endsWith('meshmapper.net'), reason: sent);
-      expect(request.url.host, isNot(contains('example.org')), reason: sent);
+      expect(request.url.host, isNot(contains('dev.')),
+          reason: 'nothing reaches the dev server on Live: $sent');
       expect(sent, contains(_liveKey));
-      expect(sent, isNot(contains(_customKey)));
+      expect(sent, isNot(contains(_devKey)));
     }
   });
 
-  test('Custom: every request goes to the custom server with its key only',
+  test('Dev: every request goes to the dev server with the dev key only',
       () async {
-    ServerConfig.useCustom(domain: 'dev.example.org', key: _customKey);
+    ServerConfig.useDev(key: _devKey);
     final requests = await _sendEverything();
     expect(requests.length, greaterThanOrEqualTo(10));
     for (final request in requests) {
       final sent = _everythingSent(request);
       expect(request.url.scheme, 'https', reason: sent);
       expect(
-          request.url.host == 'dev.example.org' ||
-              request.url.host.endsWith('.dev.example.org'),
+          request.url.host == 'dev.meshmapper.net' ||
+              request.url.host.endsWith('.dev.meshmapper.net'),
           isTrue,
           reason: sent);
-      expect(sent, contains(_customKey));
+      expect(sent, contains(_devKey));
       expect(sent, isNot(contains(_liveKey)),
-          reason: 'the live key must never reach a custom server');
+          reason: 'the live key must never reach the dev server');
     }
     expect(
         requests.map((r) => r.url.toString()),
         containsAll([
-          'https://dev.example.org/wardrive-api.php/status',
-          'https://dev.example.org/wardrive-api.php/auth',
-          'https://dev.example.org/wardrive-api.php/border',
-          'https://dev.example.org/wardrive-api.php/devices',
-          'https://dev.example.org/wardrive-api.php/wardrive',
-          'https://dev.example.org/wardrive-api.php/repeater',
-          'https://yow.dev.example.org/get_repeaters.php',
-          'https://yow.dev.example.org/app_coverage.php',
-          'https://dev.example.org/debug/submitdebug.php/create-ticket',
+          'https://dev.meshmapper.net/wardrive-api.php/status',
+          'https://dev.meshmapper.net/wardrive-api.php/auth',
+          'https://dev.meshmapper.net/wardrive-api.php/border',
+          'https://dev.meshmapper.net/wardrive-api.php/devices',
+          'https://dev.meshmapper.net/wardrive-api.php/wardrive',
+          'https://dev.meshmapper.net/wardrive-api.php/repeater',
+          'https://yow.dev.meshmapper.net/get_repeaters.php',
+          'https://yow.dev.meshmapper.net/app_coverage.php',
+          'https://dev.meshmapper.net/debug/submitdebug.php/create-ticket',
         ]));
   });
 
@@ -173,7 +174,7 @@ void main() {
     final api = ApiService(client: client);
     final debug = DebugSubmitService(client: client, retryDelayUnit: Duration.zero);
 
-    ServerConfig.useCustom(domain: 'dev.example.org', key: _customKey);
+    ServerConfig.useDev(key: _devKey);
     await api.checkZoneStatus(
         lat: 1, lon: 2, accuracyMeters: 3, appVersion: '1.0.0');
     await debug.createTicket(
@@ -185,14 +186,14 @@ void main() {
         title: 't', body: 'b', platform: 'app', ticketType: 'bug');
 
     expect(requests.map((r) => r.url.host).toList(), [
-      'dev.example.org',
-      'dev.example.org',
+      'dev.meshmapper.net',
+      'dev.meshmapper.net',
       'meshmapper.net',
       'meshmapper.net',
     ]);
     expect(
         requests.map((r) => (json.decode(r.body) as Map)['key']).toList(),
-        [_customKey, _customKey, _liveKey, _liveKey]);
+        [_devKey, _devKey, _liveKey, _liveKey]);
   });
 
   test('the vector tile fetch uses the region host of the active server',
@@ -205,10 +206,10 @@ void main() {
       }),
     );
     await api.fetchRecentCoverageTile(zone: 'YOW', x: 1, y: 2, gsize: 300, days: 7);
-    ServerConfig.useCustom(domain: 'dev.example.org', key: _customKey);
+    ServerConfig.useDev(key: _devKey);
     await api.fetchRecentCoverageTile(zone: 'YOW', x: 1, y: 2, gsize: 300, days: 7);
     expect(urls[0].host, 'yow.meshmapper.net');
-    expect(urls[1].host, 'yow.dev.example.org');
+    expect(urls[1].host, 'yow.dev.meshmapper.net');
     expect(urls[1].path, urls[0].path);
     expect(urls[1].query, urls[0].query);
   });
@@ -237,8 +238,8 @@ void main() {
       expect(sent, hasLength(1));
     });
 
-    test('is suspended on a custom server: nothing is sent', () async {
-      ServerConfig.useCustom(domain: 'dev.example.org', key: _customKey);
+    test('is suspended on the dev server: nothing is sent', () async {
+      ServerConfig.useDev(key: _devKey);
       final sent = <http.Request>[];
       build(sent).forwardPings(pings);
       build(sent).forwardPings(pings, source: 'offline');

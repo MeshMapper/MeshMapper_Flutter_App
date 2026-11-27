@@ -10,7 +10,7 @@ void main() {
     await tester.pumpWidget(const MaterialApp(
       home: Scaffold(
         body: Column(children: [
-          CustomServerBanner(serverName: 'dev.example.org'),
+          DevServerBanner(serverName: 'dev.meshmapper.net'),
         ]),
       ),
     ));
@@ -18,19 +18,19 @@ void main() {
 
   testWidgets('names the server', (tester) async {
     await pump(tester);
-    expect(find.textContaining('TEST SERVER'), findsOneWidget);
-    expect(find.textContaining('dev.example.org'), findsOneWidget);
+    expect(find.textContaining('DEV SERVER'), findsOneWidget);
+    expect(find.textContaining('dev.meshmapper.net'), findsOneWidget);
   });
 
   testWidgets('spans the full width so it cannot be missed', (tester) async {
     await pump(tester);
-    expect(tester.getSize(find.byType(CustomServerBanner)).width, 390);
+    expect(tester.getSize(find.byType(DevServerBanner)).width, 390);
   });
 
   testWidgets('cannot be dismissed: nothing in it responds to a tap, a swipe '
       'or a long press', (tester) async {
     await pump(tester);
-    final banner = find.byType(CustomServerBanner);
+    final banner = find.byType(DevServerBanner);
     for (final type in [
       GestureDetector,
       InkWell,
@@ -47,7 +47,7 @@ void main() {
     await tester.drag(banner, const Offset(400, 0));
     await tester.drag(banner, const Offset(0, -200));
     await tester.pumpAndSettle();
-    expect(find.textContaining('dev.example.org'), findsOneWidget);
+    expect(find.textContaining('dev.meshmapper.net'), findsOneWidget);
   });
 
   testWidgets('a long server name does not overflow a narrow screen',
@@ -58,8 +58,8 @@ void main() {
     await tester.pumpWidget(const MaterialApp(
       home: Scaffold(
         body: Column(children: [
-          CustomServerBanner(
-              serverName: 'a-very-long-test-server-name.dev.example.org'),
+          DevServerBanner(
+              serverName: 'a-very-long-test-server-name.dev.meshmapper.net'),
         ]),
       ),
     ));

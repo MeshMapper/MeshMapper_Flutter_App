@@ -209,8 +209,7 @@ class SecureTokenStore
   @override
   Future<void> deletePendingPkce() => _deleteSafely(pendingPkceKey);
 
-  /// The developer's custom server app key (Developer Tools). One entry:
-  /// there is one custom server at a time.
+  /// The dev server's app key, entered on the Developer Tools page.
   static const String serverKeyKey = 'developer_server_api_key';
 
   @override

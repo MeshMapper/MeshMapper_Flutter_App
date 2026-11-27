@@ -69,9 +69,9 @@ void main() {
       expect(badKeyMessage(), 'Invalid API key. Please check configuration.');
     });
 
-    test('on a custom server names that server', () {
-      ServerConfig.useCustom(domain: 'dev.example.org', key: 'some-key');
-      expect(badKeyMessage(), 'This key is not valid on dev.example.org.');
+    test('on the dev server names that server', () {
+      ServerConfig.useDev(key: 'some-key');
+      expect(badKeyMessage(), 'This key is not valid on dev.meshmapper.net.');
     });
   });
 }

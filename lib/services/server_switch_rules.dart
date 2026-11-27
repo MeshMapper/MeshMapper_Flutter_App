@@ -39,8 +39,8 @@ String? serverSwitchBlockReason({
 }
 
 /// What the user is told when the server refuses the app key (`bad_key`).
-/// On a custom server the key is one the developer typed, so the message
+/// On the dev server the key is one the developer typed, so the message
 /// names the server it was refused by.
-String badKeyMessage() => ServerConfig.isCustom
+String badKeyMessage() => ServerConfig.isDev
     ? 'This key is not valid on ${ServerConfig.baseDomain}.'
     : 'Invalid API key. Please check configuration.';

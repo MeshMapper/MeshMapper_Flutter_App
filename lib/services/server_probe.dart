@@ -6,17 +6,15 @@ import 'package:http/http.dart' as http;
 
 import 'server_config.dart';
 
-/// Asks a server's `/status` door who it is, for the Test button on the
-/// Developer Tools page, and says the answer in words.
+/// Asks the dev server's `/status` door who it is, for the Test button on
+/// the Developer Tools page, and says the answer in words.
 ///
-/// The request goes to the host and with the key GIVEN here, not the active
-/// ones, so a server can be tested before it is switched to. [domain] must
-/// already have passed [ServerConfig.normalizeDomain], which refuses the live
-/// domain: a custom key is never sent to live. Neither the key nor the body
-/// is logged. Request shape: `docs/APP_API.md` in the Server repo.
-Future<String> probeServer({
+/// The request always goes to [ServerConfig.devDomain], with the key GIVEN
+/// here, so the key can be tested before the switch is turned on. A typed
+/// key can therefore never be sent to live. Neither the key nor the body is
+/// logged. Request shape: `docs/APP_API.md` in the Server repo.
+Future<String> probeDevServer({
   required http.Client client,
-  required String domain,
   required String key,
   required double lat,
   required double lon,
@@ -24,8 +22,7 @@ Future<String> probeServer({
   required String appVersion,
   Duration timeout = const Duration(seconds: 10),
 }) async {
-  final host = ServerConfig.normalizeDomain(domain);
-  if (host == null) return ServerConfig.domainProblem(domain) ?? 'Bad address';
+  const host = ServerConfig.devDomain;
   if (key.trim().isEmpty) return 'Enter the API key first.';
 
   http.Response response;
@@ -50,8 +47,7 @@ Future<String> probeServer({
   } on HandshakeException {
     return 'The certificate of $host was not accepted.';
   } catch (_) {
-    return 'Could not reach $host. Check the address and that this phone can '
-        'reach it.';
+    return 'Could not reach $host. Check that this phone can reach it.';
   }
 
   Map<String, dynamic>? data;

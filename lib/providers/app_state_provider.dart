@@ -11436,11 +11436,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// saying why it was refused.
   ///
   /// Turning it off returns the app to the live server and sets the stored
-  /// choice back to Live, so a custom server is never active outside
+  /// choice back to Live, so the dev server is never active outside
   /// developer mode. That is a change of server, refused under the same
   /// rule as any other (see [serverChangeBlockedReason]).
   Future<String?> setDeveloperMode(bool enabled) async {
-    if (!enabled && ServerConfig.isCustom) {
+    if (!enabled && ServerConfig.isDev) {
       final blocked = serverChangeBlockedReason;
       if (blocked != null) return blocked;
     }
@@ -11452,12 +11452,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _loadServerSettings();
       if (!_isDisposed) notifyListeners();
     }
-    if (!enabled && _serverSettings.custom) {
-      return setServer(ServerSettings(
-        custom: false,
-        domain: _serverSettings.domain,
-        key: _serverSettings.key,
-      ));
+    if (!enabled && _serverSettings.dev) {
+      return setServer(ServerSettings(dev: false, key: _serverSettings.key));
     }
     return null;
   }
@@ -11470,8 +11466,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// there without being active (a field is still empty).
   ServerSettings get serverSettings => _serverSettings;
 
-  /// True while the app talks to a custom server instead of Live.
-  bool get customServerActive => ServerConfig.isCustom;
+  /// True while the app talks to the dev server instead of Live.
+  bool get devServerActive => ServerConfig.isDev;
 
   /// Base domain of the server the app talks to now.
   String get serverName => ServerConfig.baseDomain;
@@ -11497,24 +11493,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// server than the active one, switches to it. Returns null on success or
   /// a sentence saying why nothing was changed.
   ///
-  /// Custom is only active with developer mode on, a valid host name and a
-  /// key; a Custom choice with a field missing is stored and the app stays
-  /// on Live.
+  /// The dev server is only active with developer mode on and its key
+  /// entered; the switch with no key is stored and the app stays on Live.
   Future<String?> setServer(ServerSettings wanted) async {
-    final typed = wanted.domain.trim();
-    final domain = typed.isEmpty ? '' : ServerConfig.normalizeDomain(typed);
-    if (domain == null) return ServerConfig.domainProblem(typed);
-    final next = ServerSettings(
-      custom: wanted.custom,
-      domain: domain,
-      key: wanted.key.trim(),
-    );
+    final next = ServerSettings(dev: wanted.dev, key: wanted.key.trim());
 
-    final custom = _preferences.developerModeEnabled && next.customActive;
-    final changesServer = custom != ServerConfig.isCustom ||
-        (custom &&
-            (next.domain != ServerConfig.baseDomain ||
-                next.key != ServerConfig.apiKey));
+    final dev = _preferences.developerModeEnabled && next.devActive;
+    final changesServer = dev != ServerConfig.isDev ||
+        (dev && next.key != ServerConfig.apiKey);
     if (changesServer) {
       final blocked = serverChangeBlockedReason;
       if (blocked != null) return blocked;
@@ -11537,15 +11523,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
-  /// The Test button: asks the server typed on the Developer Tools page (not
-  /// the active one) for the zone at the current fix, and returns the answer
-  /// in words. Changes nothing.
-  Future<String> testServer({
-    required String domain,
-    required String key,
-  }) async {
-    final problem = ServerConfig.domainProblem(domain);
-    if (problem != null) return problem;
+  /// The Test button: asks the dev server, with the key typed on the
+  /// Developer Tools page, for the zone at the current fix, and returns the
+  /// answer in words. Changes nothing.
+  Future<String> testServer({required String key}) async {
     if (key.trim().isEmpty) return 'Enter the API key first.';
     final position = _currentPosition;
     if (position == null) {
@@ -11554,9 +11535,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final client = http.Client();
     try {
-      return await probeServer(
+      return await probeDevServer(
         client: client,
-        domain: domain,
         key: key,
         lat: position.latitude,
         lon: position.longitude,

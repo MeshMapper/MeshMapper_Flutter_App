@@ -80,7 +80,7 @@ void main() async {
   }
 
   // Which server this launch talks to. Read before anything can make a
-  // request; Live unless a developer chose a custom server.
+  // request; Live unless a developer turned on the dev server.
   await ServerSettingsStore().applyAtStartup();
 
   // Register noise floor session adapters before opening any boxes

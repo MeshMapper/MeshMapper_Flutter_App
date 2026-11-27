@@ -7,38 +7,29 @@ import 'server_config.dart';
 
 /// What the developer chose on the Developer Tools page.
 ///
-/// [custom] with a [domain] and a key is a custom server; anything less is
-/// Live. The key itself is never part of this object's text form.
+/// [dev] with a key is the dev server; anything less is Live. There is no
+/// address to choose: the dev server is fixed in [ServerConfig]. The key
+/// itself is never part of this object's text form.
 class ServerSettings {
-  /// Whether "Custom" is selected.
-  final bool custom;
+  /// Whether "Dev server" is switched on.
+  final bool dev;
 
-  /// The custom server's base domain as stored (bare host), or empty.
-  final String domain;
-
-  /// The custom server's app key, or empty. Never logged.
+  /// The dev server's app key, or empty. Never logged.
   final String key;
 
-  const ServerSettings({
-    this.custom = false,
-    this.domain = '',
-    this.key = '',
-  });
+  const ServerSettings({this.dev = false, this.key = ''});
 
   static const ServerSettings live = ServerSettings();
 
-  /// Custom is only active with a usable host name AND a key.
-  bool get customActive =>
-      custom &&
-      key.trim().isNotEmpty &&
-      ServerConfig.normalizeDomain(domain) != null;
+  /// The dev server is only active once its key has been entered.
+  bool get devActive => dev && key.trim().isNotEmpty;
 
   @override
-  String toString() => 'ServerSettings(custom: $custom, domain: $domain, '
-      'key: ${key.isEmpty ? 'none' : 'set'})';
+  String toString() =>
+      'ServerSettings(dev: $dev, key: ${key.isEmpty ? 'none' : 'set'})';
 }
 
-/// Where the custom server's app key is kept: the keychain or keystore.
+/// Where the dev server's app key is kept: the keychain or keystore.
 abstract class ServerKeyStore {
   Future<String?> readServerKey();
   Future<void> writeServerKey(String key);
@@ -47,8 +38,8 @@ abstract class ServerKeyStore {
 
 /// Reads and writes the developer's server choice.
 ///
-/// The mode and the host sit in the preferences box under their own key,
-/// outside the user preferences object. The key goes to [ServerKeyStore].
+/// The switch sits in the preferences box under its own key, outside the
+/// user preferences object. The key goes to [ServerKeyStore].
 class ServerSettingsStore {
   static const String preferencesBoxName = 'user_preferences';
   static const String settingsKey = 'developer_server';
@@ -62,18 +53,15 @@ class ServerSettingsStore {
     return SecureTokenStore();
   }
 
+  static bool _devChosen(Object? raw) => raw is Map && raw['dev'] == true;
+
   /// The stored choice. Anything unreadable reads as Live.
   Future<ServerSettings> load(Box<dynamic> box) async {
     try {
       final raw = box.get(settingsKey);
       if (raw is! Map) return ServerSettings.live;
-      final domain = raw['domain'];
       final key = await _keys.readServerKey();
-      return ServerSettings(
-        custom: raw['custom'] == true,
-        domain: domain is String ? domain : '',
-        key: key ?? '',
-      );
+      return ServerSettings(dev: _devChosen(raw), key: key ?? '');
     } catch (e) {
       debugWarn('[SERVER] Stored server choice unreadable (${e.runtimeType}), '
           'using Live');
@@ -82,10 +70,7 @@ class ServerSettingsStore {
   }
 
   Future<void> save(Box<dynamic> box, ServerSettings settings) async {
-    await box.put(settingsKey, {
-      'custom': settings.custom,
-      'domain': settings.domain,
-    });
+    await box.put(settingsKey, {'dev': settings.dev});
     if (settings.key.isEmpty) {
       await _keys.deleteServerKey();
     } else {
@@ -93,11 +78,11 @@ class ServerSettingsStore {
     }
   }
 
-  /// Points [ServerConfig] at what [settings] describe. A custom server is
+  /// Points [ServerConfig] at what [settings] describe. The dev server is
   /// only used with developer mode on; otherwise the app is on Live.
   static void apply(ServerSettings settings, {required bool developerMode}) {
-    if (developerMode && settings.customActive) {
-      ServerConfig.useCustom(domain: settings.domain, key: settings.key);
+    if (developerMode && settings.devActive) {
+      ServerConfig.useDev(key: settings.key);
     } else {
       ServerConfig.useLive();
     }
@@ -112,14 +97,13 @@ class ServerSettingsStore {
       final prefs = box.get('preferences');
       final developerMode =
           prefs is Map && prefs['developerModeEnabled'] == true;
-      // The keystore is only read when a custom server was chosen at all.
-      final raw = box.get(settingsKey);
-      if (!developerMode || raw is! Map || raw['custom'] != true) {
+      // The keystore is only read when the dev server was chosen at all.
+      if (!developerMode || !_devChosen(box.get(settingsKey))) {
         ServerConfig.useLive();
         return;
       }
       apply(await load(box), developerMode: developerMode);
-      debugLog('[SERVER] Using ${ServerConfig.isCustom ? 'custom server '
+      debugLog('[SERVER] Using ${ServerConfig.isDev ? 'the dev server '
           '${ServerConfig.baseDomain}' : 'Live'}');
     } catch (e) {
       ServerConfig.useLive();

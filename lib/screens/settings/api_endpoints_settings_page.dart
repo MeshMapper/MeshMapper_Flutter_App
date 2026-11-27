@@ -26,7 +26,7 @@ class ApiEndpointsSettingsPage extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
           if (isAutoMode) const AutoPingLockBanner(),
-          if (appState.customServerActive)
+          if (appState.devServerActive)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Container(
@@ -39,7 +39,7 @@ class ApiEndpointsSettingsPage extends StatelessWidget {
                       color: Colors.deepOrange.withValues(alpha: 0.3)),
                 ),
                 child: Text(
-                  'Forwarding is suspended while the app is on the test '
+                  'Forwarding is suspended while the app is on the dev '
                   'server ${appState.serverName}. Nothing recorded there is '
                   'sent to your endpoint.',
                   style:
@@ -51,8 +51,8 @@ class ApiEndpointsSettingsPage extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.cloud_done, color: Colors.green),
               title: const Text('MeshMapper API'),
-              subtitle: Text(appState.customServerActive
-                  ? 'Always active (test server ${appState.serverName})'
+              subtitle: Text(appState.devServerActive
+                  ? 'Always active (dev server ${appState.serverName})'
                   : 'Always active'),
             ),
           ]),
