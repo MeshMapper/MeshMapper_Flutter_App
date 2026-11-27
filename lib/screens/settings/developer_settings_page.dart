@@ -37,8 +37,7 @@ class DeveloperSettingsPage extends StatelessWidget {
               secondary: const Icon(Icons.developer_mode),
               title: const Text('Developer Mode'),
               subtitle: Text(appState.devServerActive
-                  ? 'Disable to hide developer tools and return to the live '
-                      'server'
+                  ? 'Disable to hide developer tools and return to Prod'
                   : 'Disable to hide developer tools'),
               value: appState.developerModeEnabled,
               onChanged: (value) async {
